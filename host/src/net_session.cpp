@@ -102,6 +102,18 @@ namespace {
         // Only the host's input has any: for each of the game's 16 sound slots, the handle of a sound that has finished
         // playing on the host's audio thread (0: none). Every machine acts on it at the same frame, see the sound notes below.
         std::array<uint16_t, 16> ended{};
+        // A player chose QUIT in the pause menu: the game's own variables as its quit left them (the code of func_151DDC20 at
+        // 0x151DE498), which every machine sets at the same frame so that all of them go back to the multiplayer menu together.
+        struct Leave {
+            uint8_t on = 0;
+            uint8_t b94 = 0;      // 0x800E0B94
+            uint32_t a88 = 0;     // 0x800E0A88 (the function the game runs on its way out)
+            uint8_t fd74 = 0;     // 0x8008FD74
+            uint8_t gs3f = 0;     // the byte at 0x3F of what 0x8008FDD4 points to
+            uint8_t fd9c = 0;     // 0x8008FD9C
+            uint8_t fe2c = 0;     // 0x8008FE2C
+            uint8_t v7270 = 0;    // 0x80087270
+        } leave;
     };
     struct FrameInputs {
         std::array<PlayerInput, max_players> p{};
@@ -133,6 +145,10 @@ namespace {
                 if (in.ended[k] != 0) {
                     put((uint8_t)k).put(in.ended[k]);
                 }
+            }
+            put(in.leave.on);
+            if (in.leave.on) {
+                put(in.leave.b94).put(in.leave.a88).put(in.leave.fd74).put(in.leave.gs3f).put(in.leave.fd9c).put(in.leave.fe2c).put(in.leave.v7270);
             }
             return *this;
         }
@@ -168,6 +184,16 @@ namespace {
                 if (k < in.ended.size()) {
                     in.ended[k] = h;
                 }
+            }
+            in.leave.on = get<uint8_t>();
+            if (in.leave.on) {
+                in.leave.b94 = get<uint8_t>();
+                in.leave.a88 = get<uint32_t>();
+                in.leave.fd74 = get<uint8_t>();
+                in.leave.gs3f = get<uint8_t>();
+                in.leave.fd9c = get<uint8_t>();
+                in.leave.fe2c = get<uint8_t>();
+                in.leave.v7270 = get<uint8_t>();
             }
             return in;
         }
@@ -1243,12 +1269,15 @@ void conker::netsession::on_port_read(int port) {
     if (failed) {
         return;
     }
+    static PlayerInput::Leave pending_leave;
     // The online pause menu (net_menu.cpp). Start opens the game's own pause screen on this machine only, and while it's
     // open this player's own controller drives it and the game gets a still one: the game goes on for everyone. Only
     // what this machine sends changes, so nothing differs between the machines.
     {
         static bool was_start = false, was_a = false, was_b = false;
         static bool open = false, hold_off = false;
+        static PlayerInput::Leave before_menu;
+        static uint8_t before_fd98 = 0;
         static uint32_t at_open = 0;
         static bool warned = false;
         static const bool allow_pause = std::getenv("CONKER_NET_ALLOWPAUSE") != nullptr;
@@ -1291,6 +1320,16 @@ void conker::netsession::on_port_read(int port) {
             else {
                 open = true;
                 at_open = (uint32_t)rd8(0x800E0B94u) & 0xFF;
+                // the variables QUIT changes, as they are now (they are put back when it's chosen, see below)
+                before_menu.b94 = (uint8_t)rd8(0x800E0B94u);
+                before_menu.a88 = ram_w(ram, 0x800E0A88u);
+                before_menu.fd74 = (uint8_t)rd8(0x8008FD74u);
+                const uint32_t state_ptr = ram_w(ram, 0x8008FDD4u);
+                before_menu.gs3f = ram_pointer(state_ptr) ? (uint8_t)rd8(state_ptr + 0x3Fu) : 0;
+                before_menu.fd9c = (uint8_t)rd8(0x8008FD9Cu);
+                before_menu.fe2c = (uint8_t)rd8(0x8008FE2Cu);
+                before_menu.v7270 = (uint8_t)rd8(0x80087270u);
+                before_fd98 = (uint8_t)rd8(0x8008FD98u);
                 // as the game's own pause starts (game_20AE20.c, the Start press): the selection on CONT, a short wait before it
                 // listens, the stick as it is
                 wr8(0x8008FE2C, 0);
@@ -1316,22 +1355,29 @@ void conker::netsession::on_port_read(int port) {
                 close = true;
             }
             else if (rd8(0x800E0B94u) == 7 && at_open != 7) {
-                // QUIT confirmed: the game is on its way out of the match on this machine, so this machine leaves
-                // the session (the others see it gone) and goes on offline
-                log_line("[net] this player left the match from the menu");
-                for (auto& peer : peers) {
-                    peer->drop();
+                // QUIT confirmed: the game has just set the variables that take it out of the match, on this machine only. Their
+                // values go to everyone with this machine's input, and every machine (this one too) sets them at the same frame; for
+                // now this machine puts them back as they were.
+                pending_leave.on = 1;
+                pending_leave.b94 = (uint8_t)rd8(0x800E0B94u);
+                pending_leave.a88 = ram_w(ram, 0x800E0A88u);
+                pending_leave.fd74 = (uint8_t)rd8(0x8008FD74u);
+                const uint32_t state_ptr = ram_w(ram, 0x8008FDD4u);
+                pending_leave.gs3f = ram_pointer(state_ptr) ? (uint8_t)rd8(state_ptr + 0x3Fu) : 0;
+                pending_leave.fd9c = (uint8_t)rd8(0x8008FD9Cu);
+                pending_leave.fe2c = 0;
+                pending_leave.v7270 = (uint8_t)rd8(0x80087270u);
+                log_line("[net] f=%u this player chose QUIT in the menu: everyone goes back to the multiplayer menu", frames_started);
+                wr8(0x800E0B94u, before_menu.b94);
+                std::memcpy(ram + (0x800E0A88u & 0x7FFFFFu), &before_menu.a88, 4);
+                wr8(0x8008FD74u, before_menu.fd74);
+                if (ram_pointer(state_ptr)) {
+                    wr8(state_ptr + 0x3Fu, before_menu.gs3f);
                 }
-                failed = true;
-                cv.notify_all();
-                conker::netmenu::set_open(false);
-                open = false;
-                // for now QUIT closes the game rather than going on offline
-                SDL_Event quit;
-                SDL_zero(quit);
-                quit.type = SDL_QUIT;
-                SDL_PushEvent(&quit);
-                return;
+                wr8(0x8008FD9Cu, before_menu.fd9c);
+                wr8(0x8008FD98u, before_fd98);
+                wr8(0x80087270u, before_menu.v7270);
+                close = true;
             }
             else {
                 // RESTART would restart this machine's game alone, so it's not offered: the picked button skips it (from CONT the
@@ -1428,6 +1474,10 @@ void conker::netsession::on_port_read(int port) {
     mine.x = x;
     mine.y = y;
     sound_sync = true;
+    if (pending_leave.on) {
+        mine.leave = pending_leave;
+        pending_leave = PlayerInput::Leave{};
+    }
     if (is_host && ram != nullptr) {
         // which sounds have finished playing, as this machine's audio thread sees it: the slot has a handle and a voice, and
         // the voice is idle (its state byte at +0x54 is 0) or belongs to another slot now (its link at +0x38)
@@ -1567,6 +1617,28 @@ void conker::netsession::on_port_read(int port) {
             waited_ms / (double)std::max<uint64_t>(waited_frames, 1), (unsigned long long)stalls, (unsigned long long)desyncs);
     }
     current = ready[f];
+    if (ram != nullptr) {
+        // a player chose QUIT in the pause menu: every machine sets what the game's quit sets, at this same frame
+        for (int slot = 0; slot < max_players; slot++) {
+            const PlayerInput::Leave& lv = current.p[slot].leave;
+            if (!lv.on) {
+                continue;
+            }
+            const auto set8 = [&](uint32_t a, uint8_t v) { ram[(a ^ 3u) & 0x7FFFFFu] = v; };
+            set8(0x800E0B94u, lv.b94);
+            std::memcpy(ram + (0x800E0A88u & 0x7FFFFFu), &lv.a88, 4);
+            set8(0x8008FD74u, lv.fd74);
+            const uint32_t state_ptr = ram_w(ram, 0x8008FDD4u);
+            if (ram_pointer(state_ptr)) {
+                set8(state_ptr + 0x3Fu, lv.gs3f);
+            }
+            set8(0x8008FD9Cu, lv.fd9c);
+            set8(0x8008FE2Cu, lv.fe2c);
+            set8(0x80087270u, lv.v7270);
+            log_line("[net] f=%u player %d chose QUIT: back to the multiplayer menu", f, slot + 1);
+            conker::notices::show(("Player " + std::to_string(slot + 1) + " ended the match").c_str());
+        }
+    }
     if (ram != nullptr) {
         // the host's notes of finished sounds (see above), applied by every machine at the same frame
         for (uint32_t k = 0; k < 16; k++) {
