@@ -85,14 +85,14 @@ namespace {
 
     constexpr int max_players = 4;
     constexpr uint32_t magic = 0x544E4243;  // "CBNT"
-    constexpr uint32_t protocol_version = 2;
+    constexpr uint32_t protocol_version = 3;
     constexpr uint32_t check_every = 30;
     constexpr uint32_t history = 1200;       // frames of inputs kept (for resyncs)
     constexpr uint32_t max_message = 64u << 20;
     constexpr auto host_waits_for_player = std::chrono::seconds(5);
     constexpr auto client_waits_for_host = std::chrono::seconds(10);
 
-    enum Msg : uint8_t { Hello = 1, Welcome = 2, Start = 3, Input = 4, Frame = 5, Check = 6, ResyncRequest = 7, Snapshot = 8, FrameRngMsg = 9, DiagRequest = 10, DiagData = 11 };
+    enum Msg : uint8_t { Hello = 1, Welcome = 2, Start = 3, Input = 4, Frame = 5, Check = 6, ResyncRequest = 7, Snapshot = 8, FrameRngMsg = 9, DiagRequest = 10, DiagData = 11, LobbyInfo = 12, Refused = 13 };
 
     struct PlayerInput {
         uint8_t plugged = 0;
@@ -243,12 +243,16 @@ namespace {
         int slot = -1;
         std::mutex send_mutex;
         std::atomic<bool> alive{ false };
+        std::atomic<bool> retired{ false };   // the lobby let go of it: its reader leaves the session's state alone
         std::thread reader;
 
         bool send_message(const std::vector<uint8_t>& bytes) {
             std::lock_guard lock{ send_mutex };
             if (!alive || !send_all(sock, bytes.data(), bytes.size())) {
                 alive = false;
+                if (sock != invalid_socket) {
+                    shutdown_socket(sock);   // wakes the reader, which sees the player is gone
+                }
                 return false;
             }
             return true;
@@ -351,6 +355,17 @@ namespace {
     std::atomic<uint32_t> desync_requested_frame{ 0xFFFFFFFFu };
 
     int filter = 0;
+
+    // The lobby (the launcher's Online screen): a session is set up before the game starts.
+    //   phase: 0 nothing, 1 a client is connecting, 2 in the lobby (the host listening, or a client joined), 3 it didn't work
+    int lobby_phase = 0;
+    std::string lobby_message;                   // what went wrong, or what the lobby is doing
+    std::atomic<uint32_t> lobby_gen{ 0 };        // changes when the lobby is left: threads of an older one stop
+    bool lobby_locked = false;                   // host: the game has begun, nobody else joins
+    bool game_launch = false;                    // client: the host started the game, the launcher should too
+    uint8_t lobby_mask = 0;                      // bit per player slot that is in the lobby
+    int lobby_input = 0;                         // the Controller choice (0 any, 1 keyboard, 2 gamepad)
+    std::vector<std::unique_ptr<Peer>> graveyard;   // peers let go of: their reader threads still point at them
     uint32_t test_desync_frame = 0xFFFFFFFFu;   // CONKER_NET_TEST_DESYNC: a client upsets its own RNG at that frame
 
     FILE* log_file = nullptr;
@@ -366,6 +381,17 @@ namespace {
         va_end(args);
         std::fputc('\n', log_file);
         std::fflush(log_file);
+    }
+
+    void open_log(const std::string& default_name) {
+        if (log_file != nullptr) {
+            return;
+        }
+        const char* env = SDL_getenv("CONKER_NET_LOG");
+        const std::string path = (env != nullptr && env[0] != 0) ? std::string(env) : default_name;
+        if (!path.empty()) {
+            log_file = std::fopen(path.c_str(), "w");
+        }
     }
 
     // SDL_getenv, as netplay.cpp does, copied at once (it may hand back one shared buffer).
@@ -642,6 +668,46 @@ namespace {
         try_broadcast();
     }
 
+    // Mutex held. Who is in the lobby, told to everybody in it.
+    void send_lobby_info() {
+        uint8_t mask = 0;
+        for (int s = 0; s < max_players; s++) {
+            if (connected[s]) {
+                mask |= (uint8_t)(1u << s);
+            }
+        }
+        lobby_mask = mask;
+        Writer w(LobbyInfo);
+        w.put((uint8_t)players_expected).put(mask).put(delay);
+        const auto& bytes = w.finish();
+        for (auto& peer : peers) {
+            if (peer->alive) {
+                peer->send_message(bytes);
+            }
+        }
+    }
+
+    // Mutex held. The first `delay` frames have nobody's input yet, so they are neutral for all.
+    void host_begin_game() {
+        lobby_locked = true;
+        Writer s(Start);
+        s.put(delay);
+        for (auto& peer : peers) {
+            peer->send_message(s.finish());
+        }
+        started = true;
+        for (uint32_t f = 0; f < delay; f++) {
+            for (int slot = 0; slot < max_players; slot++) {
+                if (connected[slot]) {
+                    inbox[f][slot] = { true, PlayerInput{} };
+                }
+            }
+        }
+        try_broadcast();
+        log_line("[net] all %d players are here, starting", players_expected);
+        cv.notify_all();
+    }
+
     void host_reader(Peer* peer) {
         uint8_t type;
         std::vector<uint8_t> payload;
@@ -670,79 +736,137 @@ namespace {
             }
         }
         std::lock_guard lock{ mtx };
-        if (peer->alive || connected[peer->slot]) {
+        peer->alive = false;
+        if (peer->retired) {
+            return;
+        }
+        if (connected[peer->slot]) {
             log_line("[net] player %d left", peer->slot + 1);
         }
-        peer->alive = false;
         connected[peer->slot] = false;
+        if (!started) {
+            send_lobby_info();
+        }
         try_broadcast();
         cv.notify_all();
     }
 
-    void host_accept_loop() {
-        int joined = 0;
-        while (joined < players_expected - 1) {
+    void refuse(socket_t s, uint8_t reason) {
+        Writer w(Refused);
+        w.put(reason);
+        send_all(s, w.finish().data(), w.bytes.size());
+        close_socket(s);
+    }
+
+    // Takes players in. With auto_start (the CONKER_NET_HOST way) the game begins once everyone is here; from the lobby
+    // it begins when the host presses Start, and a player may leave and another join in the meantime.
+    void host_accept_loop(socket_t listening, uint32_t gen, bool auto_start) {
+        while (true) {
             sockaddr_in addr{};
             socklen_t len = sizeof(addr);
-            socket_t s = accept(listener, reinterpret_cast<sockaddr*>(&addr), &len);
+            socket_t s = accept(listening, reinterpret_cast<sockaddr*>(&addr), &len);
+            if (gen != lobby_gen.load()) {
+                if (s != invalid_socket) {
+                    close_socket(s);
+                }
+                return;
+            }
             if (s == invalid_socket) {
                 std::lock_guard lock{ mtx };
+                if (!auto_start) {
+                    lobby_phase = 3;
+                    lobby_message = "The lobby stopped listening for players.";
+                }
                 failed = true;
                 cv.notify_all();
                 return;
             }
             int one = 1;
             setsockopt(s, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&one), sizeof(one));
+            // a connection that says nothing must not hold the others up
+#ifdef _WIN32
+            const DWORD hello_wait = 5000;
+            setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&hello_wait), sizeof(hello_wait));
+#else
+            timeval hello_wait{ 5, 0 };
+            setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &hello_wait, sizeof(hello_wait));
+#endif
             uint8_t type;
             std::vector<uint8_t> payload;
             if (!read_message(s, type, payload) || type != Hello) {
                 close_socket(s);
                 continue;
             }
+#ifdef _WIN32
+            const DWORD no_wait = 0;
+            setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&no_wait), sizeof(no_wait));
+#else
+            timeval no_wait{ 0, 0 };
+            setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &no_wait, sizeof(no_wait));
+#endif
             Reader r{ payload.data(), payload.size() };
             const uint32_t m = r.get<uint32_t>();
             const uint32_t v = r.get<uint32_t>();
-            if (r.bad || m != magic || v != protocol_version) {
-                log_line("[net] a connection with the wrong version was refused");
+            if (r.bad || m != magic) {
+                log_line("[net] a connection that isn't a player was closed");
                 close_socket(s);
+                continue;
+            }
+            if (v != protocol_version) {
+                log_line("[net] a player with a different version (%u, this is %u) was refused", (unsigned)v, (unsigned)protocol_version);
+                refuse(s, 2);
+                continue;
+            }
+            std::unique_lock lock{ mtx };
+            if (gen != lobby_gen.load()) {
+                lock.unlock();
+                close_socket(s);
+                return;
+            }
+            if (lobby_locked) {
+                lock.unlock();
+                refuse(s, 3);
+                continue;
+            }
+            int slot = -1;
+            for (int k = 1; k < players_expected; k++) {
+                if (!connected[k]) {
+                    slot = k;
+                    break;
+                }
+            }
+            if (slot < 0) {
+                lock.unlock();
+                log_line("[net] a player was refused: the game is full");
+                refuse(s, 1);
                 continue;
             }
             auto peer = std::make_unique<Peer>();
             peer->sock = s;
-            peer->slot = ++joined;
+            peer->slot = slot;
             peer->alive = true;
             Writer w(Welcome);
-            w.put((uint8_t)peer->slot).put((uint8_t)players_expected).put(delay);
+            w.put((uint8_t)slot).put((uint8_t)players_expected).put(delay);
             peer->send_message(w.finish());
-            log_line("[net] player %d joined", peer->slot + 1);
+            log_line("[net] player %d joined", slot + 1);
             Peer* raw = peer.get();
-            {
-                std::lock_guard lock{ mtx };
-                connected[peer->slot] = true;
-                peers.push_back(std::move(peer));
-            }
+            connected[slot] = true;
+            peers.push_back(std::move(peer));
             raw->reader = std::thread(host_reader, raw);
             raw->reader.detach();
-        }
-        // Everyone is here: the game begins. The first `delay` frames have nobody's input yet, so they are
-        // neutral for all.
-        std::lock_guard lock{ mtx };
-        Writer s(Start);
-        s.put(delay);
-        for (auto& peer : peers) {
-            peer->send_message(s.finish());
-        }
-        started = true;
-        for (uint32_t f = 0; f < delay; f++) {
-            for (int slot = 0; slot < max_players; slot++) {
-                if (connected[slot]) {
-                    inbox[f][slot] = { true, PlayerInput{} };
+            send_lobby_info();
+            cv.notify_all();
+            if (auto_start) {
+                int here = 0;
+                for (int k = 0; k < players_expected; k++) {
+                    here += connected[k] ? 1 : 0;
+                }
+                if (here >= players_expected) {
+                    host_begin_game();
+                    return;
                 }
             }
         }
-        try_broadcast();
-        log_line("[net] all %d players are here, starting", players_expected);
-        cv.notify_all();
     }
 
     // --- Client ---
@@ -757,8 +881,20 @@ namespace {
                 case Start:
                     delay = r.get<uint32_t>();
                     started = true;
+                    game_launch = true;
                     log_line("[net] the game starts");
                     break;
+                case LobbyInfo: {
+                    const uint8_t expected = r.get<uint8_t>();
+                    const uint8_t mask = r.get<uint8_t>();
+                    const uint32_t d = r.get<uint32_t>();
+                    if (!r.bad && expected >= 2 && expected <= max_players) {
+                        players_expected = expected;
+                        lobby_mask = mask;
+                        delay = d;
+                    }
+                    break;
+                }
                 case Frame: {
                     const uint32_t f = r.get<uint32_t>();
                     FrameInputs fi;
@@ -830,6 +966,21 @@ namespace {
             cv.notify_all();
         }
         std::lock_guard lock{ mtx };
+        if (peer->retired) {
+            peer->alive = false;
+            return;
+        }
+        if (!started) {
+            // still in the lobby
+            if (lobby_phase == 2) {
+                log_line("[net] the host closed the lobby");
+                lobby_phase = 3;
+                lobby_message = "The host closed the lobby.";
+            }
+            peer->alive = false;
+            cv.notify_all();
+            return;
+        }
         if (!failed && peer->alive) {
             log_line("[net] the host is gone");
             conker::notices::show("The host left, playing on offline");
@@ -971,18 +1122,27 @@ namespace {
 
     // --- Resync (the snapshot itself is conker::netsession's resync part, below) ---
 
-    bool connect_to_host(const std::string& host, const std::string& port) {
+    // Connects to the host and takes the slot it gives. gen is the lobby's generation (0: not from the lobby); on false,
+    // error says why.
+    bool connect_to_host(const std::string& host, const std::string& port, int timeout_seconds, uint32_t gen, std::string* error) {
+        const auto fail = [&](const std::string& text) {
+            if (error != nullptr) {
+                *error = text;
+            }
+            log_line("[net] %s", text.c_str());
+            return false;
+        };
+        const auto cancelled = [&]() { return gen != 0 && gen != lobby_gen.load(); };
         addrinfo hints{};
         hints.ai_family = AF_UNSPEC;
         hints.ai_socktype = SOCK_STREAM;
         addrinfo* result = nullptr;
         if (getaddrinfo(host.c_str(), port.c_str(), &hints, &result) != 0) {
-            log_line("[net] couldn't look up %s", host.c_str());
-            return false;
+            return fail("Couldn't find \"" + host + "\". Check the address.");
         }
         socket_t s = invalid_socket;
-        const auto deadline = clock::now() + std::chrono::seconds(60);
-        while (clock::now() < deadline && s == invalid_socket) {
+        const auto deadline = clock::now() + std::chrono::seconds(timeout_seconds);
+        while (clock::now() < deadline && s == invalid_socket && !cancelled()) {
             for (addrinfo* a = result; a != nullptr; a = a->ai_next) {
                 socket_t c = socket(a->ai_family, a->ai_socktype, a->ai_protocol);
                 if (c == invalid_socket) {
@@ -1000,7 +1160,13 @@ namespace {
         }
         freeaddrinfo(result);
         if (s == invalid_socket) {
-            log_line("[net] couldn't reach %s:%s", host.c_str(), port.c_str());
+            if (cancelled()) {
+                return false;
+            }
+            return fail("Couldn't reach " + host + ":" + port + ". Is the host's lobby open, and is the port forwarded on its router?");
+        }
+        if (cancelled()) {
+            close_socket(s);
             return false;
         }
         int one = 1;
@@ -1009,28 +1175,45 @@ namespace {
         hello.put(magic).put(protocol_version);
         if (!send_all(s, hello.finish().data(), hello.bytes.size())) {
             close_socket(s);
-            return false;
+            return fail("The host closed the connection.");
         }
         uint8_t type;
         std::vector<uint8_t> payload;
-        if (!read_message(s, type, payload) || type != Welcome) {
+        if (!read_message(s, type, payload)) {
             close_socket(s);
-            log_line("[net] the host didn't answer");
-            return false;
+            return fail("The host didn't answer. It may be running a different version of the game.");
+        }
+        if (type == Refused) {
+            const uint8_t reason = payload.empty() ? 0 : payload[0];
+            close_socket(s);
+            return fail(reason == 1 ? "The game is full." : reason == 2 ? "The host has a different version of the game. Both of you need the same build."
+                : reason == 3 ? "The game has already started." : "The host refused the connection.");
+        }
+        if (type != Welcome) {
+            close_socket(s);
+            return fail("The host didn't answer as expected. It may be running a different version of the game.");
         }
         Reader r{ payload.data(), payload.size() };
-        my_slot = r.get<uint8_t>();
-        players_expected = r.get<uint8_t>();
-        delay = r.get<uint32_t>();
-        if (r.bad || my_slot < 1 || my_slot >= max_players) {
+        const int slot = r.get<uint8_t>();
+        const int expected = r.get<uint8_t>();
+        const uint32_t d = r.get<uint32_t>();
+        if (r.bad || slot < 1 || slot >= max_players) {
             close_socket(s);
-            return false;
+            return fail("The host sent something this version doesn't understand.");
         }
         auto peer = std::make_unique<Peer>();
         peer->sock = s;
         peer->slot = 0;
         peer->alive = true;
         Peer* raw = peer.get();
+        std::lock_guard lock{ mtx };
+        if (cancelled()) {
+            close_socket(s);
+            return false;
+        }
+        my_slot = slot;
+        players_expected = expected;
+        delay = d;
         peers.push_back(std::move(peer));
         raw->reader = std::thread(client_reader, raw);
         raw->reader.detach();
@@ -1049,25 +1232,33 @@ namespace {
 #endif
     }
 
-    bool start_host(uint16_t port) {
+    // Listens on the port. The accept loop is started by the caller (it needs the socket).
+    bool start_host(uint16_t port, std::string* error) {
         listener = socket(AF_INET, SOCK_STREAM, 0);
         if (listener == invalid_socket) {
+            if (error != nullptr) {
+                *error = "Couldn't open a network socket.";
+            }
             return false;
         }
         int one = 1;
+#ifndef _WIN32
         setsockopt(listener, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&one), sizeof(one));
+#endif
         sockaddr_in addr{};
         addr.sin_family = AF_INET;
         addr.sin_addr.s_addr = htonl(INADDR_ANY);
         addr.sin_port = htons(port);
         if (bind(listener, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0 || listen(listener, 8) != 0) {
             log_line("[net] couldn't listen on port %u", (unsigned)port);
+            if (error != nullptr) {
+                *error = "Couldn't listen on port " + std::to_string((unsigned)port) + ". Another copy of the game may be using it; try another port.";
+            }
             close_socket(listener);
             listener = invalid_socket;
             return false;
         }
         connected[0] = true;
-        std::thread(host_accept_loop).detach();
         log_line("[net] hosting on port %u, waiting for %d players", (unsigned)port, players_expected);
         return true;
     }
@@ -1076,15 +1267,25 @@ namespace {
 // --- The game's side ---
 
 bool conker::netsession::init(uint8_t* rdram, bool (*local_sampler)(uint16_t*, float*, float*)) {
+    {
+        // set up in the lobby (the launcher's Online screen): the players are here and the host has started the game
+        std::lock_guard lock{ mtx };
+        if (lobby_phase == 2 && started && !enabled) {
+            ram = rdram;
+            sampler = local_sampler;
+            filter = lobby_input;
+            enabled = true;
+            log_line("[net] the game begins: player %d of %d, delay %u, controller choice %d", my_slot + 1, players_expected, delay, filter);
+            std::fprintf(stderr, "[net] online session from the lobby: %s, slot %d\n", is_host ? "hosting" : "joined", my_slot + 1);
+            return true;
+        }
+    }
     const std::string host_port = get_env("CONKER_NET_HOST");
     const std::string join = get_env("CONKER_NET_JOIN");
     if (host_port.empty() && join.empty()) {
         return false;
     }
-    const std::string log_path = get_env("CONKER_NET_LOG");
-    if (!log_path.empty()) {
-        log_file = std::fopen(log_path.c_str(), "w");
-    }
+    open_log("");
     ram = rdram;
     sampler = local_sampler;
     const std::string delay_text = get_env("CONKER_NET_DELAY");
@@ -1119,7 +1320,10 @@ bool conker::netsession::init(uint8_t* rdram, bool (*local_sampler)(uint16_t*, f
     if (!host_port.empty()) {
         is_host = true;
         my_slot = 0;
-        ok = start_host((uint16_t)std::atoi(host_port.c_str()));
+        ok = start_host((uint16_t)std::atoi(host_port.c_str()), nullptr);
+        if (ok) {
+            std::thread(host_accept_loop, listener, lobby_gen.load(), true).detach();
+        }
     }
     else {
         const size_t colon = join.rfind(':');
@@ -1127,7 +1331,7 @@ bool conker::netsession::init(uint8_t* rdram, bool (*local_sampler)(uint16_t*, f
             std::fprintf(stderr, "[net] CONKER_NET_JOIN must be <host>:<port>\n");
             return false;
         }
-        ok = connect_to_host(join.substr(0, colon), join.substr(colon + 1));
+        ok = connect_to_host(join.substr(0, colon), join.substr(colon + 1), 60, 0, nullptr);
     }
     if (!ok) {
         std::fprintf(stderr, "[net] the online session could not be set up (see CONKER_NET_LOG)\n");
@@ -1135,6 +1339,163 @@ bool conker::netsession::init(uint8_t* rdram, bool (*local_sampler)(uint16_t*, f
     }
     enabled = true;
     std::fprintf(stderr, "[net] online session: %s, slot %d\n", is_host ? "hosting" : "joined", my_slot + 1);
+    return true;
+}
+
+// --- The lobby: the session is set up before the game starts ---
+
+void conker::netsession::lobby_leave() {
+    std::lock_guard lock{ mtx };
+    if (enabled) {
+        return;   // a game is running
+    }
+    ++lobby_gen;
+    for (auto& peer : peers) {
+        peer->retired = true;
+        peer->drop();
+        graveyard.push_back(std::move(peer));
+    }
+    peers.clear();
+    if (listener != invalid_socket) {
+        shutdown_socket(listener);
+        close_socket(listener);
+        listener = invalid_socket;
+    }
+    connected = {};
+    inbox.clear();
+    ready.clear();
+    next_broadcast = 0;
+    started = false;
+    failed = false;
+    game_launch = false;
+    lobby_locked = false;
+    lobby_mask = 0;
+    lobby_phase = 0;
+    lobby_message.clear();
+    is_host = false;
+    my_slot = 0;
+    cv.notify_all();
+}
+
+void conker::netsession::lobby_open(const LobbySettings& cfg) {
+    lobby_leave();
+    static const bool network_ok = net_startup();
+    open_log(cfg.host ? "netplay_host.txt" : "netplay_join.txt");
+    std::lock_guard lock{ mtx };
+    if (enabled) {
+        lobby_phase = 3;
+        lobby_message = "An online game has been played in this run already. Close the program and start it again to play another.";
+        return;
+    }
+    if (!network_ok) {
+        lobby_phase = 3;
+        lobby_message = "The network couldn't be started.";
+        return;
+    }
+    const uint32_t gen = ++lobby_gen;
+    is_host = cfg.host;
+    lobby_input = std::clamp(cfg.input, 0, 2);
+    players_expected = std::clamp(cfg.players, 2, max_players);
+    delay = (uint32_t)std::clamp(cfg.delay, 1, 30);
+    log_line("[net] lobby: %s, %d players, delay %u", cfg.host ? "hosting" : "joining", players_expected, delay);
+    if (cfg.host) {
+        my_slot = 0;
+        std::string error;
+        if (!start_host((uint16_t)std::clamp(cfg.port, 1, 65535), &error)) {
+            lobby_phase = 3;
+            lobby_message = error;
+            return;
+        }
+        lobby_phase = 2;
+        lobby_mask = 1;
+        std::thread(host_accept_loop, listener, gen, false).detach();
+        return;
+    }
+    std::string host = cfg.address, port = std::to_string(std::clamp(cfg.port, 1, 65535));
+    const size_t colon = host.rfind(':');
+    if (colon != std::string::npos && host.find(':') == colon) {
+        port = host.substr(colon + 1);
+        host = host.substr(0, colon);
+    }
+    while (!host.empty() && host.back() == ' ') {
+        host.pop_back();
+    }
+    while (!host.empty() && host.front() == ' ') {
+        host.erase(host.begin());
+    }
+    if (host.empty()) {
+        lobby_phase = 3;
+        lobby_message = "Type the host's address first.";
+        return;
+    }
+    lobby_phase = 1;
+    lobby_message = "Connecting to " + host + ":" + port + "...";
+    std::thread([host, port, gen]() {
+        std::string error;
+        const bool ok = connect_to_host(host, port, 12, gen, &error);
+        std::lock_guard lock{ mtx };
+        if (gen != lobby_gen.load()) {
+            return;
+        }
+        if (ok) {
+            lobby_phase = (!peers.empty() && peers[0]->alive) ? 2 : 3;
+            lobby_message = lobby_phase == 2 ? "" : "The host closed the lobby.";
+        }
+        else {
+            lobby_phase = 3;
+            lobby_message = error;
+        }
+    }).detach();
+}
+
+conker::netsession::LobbyStatus conker::netsession::lobby_status() {
+    std::lock_guard lock{ mtx };
+    static clock::time_point last_info;
+    if (is_host && lobby_phase == 2 && !started && clock::now() - last_info > std::chrono::seconds(2)) {
+        last_info = clock::now();
+        send_lobby_info();   // also finds players whose connection died quietly
+    }
+    LobbyStatus st;
+    st.phase = lobby_phase;
+    st.host = is_host;
+    st.slot = my_slot;
+    st.expected = players_expected;
+    st.delay = (int)delay;
+    st.message = lobby_message;
+    uint8_t mask = 0;
+    if (is_host) {
+        for (int k = 0; k < max_players; k++) {
+            if (connected[k]) {
+                mask |= (uint8_t)(1u << k);
+            }
+        }
+    }
+    else {
+        mask = lobby_mask;
+    }
+    st.mask = mask;
+    int here = 0;
+    for (int k = 0; k < max_players; k++) {
+        here += (mask >> k) & 1;
+    }
+    st.can_start = is_host && lobby_phase == 2 && !started && here >= players_expected;
+    st.launch = !is_host && game_launch;
+    return st;
+}
+
+bool conker::netsession::lobby_start() {
+    std::lock_guard lock{ mtx };
+    if (!is_host || lobby_phase != 2 || started) {
+        return false;
+    }
+    int here = 0;
+    for (int k = 0; k < max_players; k++) {
+        here += connected[k] ? 1 : 0;
+    }
+    if (here < players_expected) {
+        return false;
+    }
+    host_begin_game();
     return true;
 }
 
@@ -1575,7 +1936,8 @@ void conker::netsession::on_port_read(int port) {
 
     const auto began = clock::now();
     while (ready.find(f) == ready.end() && !failed) {
-        const auto limit = is_host ? host_waits_for_player : client_waits_for_host;
+        // (the machines start the game a little apart: the first frames wait longer)
+        const auto limit = frames_started < 900 ? std::chrono::seconds(45) : (is_host ? host_waits_for_player : client_waits_for_host);
         if (cv.wait_for(lock, std::chrono::milliseconds(250)) == std::cv_status::timeout) {
             if (clock::now() - began > limit) {
                 if (is_host) {

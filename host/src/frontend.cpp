@@ -342,8 +342,8 @@ namespace {
         recompui::GameOptionsMenu* options = menu->init_game_options_menu(
             game.game_id, game.mod_game_id, game.display_name, game.thumbnail_bytes);
         // Lower than recompui's 25% from the bottom: with Version and Add ROM, seven options
-        // would reach up into the title.
-        options->set_bottom(10.0f, recompui::Unit::Percent);
+        // would reach up into the title (Online makes eight).
+        options->set_bottom(5.0f, recompui::Unit::Percent);
         recompui::update_game_mod_id(game.mod_game_id);
         // The runtime has opened the mods by now: turn on the texture pack chosen in the settings.
         conker::texture_packs::apply();
@@ -355,6 +355,7 @@ namespace {
         conker::local_achievements::init();
         conker::reticle::on_ui_ready();
         options->add_start_game_or_load_rom_option();
+        options->add_option("Online", []() { conker::netlobby::show(); });
         version_option = options->add_option("Version", on_version_selected);
         add_rom_option = options->add_option("Add ROM", on_add_rom_selected);
         options->add_setup_controls_option();
@@ -368,6 +369,7 @@ namespace {
         if (conker::roms::update()) {
             show_version();
         }
+        conker::netlobby::update(supported_games[0].game_id);
     }
 
     // Wraps the real renderer: once it has read a task's display list, the words the view rewrote in it are restored.

@@ -266,6 +266,34 @@ namespace conker {
         // With the game's memory and a function that reads this machine's own controller (port 1's device).
         // True if a session is being set up.
         bool init(uint8_t* rdram, bool (*local_sampler)(uint16_t* buttons, float* x, float* y));
+
+        // The lobby (net_lobby.cpp, the launcher's Online screen): the session is set up before the game starts. The host
+        // opens it and waits for the players, a client joins; when the host presses Start every machine starts the game and
+        // init() above finds the session ready.
+        struct LobbySettings {
+            bool host = true;
+            std::string address;     // a client's: the host's address, with or without :port
+            int port = 47000;
+            int players = 2;         // the host's: how many play (2 to 4)
+            int delay = 3;           // the host's: frames of input delay
+            int input = 0;           // 0 = keyboard and gamepad, 1 = keyboard only, 2 = gamepad only
+        };
+        struct LobbyStatus {
+            int phase = 0;           // 0 nothing, 1 connecting, 2 in the lobby, 3 it didn't work (message says why)
+            bool host = false;
+            int slot = 0;
+            int expected = 2;
+            int delay = 3;
+            int mask = 0;            // a bit for each player slot that is in
+            bool can_start = false;  // host: everybody is here
+            bool launch = false;     // client: the host pressed Start
+            std::string message;
+        };
+        void lobby_open(const LobbySettings& settings);
+        void lobby_leave();
+        LobbyStatus lobby_status();
+        // Host: begins the game for everybody. False if not everybody is here.
+        bool lobby_start();
         bool active();
         // The game frame that has just started, and this machine's player slot (0 is the host, port 1).
         uint32_t frame();
@@ -283,6 +311,14 @@ namespace conker {
         // The game asked for a random number: where the call came from (for finding why two machines drift).
         void note_rng_call(uint32_t caller, uint32_t state);
         void watch_poll(const char* tag, uint32_t info);
+    }
+
+    // net_lobby.cpp: the launcher's Online screen (the lobby), see net_session.cpp's lobby functions.
+    namespace netlobby {
+        // The Online option was chosen (from any thread).
+        void show();
+        // Every frame while the launcher is up.
+        void update(const std::u8string& game_id);
     }
 
     // net_view.cpp: the full-screen view online.

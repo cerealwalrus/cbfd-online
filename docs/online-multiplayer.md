@@ -4,7 +4,23 @@ The game's local multiplayer (the arena modes, 2 to 4 players) played over a net
 instead of a split screen. Everything is deterministic lockstep: the machines exchange only controller inputs, each runs
 the whole game, and the host sends a snapshot to put a machine right if its random numbers ever drift apart.
 
-There is no lobby screen yet: a game is set up with environment variables, then started from the game's own multiplayer menu.
+A game is set up in the launcher's **Online** screen (the lobby), or with environment variables (below, for testing).
+
+## The lobby
+
+Both players need the same build, and the ROM loaded (Start Game's Load ROM does that once).
+
+1. The host chooses **Online** in the launcher, sets Players (2 to 4), Input delay and Controller, and presses **Host**. The
+   lobby lists the players as they join. The host's router has to forward the port (TCP, 47000 by default) to the host's
+   computer, and the others need the host's public IP address.
+2. Each other player chooses **Online**, types the host's address (`address` or `address:port`), and presses **Join**.
+3. When everybody is in, the host presses **Start game**; every machine starts the game, and the host and the players choose
+   the multiplayer mode in the game's own menu as usual. Anybody can **Leave** before that (and join again); a version
+   mismatch, a full game, a wrong address or a closed port is explained on the screen.
+
+The session's log is written next to the program (`netplay_host.txt` or `netplay_join.txt`; `CONKER_NET_LOG` picks another
+file). The lobby is for one online game per run of the program; close it and start it again for another. The lobby doesn't
+turn on `CONKER_IGNORE_DIRECTINPUT` by itself (it has to be set before the program starts): set it if a gamepad shows up twice.
 
 ## Playing
 
