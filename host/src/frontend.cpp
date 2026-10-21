@@ -30,6 +30,9 @@
 #include "recompui/recompui.h"
 #include "recompui/renderer.h"
 #include "base/ui_launcher.h"
+#include "base/ui_game_option.h"
+#include "elements/ui_label.h"
+#include "elements/ui_theme.h"
 #include "util/file.h"
 
 #include "conker.hpp"
@@ -290,6 +293,8 @@ namespace {
         }
         if ((version_option != nullptr) && !name.empty()) {
             version_option->set_title("Version: " + name);
+            // with one version loaded there's nothing to switch to: the option can't be clicked
+            version_option->set_enabled(conker::roms::version_count() >= 2);
         }
         std::printf("[frontend] ROM version in play: %s (%zu kept)\n", name.empty() ? "none" : name.c_str(),
             conker::roms::version_count());
@@ -301,9 +306,7 @@ namespace {
     // The Version option: switches to the next version kept.
     void on_version_selected() {
         if (conker::roms::version_count() < 2) {
-            recompui::message_box("This is the only version of the ROM loaded. Add another with Add ROM "
-                "(a ROM hack that only changes the game's assets, such as an uncensored one) to switch between them.");
-            return;
+            return;   // (nothing to switch to; the option is disabled then, see show_version)
         }
         if (conker::roms::switch_to_next()) {
             show_version();
@@ -334,6 +337,77 @@ namespace {
         });
     }
 
+    // The look of the game's own menus: dark wood, grey lettering, orange for what is selected. Applied before the UI is
+    // built (the colours are read as each element is made). CONKER_THEME=default keeps RecompFrontend's blue look.
+    bool conker_theme_on() {
+        const char* value = SDL_getenv("CONKER_THEME");
+        return value == nullptr || std::string(value) != "default";
+    }
+
+    void apply_conker_theme() {
+        if (!conker_theme_on()) {
+            return;
+        }
+        using recompui::Color;
+        namespace theme = recompui::theme;
+        const auto set = [](theme::color c, Color v) { theme::set_theme_color(c, v); };
+        const auto with_alphas = [&](theme::color base, theme::color a5, theme::color a20, theme::color a30, theme::color a50, theme::color a80, uint8_t r, uint8_t g, uint8_t b) {
+            set(base, Color{ r, g, b, 255 });
+            set(a5, Color{ r, g, b, 13 });
+            set(a20, Color{ r, g, b, 51 });
+            set(a30, Color{ r, g, b, 77 });
+            set(a50, Color{ r, g, b, 128 });
+            set(a80, Color{ r, g, b, 204 });
+        };
+        set(theme::color::Background1, Color{ 34, 24, 16, 255 });
+        set(theme::color::Background2, Color{ 46, 33, 22, 255 });
+        set(theme::color::Background3, Color{ 58, 42, 28, 255 });
+        set(theme::color::BGOverlay, Color{ 12, 8, 4, 170 });
+        set(theme::color::ModalOverlay, Color{ 42, 29, 19, 240 });
+        set(theme::color::Elevated, Color{ 96, 68, 40, 255 });
+        set(theme::color::Border, Color{ 22, 14, 8, 255 });
+        set(theme::color::Text, Color{ 224, 220, 210, 255 });
+        set(theme::color::TextActive, Color{ 255, 226, 90, 255 });
+        set(theme::color::TextDim, Color{ 204, 198, 186, 255 });
+        with_alphas(theme::color::Primary, theme::color::PrimaryA5, theme::color::PrimaryA20, theme::color::PrimaryA30,
+            theme::color::PrimaryA50, theme::color::PrimaryA80, 232, 128, 20);
+        set(theme::color::PrimaryL, Color{ 255, 204, 96, 255 });
+        set(theme::color::PrimaryD, Color{ 150, 72, 6, 255 });
+        set(theme::color::SecondaryL, Color{ 255, 232, 96, 255 });
+        // Lilita One has the one weight: no bold to ask for
+        theme::set_typography_preset(theme::Typography::Header1, 68.0f, 0.04f, 400);
+        theme::set_typography_preset(theme::Typography::Header2, 52.0f, 0.04f, 400);
+        theme::set_typography_preset(theme::Typography::Header3, 40.0f, 0.04f, 400);
+        theme::set_typography_preset(theme::Typography::LabelLG, 40.0f, 0.05f, 400);
+        theme::set_typography_preset(theme::Typography::LabelMD, 30.0f, 0.05f, 400);
+        theme::set_typography_preset(theme::Typography::LabelSM, 22.0f, 0.06f, 400);
+        theme::set_typography_preset(theme::Typography::LabelXS, 19.0f, 0.06f, 400);
+        theme::set_typography_preset(theme::Typography::Body, 21.0f, 0.03f, 400);
+    }
+
+    // A launcher option as one of the game's wooden planks: dark wood, grey capitals, lighter wood and yellow lettering
+    // when it's the one selected (the pulse between orange and yellow is RecompFrontend's own).
+    void style_plank(recompui::GameOption* option, int index) {
+        using recompui::Color;
+        option->set_background_color(Color{ 66, 46, 27, 255 });
+        option->set_border_width(3.0f);
+        option->set_border_color(Color{ 20, 12, 6, 255 });
+        option->set_border_radius(7.0f);
+        option->set_padding(10.0f);
+        option->set_margin_bottom(8.0f);
+        option->set_color(Color{ 224, 220, 210, 255 });
+        option->set_rotation((index % 2 == 0) ? -0.6f : 0.6f);
+        option->hover_style.set_background_color(Color{ 104, 74, 43, 255 });
+        option->hover_style.set_color(Color{ 255, 226, 90, 255 });
+        option->focus_style.set_background_color(Color{ 112, 80, 46, 255 });
+        option->focus_style.set_color(Color{ 255, 226, 90, 255 });
+        if (recompui::Label* label = option->get_label()) {
+            label->set_text_transform(recompui::TextTransform::Uppercase);
+            label->set_font_size(44.0f);
+            label->set_letter_spacing(2.0f);
+        }
+    }
+
     // The launcher's options: RecompFrontend's usual ones, with Version and Add ROM after Start Game.
     void init_launcher(recompui::LauncherMenu* menu) {
         const recomp::GameEntry& game = supported_games[0];
@@ -362,6 +436,13 @@ namespace {
         options->add_settings_option();
         options->add_mods_option();
         options->add_exit_option();
+        if (conker_theme_on()) {
+            int index = 0;
+            for (recompui::GameOption* option : options->get_options()) {
+                style_plank(option, index++);
+            }
+        }
+        conker::menu_skin::apply(menu, options, { version_option, add_rom_option });
         show_version();
     }
 
@@ -369,6 +450,7 @@ namespace {
         if (conker::roms::update()) {
             show_version();
         }
+        conker::menu_skin::update();
         conker::netlobby::update(supported_games[0].game_id);
     }
 
@@ -839,7 +921,15 @@ void conker::frontend::init(recomp::GameEntry& game) {
     recompui::register_launcher_init_callback(init_launcher);
     recompui::register_launcher_update_callback(update_launcher);
 
-    recompui::register_primary_font("InterVariable.ttf", "Inter Variable");
+    // Lilita One (SIL Open Font License, see assets/LilitaOne-OFL.txt): a chunky, cartoony face close to the game's own lettering.
+    // CONKER_FONT=inter goes back to RecompFrontend's usual Inter.
+    if (SDL_getenv("CONKER_FONT") != nullptr && std::string(SDL_getenv("CONKER_FONT")) == "inter") {
+        recompui::register_primary_font("InterVariable.ttf", "Inter Variable");
+    }
+    else {
+        recompui::register_primary_font("LilitaOne-Regular.ttf", "Lilita One");
+    }
+    apply_conker_theme();
     recompui::register_ui_exports();
     recompinput::players::set_single_player_mode(true);
     conker::init_config();

@@ -313,6 +313,16 @@ namespace conker {
         void watch_poll(const char* tag, uint32_t info);
     }
 
+    // menu_skin.cpp: optional PNGs for the launcher (assets/menu_skin/), see that file.
+}
+namespace recompui { class LauncherMenu; class GameOptionsMenu; class GameOption; }
+namespace conker {
+    namespace menu_skin {
+        // corner: options that become small buttons in the corner when there is a background picture (Version, Add ROM).
+        void apply(recompui::LauncherMenu* menu, recompui::GameOptionsMenu* options, const std::vector<recompui::GameOption*>& corner);
+        void update();
+    }
+
     // net_lobby.cpp: the launcher's Online screen (the lobby), see net_session.cpp's lobby functions.
     namespace netlobby {
         // The Online option was chosen (from any thread).
