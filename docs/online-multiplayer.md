@@ -49,9 +49,19 @@ become the whole screen, its projection is widened to match, the HUD is laid out
 afterwards, so the game's memory is the same on every machine. The players are drawn for every camera, whatever the
 distance (`conker_player_visibility`): the game hid the caveman from the raptor's camera far away.
 
+## The game's sounds
+
+The game decides some things (which sound slot to use, when a voice line is over, timers that follow from that) from whether a sound
+is still playing, and the audio thread of each machine plays at its own pace, so the machines used to drift apart and the host had to
+resync them. Now the host looks at its real audio at the start of each frame and sends, with its input, which sounds have finished
+(`PlayerInput::ended`); every machine acts on that at the same frame, the audio thread no longer touches the game's sound slots, and
+the game's "is it still playing?" answers from the slot alone (`conker_net_sound_hook`, hooks in `conker.toml`, notes in
+`host/src/net_session.cpp`). In a 20-minute test over the internet this took the resyncs from about one every 5 seconds to none.
+Every machine has to run the same build.
+
 ## Known limits
 
-- During a match the Start button does not pause (the game's pause stops everything, and every machine has to go on together). It opens a small menu (Continue, Quit) instead, on that player's screen only: the match goes on behind it, and that player's character stands still. Quit closes that player's game; the others see "Player N left the match". The menu is plain text for now, not the game's own pause artwork, and has no stats row.
+- During a match the Start button does not pause (the game's pause stops everything, and every machine has to go on together). It opens the game's own multiplayer pause screen instead (the PAUSED logo, the stats and the team scores), on that player's screen only: the match goes on behind it, that player's character stands still, and the normal HUD (health, radars, weapon bar) is hidden while it is open. There are two buttons, CONTINUE and QUIT; RESTART is not offered, since it would restart one machine's game alone. Quit drops that player from the session (the others see "Player N left the match") and, for now, closes that player's game. The menu needs a free player slot, so it is not available in a four-player match yet.
 - A machine that cannot be reached for a while is dropped: the others see "Player N left the match" and go on, and a joiner whose host is gone sees a notice and goes on offline.
 - Audio is the local listener's own, positional sound is not yet per player.
 - Tested with 2 players; 3 and 4 are untested.

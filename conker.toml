@@ -784,6 +784,19 @@ func = "random_float"
 before_vram = 0x150ADA68
 text = "{ extern void conker_netplay_rng(uint8_t*, recomp_context*); conker_netplay_rng(rdram, ctx); }"
 
+# The game's sounds, the same on every machine online (host/src/net_session.cpp, "The game's sounds"): a voice that the audio
+# thread frees doesn't clear its sound slot any more (func_10017298), and "is it still playing?" (func_100173C4, at its last
+# instructions) answers from the slot.
+[[patches.hook]]
+func = "func_10017298"
+before_vram = 0x10017298
+text = "{ extern void conker_net_sound_hook(uint8_t*, recomp_context*, int); conker_net_sound_hook(rdram, ctx, 0); }"
+
+[[patches.hook]]
+func = "func_100173C4"
+before_vram = 0x10017428
+text = "{ extern void conker_net_sound_hook(uint8_t*, recomp_context*, int); conker_net_sound_hook(rdram, ctx, 1); }"
+
 # Netplay test (host/src/netplay.cpp): the game's frame length (D_800BE9E4, from the retraces counted since the
 # last frame, i.e. from the host's real timing) is made a constant 2 while a netplay test or game runs.
 [[patches.hook]]

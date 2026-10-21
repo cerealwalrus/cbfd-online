@@ -741,12 +741,39 @@ void conker::netplay::on_rng_call(uint32_t caller, uint32_t state) {
 }
 
 // Called from conker.toml's hooks at the start of random_u32 and random_float: ra is where the call came from.
+// The game's sound code rolls the shared RNG only once its last sound has finished playing (func_1506E46C, to choose a sound),
+// and when a sound has finished is the audio thread's business: it differs from one machine to the next, so the machines'
+// random numbers drifted apart. Online those rolls take their numbers from a private state instead, and the shared one is
+// put back as it was when the call returns (conker_netplay_rng_done, hooked at the instruction after the call).
+namespace {
+    uint64_t audio_rng_state = 0x2545F4914F6CDD1Dull;
+    uint64_t shared_rng_state = 0;
+    bool audio_rng_swapped = false;
+}
+
 extern "C" void conker_netplay_rng(uint8_t* rdram, recomp_context* ctx) {
+    if ((uint32_t)ctx->r31 == 0x1506E598u && !audio_rng_swapped && (conker::netsession::active() || conker::netplay::active())) {
+        const uint32_t at = 0x800885B0u & 0x7FFFFFu;
+        std::memcpy(&shared_rng_state, rdram + at, 8);
+        std::memcpy(rdram + at, &audio_rng_state, 8);
+        audio_rng_swapped = true;
+        return;
+    }
     // (the game's RNG state, its two words xored, to tell whether two machines were at the same state at each call)
     const uint32_t offset = 0x800885B0u & 0x7FFFFFu;
     uint32_t words[2];
     std::memcpy(words, rdram + offset, 8);
     conker::netplay::on_rng_call((uint32_t)ctx->r31, words[0] * 0x9E3779B1u ^ words[1]);
+}
+
+extern "C" void conker_netplay_rng_done(uint8_t* rdram, recomp_context* ctx) {
+    if (!audio_rng_swapped) {
+        return;
+    }
+    const uint32_t at = 0x800885B0u & 0x7FFFFFu;
+    std::memcpy(&audio_rng_state, rdram + at, 8);
+    std::memcpy(rdram + at, &shared_rng_state, 8);
+    audio_rng_swapped = false;
 }
 
 // Called from conker.toml's hook at the start of func_10004F00, the scheduler's start of a frame's graphics task.

@@ -60,6 +60,7 @@
 #include <SDL.h>
 
 #include "ultramodern/ultramodern.hpp"
+#include "recomp.h"
 
 #include "conker.hpp"
 
@@ -98,6 +99,9 @@ namespace {
         uint16_t buttons = 0;
         float x = 0.0f;
         float y = 0.0f;
+        // Only the host's input has any: for each of the game's 16 sound slots, the handle of a sound that has finished
+        // playing on the host's audio thread (0: none). Every machine acts on it at the same frame, see the sound notes below.
+        std::array<uint16_t, 16> ended{};
     };
     struct FrameInputs {
         std::array<PlayerInput, max_players> p{};
@@ -118,7 +122,20 @@ namespace {
             bytes.insert(bytes.end(), b, b + size);
             return *this;
         }
-        Writer& put_input(const PlayerInput& in) { return put(in.plugged).put(in.buttons).put(in.x).put(in.y); }
+        Writer& put_input(const PlayerInput& in) {
+            put(in.plugged).put(in.buttons).put(in.x).put(in.y);
+            uint8_t count = 0;
+            for (uint16_t h : in.ended) {
+                count += h != 0 ? 1 : 0;
+            }
+            put(count);
+            for (size_t k = 0; k < in.ended.size(); k++) {
+                if (in.ended[k] != 0) {
+                    put((uint8_t)k).put(in.ended[k]);
+                }
+            }
+            return *this;
+        }
         const std::vector<uint8_t>& finish() {
             const uint32_t length = (uint32_t)(bytes.size() - 4);
             std::memcpy(bytes.data(), &length, 4);
@@ -144,6 +161,14 @@ namespace {
             in.buttons = get<uint16_t>();
             in.x = get<float>();
             in.y = get<float>();
+            const uint8_t count = get<uint8_t>();
+            for (uint8_t i = 0; i < count && !bad; i++) {
+                const uint8_t k = get<uint8_t>();
+                const uint16_t h = get<uint16_t>();
+                if (k < in.ended.size()) {
+                    in.ended[k] = h;
+                }
+            }
             return in;
         }
     };
@@ -1109,6 +1134,61 @@ void conker::netsession::log(const char* line) {
     log_line("%s", line);
 }
 
+// --- The game's sounds, the same on every machine ---
+//
+// The game keeps 16 sound slots (D_800425E0, 12 bytes each: u16 handle, u16 next handle, u16 sound, u32 pointer to the
+// audio library's voice at +8). A slot is free once its voice has finished, and the audio thread (which plays at each
+// machine's own pace) used to say so by clearing the slot's pointer itself, and answered "is it still playing?" from the
+// voice. The game's logic chose slots, timers and random numbers from those answers, so the machines drifted apart.
+// Now, online:
+//   - the audio thread no longer touches the slots (conker_net_sound_hook 0 cuts the voice's link to its slot as the
+//     voice is freed), and "is it still playing?" (func_100173C4) answers from the slot alone: yes while it has a voice
+//     (conker_net_sound_hook 1);
+//   - the host looks at its real voices at the start of each frame, and sends the handle of each that has ended with its
+//     input; every machine, the host too, clears that slot's pointer at the start of the frame the input is for.
+namespace {
+    std::atomic<bool> sound_sync{ false };
+    constexpr uint32_t sound_slots = 0x800425E0u;
+
+    uint32_t ram_w(const uint8_t* base, uint32_t a) {
+        uint32_t v;
+        std::memcpy(&v, base + (a & 0x7FFFFFu), 4);
+        return v;
+    }
+    uint16_t ram_h(const uint8_t* base, uint32_t a) {
+        uint16_t v;
+        std::memcpy(&v, base + ((a ^ 2u) & 0x7FFFFFu), 2);
+        return v;
+    }
+    uint8_t ram_b(const uint8_t* base, uint32_t a) {
+        return base[(a ^ 3u) & 0x7FFFFFu];
+    }
+    bool ram_pointer(uint32_t a) {
+        return a >= 0x80000000u && a < 0x80800000u;
+    }
+}
+
+extern "C" void conker_net_sound_hook(uint8_t* rdram, recomp_context* ctx, int which) {
+    if (!sound_sync.load(std::memory_order_relaxed)) {
+        return;
+    }
+    if (which == 0) {
+        // func_10017298 (a voice is being freed): its link to the game's slot is dropped, so the audio thread doesn't clear it
+        const uint32_t voice = (uint32_t)ctx->r4;
+        if (ram_pointer(voice)) {
+            const uint32_t zero = 0;
+            std::memcpy(rdram + ((voice + 0x38u) & 0x7FFFFFu), &zero, 4);
+        }
+    }
+    else if (which == 1) {
+        // func_100173C4 returns (its argument, saved at 0x20($sp), is the address of a slot's pointer): playing while the slot has a voice
+        const uint32_t arg = ram_w(rdram, (uint32_t)ctx->r29 + 0x20u);
+        if (arg >= sound_slots + 8u && arg < sound_slots + 8u + 16u * 12u && (arg - sound_slots - 8u) % 12u == 0) {
+            ctx->r2 = ram_w(rdram, arg) != 0 ? 1 : 0;
+        }
+    }
+}
+
 // Every port read. The first of a pass starts a game frame: it sends this machine's input for the frame
 // `delay` ahead, then waits for the agreed inputs of the frame it's starting.
 void conker::netsession::on_port_read(int port) {
@@ -1116,6 +1196,7 @@ void conker::netsession::on_port_read(int port) {
     {
         std::lock_guard lock{ mtx };
         if (!enabled || failed) {
+            sound_sync = false;
             return;
         }
         const bool new_pass = port <= last_port;
@@ -1174,6 +1255,18 @@ void conker::netsession::on_port_read(int port) {
         const auto rd8 = [&](uint32_t a) { return (int)(int8_t)ram[(a ^ 3u) & 0x7FFFFFu]; };
         const auto wr8 = [&](uint32_t a, int v) { ram[(a ^ 3u) & 0x7FFFFFu] = (uint8_t)v; };
         const bool start = (buttons & 0x1000) != 0, a = (buttons & 0x8000) != 0, b = (buttons & 0x4000) != 0;
+        {
+            // a log of what could put the pause screen on a machine that didn't ask for it: the game's own pause flags and the
+            // menu's flags, whenever one changes
+            static int last_pause = -1, last_req = -1, last_wait = -1;
+            const int pause_flag = ram != nullptr ? rd8(0x800BEAC0u) : 0, pause_req = ram != nullptr ? rd8(0x800BEAC1u) : 0, wait = ram != nullptr ? rd8(0x8008FEF0u) : 0;
+            if (ram != nullptr && (pause_flag != last_pause || pause_req != last_req || wait != last_wait)) {
+                log_line("[menu] f=%u game pause=%d request=%d unpause-wait=%d menu-open=%d hold-off=%d start-held=%d", frames_started, pause_flag, pause_req, wait, (int)open, (int)hold_off, (int)start);
+                last_pause = pause_flag;
+                last_req = pause_req;
+                last_wait = wait;
+            }
+        }
         const bool in_match = ram != nullptr && ram[(0x800BE616u ^ 3u) & 0x7FFFFFu] != 0 && ram[(0x800BEAC0u ^ 3u) & 0x7FFFFFu] == 0;
         // the controller, as the pause menu wants it: the stick from the stick or the D-pad, the buttons only on the
         // frame they go down
@@ -1208,7 +1301,7 @@ void conker::netsession::on_port_read(int port) {
                 wr8(0x800E0A85, stick_y);
                 conker::netmenu::set_input(slot, 0, stick_x, stick_y);
                 conker::netmenu::set_open(true);
-                log_line("[menu] opened (player slot %d)", slot);
+                log_line("[menu] f=%u opened (player slot %d)", frames_started, slot);
             }
         }
         else if (open) {
@@ -1254,6 +1347,7 @@ void conker::netsession::on_port_read(int port) {
                 conker::netmenu::set_input(rd8(0x800E0A98) >= 0 ? rd8(0x800E0A98) : 3, (uint16_t)bits, stick_x, stick_y);
             }
             if (close) {
+                log_line("[menu] f=%u closed (in match %d)", frames_started, (int)in_match);
                 conker::netmenu::set_open(false);
                 wr8(0x8008FE2C, 0);
                 open = false;
@@ -1333,6 +1427,33 @@ void conker::netsession::on_port_read(int port) {
     mine.buttons = buttons;
     mine.x = x;
     mine.y = y;
+    sound_sync = true;
+    if (is_host && ram != nullptr) {
+        // which sounds have finished playing, as this machine's audio thread sees it: the slot has a handle and a voice, and
+        // the voice is idle (its state byte at +0x54 is 0) or belongs to another slot now (its link at +0x38)
+        static std::array<uint16_t, 16> noted{};
+        static int logged = 0;
+        for (uint32_t k = 0; k < 16; k++) {
+            const uint32_t slot = sound_slots + k * 12u;
+            const uint16_t handle = ram_h(ram, slot);
+            const uint32_t voice = ram_w(ram, slot + 8u);
+            if (handle == 0) {
+                noted[k] = 0;
+                continue;
+            }
+            if (noted[k] == handle || !ram_pointer(voice)) {
+                continue;
+            }
+            if (ram_b(ram, voice + 0x54u) == 0 || ram_w(ram, voice + 0x38u) != slot + 8u) {
+                mine.ended[k] = handle;
+                noted[k] = handle;
+                if (logged < 40) {
+                    logged++;
+                    log_line("[sound] f=%u slot %u: sound %04X has ended", f, k, (unsigned)handle);
+                }
+            }
+        }
+    }
     if (is_host) {
         host_store_input(0, f + delay, mine);
     }
@@ -1446,6 +1567,24 @@ void conker::netsession::on_port_read(int port) {
             waited_ms / (double)std::max<uint64_t>(waited_frames, 1), (unsigned long long)stalls, (unsigned long long)desyncs);
     }
     current = ready[f];
+    if (ram != nullptr) {
+        // the host's notes of finished sounds (see above), applied by every machine at the same frame
+        for (uint32_t k = 0; k < 16; k++) {
+            const uint16_t handle = current.p[0].ended[k];
+            if (handle != 0) {
+                const uint32_t slot = sound_slots + k * 12u;
+                static uint64_t applied = 0;
+                if (ram_h(ram, slot) == handle) {
+                    const uint32_t zero = 0;
+                    std::memcpy(ram + ((slot + 8u) & 0x7FFFFFu), &zero, 4);
+                    applied++;
+                }
+                if (applied % 200 == 1 && applied < 2000) {
+                    log_line("[sound] f=%u %llu sounds have been ended by the host's notes so far", f, (unsigned long long)applied);
+                }
+            }
+        }
+    }
     if (f % 30 == 0) {
         log_line("[inputs] f=%u p1=%d:%04X,%g,%g p2=%d:%04X,%g,%g", f, (int)current.p[0].plugged, (unsigned)current.p[0].buttons, (double)current.p[0].x, (double)current.p[0].y,
             (int)current.p[1].plugged, (unsigned)current.p[1].buttons, (double)current.p[1].x, (double)current.p[1].y);
