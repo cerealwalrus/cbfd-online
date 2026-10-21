@@ -219,6 +219,14 @@ namespace conker {
         void state_loaded();
     }
 
+    // net_menu.cpp: the online pause menu, the game's own pause screen run while the game goes on (see the file).
+    namespace netmenu {
+        void set_open(bool open);
+        bool is_open();
+        // The controller of the player who has the menu open, in a player slot nobody uses (stick: -80 to 80).
+        void set_input(int slot, uint16_t buttons, int x, int y);
+    }
+
     // notices.cpp: a line in the top-left corner for a few seconds, one at a time (an unlock, a save state's
     // "State saved"...).
     namespace notices {

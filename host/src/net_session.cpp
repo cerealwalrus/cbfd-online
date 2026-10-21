@@ -34,6 +34,7 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
+#include <cmath>
 #include <cstring>
 #include <deque>
 #include <map>
@@ -57,6 +58,8 @@
 #endif
 
 #include <SDL.h>
+
+#include "ultramodern/ultramodern.hpp"
 
 #include "conker.hpp"
 
@@ -778,6 +781,7 @@ namespace {
         std::lock_guard lock{ mtx };
         if (!failed && peer->alive) {
             log_line("[net] the host is gone");
+            conker::notices::show("The host left, playing on offline");
         }
         peer->alive = false;
         failed = true;
@@ -1158,6 +1162,117 @@ void conker::netsession::on_port_read(int port) {
     if (failed) {
         return;
     }
+    // The online pause menu (net_menu.cpp). Start opens the game's own pause screen on this machine only, and while it's
+    // open this player's own controller drives it and the game gets a still one: the game goes on for everyone. Only
+    // what this machine sends changes, so nothing differs between the machines.
+    {
+        static bool was_start = false, was_a = false, was_b = false;
+        static bool open = false, hold_off = false;
+        static uint32_t at_open = 0;
+        static bool warned = false;
+        static const bool allow_pause = std::getenv("CONKER_NET_ALLOWPAUSE") != nullptr;
+        const auto rd8 = [&](uint32_t a) { return (int)(int8_t)ram[(a ^ 3u) & 0x7FFFFFu]; };
+        const auto wr8 = [&](uint32_t a, int v) { ram[(a ^ 3u) & 0x7FFFFFu] = (uint8_t)v; };
+        const bool start = (buttons & 0x1000) != 0, a = (buttons & 0x8000) != 0, b = (buttons & 0x4000) != 0;
+        const bool in_match = ram != nullptr && ram[(0x800BE616u ^ 3u) & 0x7FFFFFu] != 0 && ram[(0x800BEAC0u ^ 3u) & 0x7FFFFFu] == 0;
+        // the controller, as the pause menu wants it: the stick from the stick or the D-pad, the buttons only on the
+        // frame they go down
+        const auto stick = [](float v, bool minus, bool plus) { return plus ? 80 : minus ? -80 : (int)std::lround(std::max(-1.0f, std::min(1.0f, v)) * 80.0f); };
+        const int stick_x = stick(x, (buttons & 0x0200) != 0, (buttons & 0x0100) != 0);
+        const int stick_y = stick(y, (buttons & 0x0400) != 0, (buttons & 0x0800) != 0);
+        if (!open && !allow_pause && plugged && in_match && start && !was_start) {
+            // a player slot nobody plays in: the menu reads its input from there
+            int slot = -1;
+            for (int s = 3; s >= 0; s--) {
+                if (s >= players_expected) {
+                    slot = s;
+                    break;
+                }
+            }
+            if (slot < 0) {
+                if (!warned) {
+                    warned = true;
+                    log_line("[menu] no free player slot for the pause menu (all four players are in)");
+                }
+            }
+            else {
+                open = true;
+                at_open = (uint32_t)rd8(0x800E0B94u) & 0xFF;
+                // as the game's own pause starts (game_20AE20.c, the Start press): the selection on CONT, a short wait before it
+                // listens, the stick as it is
+                wr8(0x8008FE2C, 0);
+                wr8(0x8008FD98, 0);
+                wr8(0x8008FEEC, 10);
+                wr8(0x8008FEF0, 0);
+                wr8(0x8008FEF4, stick_x);
+                wr8(0x800E0A85, stick_y);
+                conker::netmenu::set_input(slot, 0, stick_x, stick_y);
+                conker::netmenu::set_open(true);
+                log_line("[menu] opened (player slot %d)", slot);
+            }
+        }
+        else if (open) {
+            bool close = false;
+            if (!in_match) {
+                close = true;
+            }
+            else if (rd8(0x8008FEF0) != 0) {
+                // CONT, B or Start: the game began to unpause (a few frames' wait), which isn't needed
+                wr8(0x8008FEF0, 0);
+                wr8(0x8008FEEC, 0);
+                close = true;
+            }
+            else if (rd8(0x800E0B94u) == 7 && at_open != 7) {
+                // QUIT confirmed: the game is on its way out of the match on this machine, so this machine leaves
+                // the session (the others see it gone) and goes on offline
+                log_line("[net] this player left the match from the menu");
+                for (auto& peer : peers) {
+                    peer->drop();
+                }
+                failed = true;
+                cv.notify_all();
+                conker::netmenu::set_open(false);
+                open = false;
+                // for now QUIT closes the game rather than going on offline
+                SDL_Event quit;
+                SDL_zero(quit);
+                quit.type = SDL_QUIT;
+                SDL_PushEvent(&quit);
+                return;
+            }
+            else {
+                // RESTART would restart this machine's game alone, so it's not offered: the picked button skips it (from CONT the
+                // stick goes to QUIT, and from QUIT it stays on QUIT), and A on it, should it get picked, does nothing
+                if (rd8(0x8008FE2C) == 1) {
+                    wr8(0x8008FE2C, 2);
+                }
+                // RESTART would restart this machine's game alone: its button does nothing
+                int bits = ((start && !was_start) ? 0x1000 : 0) | ((b && !was_b) ? 0x4000 : 0) | ((a && !was_a) ? 0x8000 : 0);
+                if (rd8(0x8008FE2C) == 1) {
+                    bits &= ~0x8000;
+                }
+                conker::netmenu::set_input(rd8(0x800E0A98) >= 0 ? rd8(0x800E0A98) : 3, (uint16_t)bits, stick_x, stick_y);
+            }
+            if (close) {
+                conker::netmenu::set_open(false);
+                wr8(0x8008FE2C, 0);
+                open = false;
+                hold_off = true;
+            }
+        }
+        // A button that was pressed for the menu isn't passed on to the game until it is let go.
+        if (open || (hold_off && (start || a || b))) {
+            buttons = 0;
+            x = 0.0f;
+            y = 0.0f;
+        }
+        else {
+            hold_off = false;
+        }
+        was_start = start;
+        was_a = a;
+        was_b = b;
+    }
     const uint32_t f = frames_started;
     {
         std::lock_guard rng_lock{ rng_mutex };
@@ -1311,6 +1426,7 @@ void conker::netsession::on_port_read(int port) {
                 else {
                     log_line("[net] no word from the host for %lld s, going on offline",
                         (long long)std::chrono::duration_cast<std::chrono::seconds>(clock::now() - began).count());
+                    conker::notices::show("No word from the host, playing on offline");
                     failed = true;
                 }
             }
@@ -1362,6 +1478,18 @@ void conker::netsession::on_port_read(int port) {
             log_line("[chg] f=%u o0=%08X,%08X,%08X a0=%08X o1=%08X,%08X,%08X a1=%08X in0=%08X,%08X in1=%08X,%08X btn=%08X", f, t[0], t[1], t[2], t[6], t[3], t[4], t[5], t[7], t[8], t[9], t[10], t[11], b);
         }
     }
+    // A player whose controller was plugged in last frame and isn't now has left (the host drops whoever stops
+    // answering, and says so in the frame's inputs): every machine says so, as the same frame comes round for all.
+    {
+        static bool was_plugged[max_players] = {};
+        for (int s = 1; s < max_players; s++) {
+            const bool now = current.p[s].plugged != 0;
+            if (was_plugged[s] && !now) {
+                conker::notices::show("Player " + std::to_string(s + 1) + " left the match");
+            }
+            was_plugged[s] = now;
+        }
+    }
     current_frame = f;
     frames_started = f + 1;
     in_frame = true;
@@ -1375,6 +1503,13 @@ bool conker::netsession::input(int port, bool* plugged, uint16_t* buttons, float
     const PlayerInput& in = current.p[port];
     *plugged = in.plugged != 0;
     *buttons = in.buttons;
+    // The game stops everything while it's paused, and every machine has to go on together, so online the Start
+    // button doesn't pause during a match (the multiplayer arenas, D_800BE616 set; D_800BEAC0 is the game's pause).
+    // CONKER_NET_ALLOWPAUSE=1 gives it back.
+    static const bool allow_pause = std::getenv("CONKER_NET_ALLOWPAUSE") != nullptr;
+    if (!allow_pause && ram != nullptr && ram[(0x800BE616u ^ 3u) & 0x7FFFFFu] != 0 && ram[(0x800BEAC0u ^ 3u) & 0x7FFFFFu] == 0) {
+        *buttons &= (uint16_t)~0x1000u;
+    }
     *x = in.x;
     *y = in.y;
     return true;

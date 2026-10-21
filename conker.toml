@@ -824,3 +824,34 @@ text = "{ extern void conker_player_visibility(uint8_t*, recomp_context*, int); 
 func = "func_1502C974"
 before_vram = 0x1502CB24
 text = "{ extern void conker_player_visibility(uint8_t*, recomp_context*, int); conker_player_visibility(rdram, ctx, 3); }"
+
+# The online pause menu (host/src/net_menu.cpp): the game's own pause screen run while the match goes on.
+[[patches.hook]]
+func = "func_151EB06C"
+before_vram = 0x151EB0CC
+text = "{ extern void conker_net_pause_hook(uint8_t*, recomp_context*, int); conker_net_pause_hook(rdram, ctx, 1); }"
+
+[[patches.hook]]
+func = "func_151EB06C"
+before_vram = 0x151EB128
+text = "{ extern void conker_net_pause_hook(uint8_t*, recomp_context*, int); conker_net_pause_hook(rdram, ctx, 2); }"
+
+[[patches.hook]]
+func = "func_151DDC20"
+before_vram = 0x151DDFD0
+text = "{ extern void conker_net_pause_hook(uint8_t*, recomp_context*, int); conker_net_pause_hook(rdram, ctx, 3); }"
+
+[[patches.hook]]
+func = "func_151DDC20"
+before_vram = 0x151DE2F0
+text = "{ extern void conker_net_pause_hook(uint8_t*, recomp_context*, int); conker_net_pause_hook(rdram, ctx, 4); }"
+
+[[patches.hook]]
+func = "func_151DDC20"
+before_vram = 0x151DE334
+text = "{ extern void conker_net_pause_hook(uint8_t*, recomp_context*, int); conker_net_pause_hook(rdram, ctx, 5); }"
+
+[[patches.hook]]
+func = "func_151DDC20"
+before_vram = 0x151DE34C
+text = "{ extern void conker_net_pause_hook(uint8_t*, recomp_context*, int); conker_net_pause_hook(rdram, ctx, 6); }"

@@ -35,6 +35,7 @@ Choose the multiplayer mode in the menu on every machine, host first. The game s
 | `CONKER_NET_LOG=<file>` | a log of the session |
 | `CONKER_IGNORE_DIRECTINPUT=1` | ignore controllers that are not XInput ones (on by default online; `CONKER_ALLOW_DIRECTINPUT=1` turns it off) |
 | `CONKER_NET_VIEW=split` | keep the split screen (to compare) |
+| `CONKER_NET_ALLOWPAUSE=1` | let the Start button pause the game online (it stops it for everyone; off by default, the game goes on) |
 | `CONKER_NET_KEEPCULL=1` | use the game's own choice of which players are drawn for a camera |
 
 Debugging aids: `CONKER_NET_TEST_DESYNC`, `CONKER_NET_NORESYNC`, `CONKER_NET_VIEWMASK`, `CONKER_NET_AIMFIT`,
@@ -50,6 +51,7 @@ distance (`conker_player_visibility`): the game hid the caveman from the raptor'
 
 ## Known limits
 
-- No lobby, pause or disconnect screen yet: a machine that cannot be reached for a while is dropped and the others go on.
+- During a match the Start button does not pause (the game's pause stops everything, and every machine has to go on together). It opens a small menu (Continue, Quit) instead, on that player's screen only: the match goes on behind it, and that player's character stands still. Quit closes that player's game; the others see "Player N left the match". The menu is plain text for now, not the game's own pause artwork, and has no stats row.
+- A machine that cannot be reached for a while is dropped: the others see "Player N left the match" and go on, and a joiner whose host is gone sees a notice and goes on offline.
 - Audio is the local listener's own, positional sound is not yet per player.
 - Tested with 2 players; 3 and 4 are untested.

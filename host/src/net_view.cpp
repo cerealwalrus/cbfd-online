@@ -361,6 +361,9 @@ namespace {
         }
         static const bool score_swap = []() { const char* text = SDL_getenv("CONKER_NET_SCORESWAP"); return text == nullptr || std::atoi(text) != 0; }();
         static const bool keep_old_hidden = SDL_getenv("CONKER_NET_HIDEOLD") != nullptr;
+        // With the online pause menu open (net_menu.cpp) the pause screen is the game's own, drawn as it draws it: the game's HUD
+        // behind it (the bars, the radars, the weapon) is hidden, as the game's pause hides it, and nothing else is moved.
+        const bool menu_open = conker::netmenu::is_open();
         const auto other_viewport = [&](uint32_t pointer) {
             for (int k = 0; k < players; k++) {
                 const uint32_t record = base + k * camera_size;
@@ -469,7 +472,14 @@ namespace {
                     }
                 }
                 const bool leave = bar && radar_camera < 0 && (op == 0xF6 || !(width <= 16.5f && height <= 5.5f && near_left));
-                if (radar_camera >= 0) {
+                if (menu_open) {
+                    if (bar && (radar_camera >= 0 || !leave)) {
+                        hide = true;
+                        kind_name = "menu: HUD hidden";
+                    } else {
+                        kind_name = "menu: left alone";
+                    }
+                } else if (radar_camera >= 0) {
                     if (radar_camera == local) {
                         dy = (int32_t)((top - own_t) * 4.0f);
                         kind_name = "radar or weapon";
