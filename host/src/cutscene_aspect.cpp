@@ -96,6 +96,7 @@ void conker::cutscene_aspect::update(uint8_t* rdram) {
 // func_1501878C at 0x15018C8C: the frame's display list is drawn; its full sync and end come next,
 // written at the pointer $s1 points to.
 extern "C" void conker_frame_dl_end(uint8_t* rdram, recomp_context* ctx) {
+    conker::netview::frame_end(rdram, (uint32_t)MEM_W(0, ctx->r17));
     if (!pillarbox) {
         return;
     }

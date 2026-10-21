@@ -771,3 +771,56 @@ text = "{ extern void conker_bubble_end(uint8_t*, recomp_context*); conker_bubbl
 func = "func_15085710"
 before_vram = 0x15085710
 text = "{ extern void conker_stat_change(uint8_t*, recomp_context*); conker_stat_change(rdram, ctx); }"
+
+# Netplay test (host/src/netplay.cpp): who asks the game's RNG for numbers, so two runs that drift apart can
+# be told which code used it differently. Does nothing unless a netplay test is running.
+[[patches.hook]]
+func = "random_u32"
+before_vram = 0x150ADA20
+text = "{ extern void conker_netplay_rng(uint8_t*, recomp_context*); conker_netplay_rng(rdram, ctx); }"
+
+[[patches.hook]]
+func = "random_float"
+before_vram = 0x150ADA68
+text = "{ extern void conker_netplay_rng(uint8_t*, recomp_context*); conker_netplay_rng(rdram, ctx); }"
+
+# Netplay test (host/src/netplay.cpp): the game's frame length (D_800BE9E4, from the retraces counted since the
+# last frame, i.e. from the host's real timing) is made a constant 2 while a netplay test or game runs.
+[[patches.hook]]
+func = "func_10004F00"
+before_vram = 0x10004F00
+text = "{ extern void conker_netplay_frame_delta(uint8_t*, recomp_context*); conker_netplay_frame_delta(rdram, ctx); }"
+
+# Full-screen view online (host/src/net_view.cpp). Nothing of the game's memory is changed while it runs; these
+# only note where each camera's pass (func_15019464, func_15019BB8; func_1501A490 is the setup they, and some
+# other passes, call) starts in the frame's display list, which is rewritten at its end for this machine's view.
+[[patches.hook]]
+func = "func_15019464"
+before_vram = 0x15019464
+text = "{ extern void conker_net_view_pass(uint8_t*, int, int, int); conker_net_view_pass(rdram, (int32_t)ctx->r4, (int32_t)(int16_t)ctx->r5, 1); }"
+
+[[patches.hook]]
+func = "func_15019BB8"
+before_vram = 0x15019BB8
+text = "{ extern void conker_net_view_pass(uint8_t*, int, int, int); conker_net_view_pass(rdram, (int32_t)ctx->r4, (int32_t)(int16_t)ctx->r5, 2); }"
+
+[[patches.hook]]
+func = "func_1501A490"
+before_vram = 0x1501A490
+text = "{ extern void conker_net_view_pass(uint8_t*, int, int, int); conker_net_view_pass(rdram, (int32_t)ctx->r4, (int32_t)(int16_t)ctx->r5, 0); }"
+
+# Online, the players are drawn for every camera (host/src/net_view.cpp, conker_player_visibility).
+[[patches.hook]]
+func = "func_1502C974"
+before_vram = 0x1502CA38
+text = "{ extern void conker_player_visibility(uint8_t*, recomp_context*, int); conker_player_visibility(rdram, ctx, 0); }"
+
+[[patches.hook]]
+func = "func_1502C974"
+before_vram = 0x1502CA58
+text = "{ extern void conker_player_visibility(uint8_t*, recomp_context*, int); conker_player_visibility(rdram, ctx, 1); }"
+
+[[patches.hook]]
+func = "func_1502C974"
+before_vram = 0x1502CB24
+text = "{ extern void conker_player_visibility(uint8_t*, recomp_context*, int); conker_player_visibility(rdram, ctx, 3); }"

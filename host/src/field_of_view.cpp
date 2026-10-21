@@ -68,6 +68,9 @@ namespace {
 
     // The setting's vertical field of view, or 0 without one (the build without the menus).
     float setting_degrees() {
+        if (conker::netsession::active()) {
+            return 0.0f;   // online every machine's game has to see the same camera
+        }
 #if defined(CONKER_RT64)
         return conker::look_aim::camera_field_of_view();
 #else

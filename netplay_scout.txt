@@ -1,0 +1,124 @@
+
+===== Layout =====
+ls: cannot access 'conker/conker/asm': No such file or directory
+RecompiledFuncs
+127
+
+===== Symbols: RNG, timing, input, VI =====
+__osSetTimerIntr                = 0x100240B4;
+osGetCount                      = 0x10024770;
+osViSwapBuffer                  = 0x10024830;
+osSetTimer                      = 0x10024a40;
+osContStartReadData             = 0x10024bc0;
+osContGetReadData               = 0x10024c84;
+osViSetEvent                    = 0x10024ea0;
+osGetTime                       = 0x10024f40;
+osContInit                      = 0x10025340;
+osContStartReadData2            = 0x151EFAA0;
+osContGetReadData2              = 0x151EFB64;
+__osContInitialized             = 0x8002BE10;
+osContInit2                     = 0x151EF090;
+osSetTimer2                     = 0x151EF9C0;
+random_u32 = 0x150ADA20;
+random_float = 0x150ADA68;
+
+===== Callers of osGetCount (recompiled C: function file + count) =====
+total files: 0
+
+===== Callers of osGetTime (recompiled C: function file + count) =====
+total files: 0
+
+===== Callers of osSetTimer (recompiled C: function file + count) =====
+total files: 0
+
+===== Callers of osViSetEvent (recompiled C: function file + count) =====
+total files: 0
+
+===== Callers of osContStartReadData (recompiled C: function file + count) =====
+total files: 0
+
+===== Callers of osContGetReadData (recompiled C: function file + count) =====
+total files: 0
+
+===== Callers of random_u32 / random_float (count only) =====
+random_u32: 2071
+random_float: 1458
+
+===== Decomp asm: where D_800BE616 (MP flag) and D_800BE628 (cameras) are touched =====
+asm dir missing: run 'make extract' / 'make -C conker extract' first
+
+===== Decomp asm: random_u32 body and its seed (writes near the generator) =====
+
+===== Decomp asm: first 40 call sites of osGetCount / osGetTime (caller file : line) =====
+
+===== host/ hooks that read the wall clock (sim-affecting risk) =====
+host/src/fps_counter.cpp:31:    using clock = std::chrono::steady_clock;
+host/src/look_aim.cpp:125:            last_aim_ticks[player] = std::chrono::steady_clock::now().time_since_epoch().count();
+host/src/look_aim.cpp:438:    const int64_t since = std::chrono::steady_clock::now().time_since_epoch().count() - last_aim_ticks[player].load();
+host/src/look_aim.cpp:439:    return since >= 0 && std::chrono::steady_clock::duration(since) < aim_linger;
+host/src/mouse_camera.cpp:198:        std::chrono::steady_clock::time_point stick_time;
+host/src/mouse_camera.cpp:273:        const auto now = std::chrono::steady_clock::now();
+host/src/notices.cpp:25:    using clock = std::chrono::steady_clock;
+host/src/reticle.cpp:48:    using clock = std::chrono::steady_clock;
+host/src/save_states.cpp:47:    using clock = std::chrono::steady_clock;
+host/src/save_states.cpp:120:            put(out, (uint64_t)std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+host/src/ultra_extras.cpp:70:    std::chrono::steady_clock::time_point song_started_at[sequence_players];
+host/src/ultra_extras.cpp:82:    song_started_at[player] = std::chrono::steady_clock::now();
+host/src/ultra_extras.cpp:100:    if ((int32_t)ctx->r2 != 0 || std::chrono::steady_clock::now() - song_started_at[player] > start_limit) {
+
+===== conker.toml hooks (function names only) =====
+     11 func = "func_1000480C"
+      8 func = "func_15120158"
+      6 func = "func_10005AB0"
+      4 func = "func_15130A9C"
+      4 func = "func_1512D390"
+      3 func = "func_151408A4"
+      3 func = "func_15095D34"
+      3 func = "func_15015E80"
+      3 func = "func_15001A08"
+      3 func = "func_10008CE8"
+      2 func = "func_151D6418"
+      2 func = "func_151D5E90"
+      2 func = "func_15186794"
+      2 func = "func_15180580"
+      2 func = "func_15168118"
+      2 func = "func_150FB4C0"
+      2 func = "func_15095B08"
+      2 func = "func_1502CCFC"
+      2 func = "func_1501878C"
+      2 func = "func_100095A0"
+      2 func = "func_10005B04"
+      2 func = "func_10001050"
+      1 func = "updateCullScales_1510B958"
+      1 func = "recomp_entrypoint"
+      1 func = "func_151D6778"
+      1 func = "func_151742EC"
+      1 func = "func_1512C490"
+      1 func = "func_1512BB10"
+      1 func = "func_151284C4"
+      1 func = "func_15126378"
+      1 func = "func_15122C5C"
+      1 func = "func_15111AF4"
+      1 func = "func_151103C8"
+      1 func = "func_1510FEA0"
+      1 func = "func_1510B9D0"
+      1 func = "func_1510B128"
+      1 func = "func_150AE280"
+      1 func = "func_150ADAF0"
+      1 func = "func_150AC1B4"
+      1 func = "func_150AC0F8"
+      1 func = "func_150A6A5C"
+      1 func = "func_150A6860"
+      1 func = "func_15095760"
+      1 func = "func_15085710"
+      1 func = "func_15065A5C"
+      1 func = "func_15064B94"
+      1 func = "func_15063A38"
+      1 func = "func_1502C6E8"
+      1 func = "func_1501B22C"
+      1 func = "func_15019464"
+      1 func = "func_15006234"
+      1 func = "func_15000AD0"
+      1 func = "func_10008F24"
+      1 func = "func_1000853C"
+      1 func = "func_100052A0"

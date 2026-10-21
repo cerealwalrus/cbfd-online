@@ -249,6 +249,9 @@ namespace {
     }
 
     bool mouse_turns_camera() {
+        if (conker::netsession::active()) {
+            return false;   // online the mouse and the stick don't turn the game's camera: it isn't part of what travels
+        }
 #if defined(CONKER_RT64)
         return conker::look_aim::mouse_turns_camera();
 #else
@@ -257,6 +260,9 @@ namespace {
     }
 
     bool stick_turns_camera_setting() {
+        if (conker::netsession::active()) {
+            return false;
+        }
 #if defined(CONKER_RT64)
         return conker::look_aim::stick_free_camera();
 #else

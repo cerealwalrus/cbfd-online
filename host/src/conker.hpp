@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 
+#include <functional>
 #include "librecomp/game.hpp"
 #include "ultramodern/input.hpp"
 #include "ultramodern/renderer_context.hpp"
@@ -86,6 +87,8 @@ namespace conker {
         ultramodern::input::connected_device_info_t get_connected_device_info(int controller_num);
         // The controllers holding ports 1-4, in port order; returns how many hold one.
         int port_controllers(std::array<_SDL_GameController*, 4>& out);
+        // From the game's init (main.cpp): starts the online session if the environment asks for one.
+        void start_online(uint8_t* rdram);
     }
 
     // pad_mappings.cpp: C-buttons SDL maps as face buttons made the right stick (issue #28).
@@ -228,10 +231,77 @@ namespace conker {
         void update();
     }
 
+    // netplay.cpp: netplay milestone 1, the determinism test harness (record a play session's inputs and a
+    // hash of the game's memory per frame, then replay it and report where the game stops matching). Does
+    // nothing unless CONKER_NETPLAY_RECORD or CONKER_NETPLAY_REPLAY is set in the environment.
+    namespace netplay {
+        // From the game's init (main.cpp), with the game's memory.
+        void init(uint8_t* rdram);
+        bool active();
+        // The online session (net_session.cpp) turns the same frame-length and clock fixes on.
+        void enter_online(uint8_t* rdram);
+    // Each call to the game's RNG (random_u32 / random_float), with the address it was called from; see netplay.cpp.
+    void on_rng_call(uint32_t caller, uint32_t state);
+        // Every port read, before it is answered (frontend.cpp): the first of a pass (one game frame) starts a frame.
+        void on_port_read(int port);
+        // True if the replay answers this port; false means ask the real device.
+        bool replay_input(int port, bool* plugged, uint16_t* buttons, float* x, float* y);
+        void record_input(int port, bool plugged, uint16_t buttons, float x, float y);
+        // The same for which controllers are plugged in.
+        bool replay_device(int controller, bool* present);
+        void record_device(int controller, bool present);
+    }
+
+    // net_session.cpp: netplay milestone 2, the online session (lockstep: every machine runs the whole game and
+    // only the controllers travel). Off unless CONKER_NET_HOST or CONKER_NET_JOIN is set; see net_session.cpp.
+    namespace netsession {
+        // With the game's memory and a function that reads this machine's own controller (port 1's device).
+        // True if a session is being set up.
+        bool init(uint8_t* rdram, bool (*local_sampler)(uint16_t* buttons, float* x, float* y));
+        bool active();
+        // The game frame that has just started, and this machine's player slot (0 is the host, port 1).
+        uint32_t frame();
+        int local_slot();
+        // Every port read, before it is answered: the first of a pass waits for the frame's agreed inputs.
+        void on_port_read(int port);
+        // True if the session answers this port; false means ask the real device.
+        bool input(int port, bool* plugged, uint16_t* buttons, float* x, float* y);
+        bool device_present(int controller, bool* present);
+        // CONKER_NET_INPUT: 1 = this machine's player uses only the keyboard (and mouse), 2 = only the gamepad,
+        // 0 = both (the default).
+        int input_filter();
+        // A line for the session's log (CONKER_NET_LOG), if there is one.
+        void log(const char* line);
+        // The game asked for a random number: where the call came from (for finding why two machines drift).
+        void note_rng_call(uint32_t caller, uint32_t state);
+        void watch_poll(const char* tag, uint32_t info);
+    }
+
+    // net_view.cpp: the full-screen view online.
+    namespace netview {
+        // Around the frame's drawing (the hooks in func_1501878C), and at every port read.
+        void frame_begin(uint8_t* rdram);
+        void frame_end(uint8_t* rdram, uint32_t list_end);
+        void port_read();
+        // After the renderer has read a task's display list (frontend.cpp's wrapper around send_dl): the words the
+        // view rewrote in it are put back, so the game's memory is the same on every machine.
+        void render_done(uint8_t* rdram, uint32_t data_ptr);
+        // True while a frame is being drawn with this machine's view: no snapshot is taken or loaded then.
+        bool busy();
+        // From the object-drawing hook (interpolation.cpp): object (a game object's index) is being drawn for that camera.
+    }
+
     // save_states.cpp: save states (issue #94), F5 to save, F7 to load, F6 for the next slot.
     namespace save_states {
         // At start (frontend.cpp): the keys, and the runtime's idle moment that states are taken at.
         void init();
+        // For the online session (net_session.cpp): a state of the game as bytes, or loading one, each done at
+        // the next safe point (on the game's idle thread, where done is called). Both fail after a few seconds.
+        // False (and done is never called) if another such job is waiting.
+        bool net_capture(std::function<void(bool ok, std::vector<uint8_t>&& state)> done);
+        bool net_restore(std::vector<uint8_t>&& state, std::function<void(bool ok)> done);
+        // The runtime has no graphics task in flight and no message waiting (ultramodern::save_states::is_quiet).
+        bool runtime_quiet();
     }
 
     // fps_counter.cpp: Show FPS, the frame rate counter.

@@ -1,0 +1,684 @@
+// Full-screen view for the online session (netplay milestone 3).
+//
+// The game's multiplayer is split screen: one camera per player (D_800BE628, 0x180 bytes each; for 2 or more
+// players the camera at index `players` is laid out full screen too). Online every machine runs the whole game
+// (lockstep): what the game's passes do while they run (what they cull, the random numbers they draw, ...) feeds
+// the game's logic, so they have to run exactly the same on every machine. So nothing of the game's memory is
+// touched while the game runs, and the passes draw as for split screen. Only the finished display list of the
+// frame is rewritten, at its end, before it is drawn:
+//  - this machine's own camera's passes get the full-screen camera's viewport (the viewport command points at the
+//    camera's record: it points at the full-screen camera's instead), the full-screen scissor, the background fill
+//    over the whole view, and their projection matrix (a copy of it, in memory past the game's) widened to the
+//    full-screen shape,
+//  - the other cameras' passes get a scissor with no area, so what they draw is not seen.
+// CONKER_NET_VIEW=split turns this off (the game's split screen is shown).
+
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <chrono>
+#include <cmath>
+#include <cstdlib>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <deque>
+#include <mutex>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include <SDL.h>
+
+#include "recomp.h"
+
+#include "conker.hpp"
+
+namespace {
+    constexpr gpr cameras_pointer = (gpr)(int32_t)0x800BE628;
+    constexpr gpr layout_variable = (gpr)(int32_t)0x80082FA0;   // D_80082FA0: players - 1
+    constexpr uint32_t camera_size = 0x180;
+    constexpr int max_cameras = 4;
+
+    // The camera record's fields (floats on the game's 292 x 216 frame).
+    constexpr uint32_t field_top = 0x24, field_bottom = 0x28, field_left = 0x2C, field_right = 0x30;
+    constexpr uint32_t field_viewports = 0x40;
+
+    // Matrices of ours, in RDRAM past the game's 8 MB (widescreen.cpp's and cutscene_aspect.cpp's lists are at
+    // 0x00F00000 and 0x00F10000): a ring, as RT64 has long finished with one when it comes round again.
+    constexpr uint32_t matrix_start = 0x00F30000;
+    constexpr uint32_t matrix_slot = 0x40;
+    constexpr uint32_t matrix_slots = 128;
+    constexpr uint32_t viewport_start = 0x00F40000;   // copies of viewports (16 bytes), the same way
+    constexpr uint32_t viewport_slots = 256;
+    constexpr uint32_t list_start = 0x00F50000;       // copies of the lists the HUD calls (a ring of 32 slots of 1024 commands)
+    constexpr uint32_t list_slot = 0x2000;
+    constexpr uint32_t list_slots = 32;
+    uint32_t list_next = 0;
+
+
+    bool view_is_full() {
+        static int mode = -1;
+        if (mode < 0) {
+            const char* value = SDL_getenv("CONKER_NET_VIEW");
+            mode = (value != nullptr && std::string(value) == "split") ? 0 : 1;
+        }
+        return mode == 1 && conker::netsession::active();
+    }
+
+    struct Pass {
+        uint32_t gfx;     // where the pass (or the camera's setup) starts writing its commands
+        int camera;
+        int kind;         // 1: 3D pass (func_15019464), 2: HUD pass (func_15019BB8), 0: just func_1501A490's setup
+    };
+    std::vector<Pass> passes;
+
+    // The display list words a frame's rewrite changed, to be put back once the renderer has read the list.
+    struct Journal {
+        uint32_t start;
+        std::vector<std::array<uint32_t, 3>> words;   // address, original, rewritten
+    };
+    std::mutex journal_mutex;
+    std::deque<Journal> journals;
+    uint32_t matrix_next = 0, viewport_next = 0;
+    int dumps_done = 0;
+    uint64_t frames_rewritten = 0;
+
+    int players_now(uint8_t* rdram) {
+        return (int32_t)MEM_W(0, layout_variable) + 1;
+    }
+
+    float get_float(uint8_t* rdram, uint32_t address, uint32_t offset) {
+        const uint32_t word = (uint32_t)MEM_W(offset, (gpr)(int32_t)address);
+        float value;
+        std::memcpy(&value, &word, sizeof(value));
+        return value;
+    }
+
+    uint32_t command_word(uint8_t* rdram, uint32_t gfx, int index, int word) {
+        return (uint32_t)MEM_W(index * 8 + word * 4, (gpr)(int32_t)gfx);
+    }
+
+    void set_command_word(uint8_t* rdram, uint32_t gfx, int index, int word, uint32_t value) {
+        MEM_W(index * 8 + word * 4, (gpr)(int32_t)gfx) = (int32_t)value;
+    }
+
+    void dump_cameras(uint8_t* rdram, uint32_t base, int players) {
+        char line[240];
+        for (int cam = 0; cam <= players; cam++) {
+            const uint32_t record = base + cam * camera_size;
+            std::snprintf(line, sizeof(line), "[net view] camera %d: top %g bottom %g left %g right %g, fov %g %g, vp %08X %08X %08X %08X", cam,
+                get_float(rdram, record, field_top), get_float(rdram, record, field_bottom), get_float(rdram, record, field_left),
+                get_float(rdram, record, field_right), get_float(rdram, record, 0x74), get_float(rdram, record, 0x78),
+                (uint32_t)MEM_W(0x40, (gpr)(int32_t)record), (uint32_t)MEM_W(0x44, (gpr)(int32_t)record),
+                (uint32_t)MEM_W(0x48, (gpr)(int32_t)record), (uint32_t)MEM_W(0x4C, (gpr)(int32_t)record));
+            conker::netsession::log(line);
+        }
+    }
+
+    uint32_t scissor_word0(float left, float top) {
+        return 0xED000000u | (((uint32_t)(int32_t)(left * 4.0f) & 0xFFFu) << 12) | ((uint32_t)(int32_t)(top * 4.0f) & 0xFFFu);
+    }
+
+    uint32_t scissor_word1(float right, float bottom) {
+        return (((uint32_t)(int32_t)(right * 4.0f) & 0xFFFu) << 12) | ((uint32_t)(int32_t)(bottom * 4.0f) & 0xFFFu);
+    }
+
+    // CONKER_NET_AIMFIT (0..1) overrides it for every machine. Unset: 1, the exact fit.
+    float aim_fit(int local) {
+        static float value = -2.0f;
+        if (value < -1.5f) {
+            value = -1.0f;
+            const char* text = SDL_getenv("CONKER_NET_AIMFIT");
+            if (text != nullptr && *text != 0) {
+                value = std::min(std::max((float)std::atof(text), 0.0f), 1.0f);
+            }
+        }
+        (void)local;
+        return value >= 0.0f ? value : 1.0f;
+    }
+
+    // A copy of the matrix at `address` (N64 fixed point: 16 integer halves, then 16 fractions) with its first
+    // column scaled, in our own memory; returns where the copy is.
+    uint32_t scaled_matrix_copy(uint8_t* rdram, uint32_t address, float scale_x, float scale_y) {
+        const uint32_t copy = 0x80000000u | (matrix_start + (matrix_next % matrix_slots) * matrix_slot);
+        matrix_next++;
+        for (int w = 0; w < 16; w++) {
+            MEM_W(w * 4, (gpr)(int32_t)copy) = MEM_W(w * 4, (gpr)(int32_t)address);
+        }
+        const auto scale_value = [](int32_t value, float scale) {
+            const double scaled = (double)value * (double)scale;
+            return scaled > 2147483647.0 ? 2147483647 : (scaled < -2147483648.0 ? (int32_t)0x80000000 : (int32_t)scaled);
+        };
+        for (int row = 0; row < 4; row++) {
+            uint32_t integer_word = (uint32_t)MEM_W(row * 8, (gpr)(int32_t)copy);
+            uint32_t fraction_word = (uint32_t)MEM_W(32 + row * 8, (gpr)(int32_t)copy);
+            // element [row][0] is the high half of both words, [row][1] the low half (16.16 together)
+            const int32_t x = scale_value((int32_t)((integer_word & 0xFFFF0000u) | (fraction_word >> 16)), scale_x);
+            const int32_t y = scale_value((int32_t)((integer_word << 16) | (fraction_word & 0xFFFFu)), scale_y);
+            integer_word = ((uint32_t)x & 0xFFFF0000u) | ((uint32_t)y >> 16);
+            fraction_word = (((uint32_t)x & 0xFFFFu) << 16) | ((uint32_t)y & 0xFFFFu);
+            MEM_W(row * 8, (gpr)(int32_t)copy) = (int32_t)integer_word;
+            MEM_W(32 + row * 8, (gpr)(int32_t)copy) = (int32_t)fraction_word;
+        }
+        return copy;
+    }
+
+    // A copy of the viewport at `address` with its x and y scale zero, so that everything drawn through it collapses
+    // to a point: for the other players' cameras, whose passes stay in the frame's list but must not draw.
+    uint32_t collapsed_viewport_copy(uint8_t* rdram, uint32_t address) {
+        const uint32_t copy = 0x80000000u | (viewport_start + (viewport_next % viewport_slots) * 16u);
+        viewport_next++;
+        for (int w = 0; w < 4; w++) {
+            MEM_W(w * 4, (gpr)(int32_t)copy) = MEM_W(w * 4, (gpr)(int32_t)address);
+        }
+        MEM_W(0, (gpr)(int32_t)copy) = 0;
+        return copy;
+    }
+
+    // A copy of the viewport at `address` with its centre moved down by `shift` (in the viewport's own units, 4 to a
+    // pixel), in our own memory; returns where the copy is.
+    uint32_t shifted_viewport_copy(uint8_t* rdram, uint32_t address, int32_t shift) {
+        const uint32_t copy = 0x80000000u | (viewport_start + (viewport_next % viewport_slots) * 16u);
+        viewport_next++;
+        for (int w = 0; w < 4; w++) {
+            MEM_W(w * 4, (gpr)(int32_t)copy) = MEM_W(w * 4, (gpr)(int32_t)address);
+        }
+        const uint32_t translation = (uint32_t)MEM_W(8, (gpr)(int32_t)copy);   // x (high half) and y (low half)
+        const int32_t y = (int16_t)(translation & 0xFFFFu) + shift;
+        MEM_W(8, (gpr)(int32_t)copy) = (int32_t)((translation & 0xFFFF0000u) | ((uint32_t)y & 0xFFFFu));
+        return copy;
+    }
+
+    // The whole frame's display list, from the first pass to its end (`end`), rewritten for this machine's view.
+    void rewrite_frame(uint8_t* rdram, const std::vector<Pass>& frame, uint32_t end, uint32_t base, int players, int local, bool log_it) {
+        uint32_t start = 0xFFFFFFFFu;
+        for (const Pass& pass : frame) {
+            if (pass.gfx < start) {
+                start = pass.gfx;
+            }
+        }
+        if ((start >> 24) != 0x80 || (end >> 24) != 0x80 || end <= start || end - start > 0x100000u || (end & 0x7FFFFFu) > 0x800000u) {
+            return;
+        }
+        const uint32_t full = base + players * camera_size;
+        const float left = get_float(rdram, full, field_left), right = get_float(rdram, full, field_right);
+        const float top = get_float(rdram, full, field_top), bottom = get_float(rdram, full, field_bottom);
+        // each camera's scissor as the game writes it, and this machine's camera's viewport words
+        uint32_t scissor0[max_cameras], scissor1[max_cameras];
+        for (int k = 0; k < players; k++) {
+            const uint32_t record = base + k * camera_size;
+            scissor0[k] = scissor_word0(get_float(rdram, record, field_left), get_float(rdram, record, field_top));
+            scissor1[k] = scissor_word1(get_float(rdram, record, field_right), get_float(rdram, record, field_bottom));
+        }
+        const uint32_t own = base + local * camera_size;
+        // how much wider the camera's view is than the full-screen one, as the viewports show it
+        // The game puts its aim (the reticle, the turret's offsets) in pixels of the camera's own rectangle, which is
+        // small. For a shot to go where the reticle is on the full screen, the world has to be drawn at the same
+        // pixels per angle as that rectangle: both axes of the projection are scaled to the rectangle's.
+        // CONKER_NET_AIMFIT (default 1) blends from 0, the old look (the right height, widened to the screen's shape),
+        // to 1, the exact match (a wider view).
+        float shape = 1.0f, scale_x = 1.0f, scale_y = 1.0f;
+        {
+            const float own_x = (float)(int16_t)((uint32_t)MEM_W(field_viewports, (gpr)(int32_t)own) >> 16);
+            const float own_y = (float)(int16_t)((uint32_t)MEM_W(field_viewports, (gpr)(int32_t)own) & 0xFFFF);
+            const float full_x = (float)(int16_t)((uint32_t)MEM_W(field_viewports, (gpr)(int32_t)full) >> 16);
+            const float full_y = (float)(int16_t)((uint32_t)MEM_W(field_viewports, (gpr)(int32_t)full) & 0xFFFF);
+            if (own_x > 0.0f && own_y > 0.0f && full_x > 0.0f && full_y > 0.0f) {
+                shape = (full_y / full_x) / (own_y / own_x);
+                const float fit = aim_fit(local);
+                scale_x = std::pow(shape, 1.0f - fit) * std::pow(own_x / full_x, fit);
+                scale_y = std::pow(own_y / full_y, fit);
+            }
+        }
+        // CONKER_NET_VIEWMASK (a number, default 31) picks which rewrites are made, to find which one the game's logic
+        // is sensitive to: 1 viewports, 2 scissors, 4 fills of the camera's rectangle, 8 projection matrices, 16 the HUD.
+        static const unsigned mask = []() { const char* text = SDL_getenv("CONKER_NET_VIEWMASK"); return text != nullptr ? (unsigned)std::strtoul(text, nullptr, 0) : 31u; }();
+        static const bool hud_layout = [&]() { const char* text = SDL_getenv("CONKER_NET_HUD"); return (text == nullptr || std::string(text) != "old") && (mask & 16u) != 0; }();
+        int redirected = 0, shown = 0, hidden = 0, matrices = 0, fills = 0, logged = 0, rects_logged = 0, rects_moved = 0, rects_hidden = 0;
+        // where this machine's camera's 3D passes and its HUD passes are (each ends where the next pass starts)
+        std::vector<std::pair<uint32_t, uint32_t>> segments, hud_segments;
+        std::vector<std::pair<uint32_t, uint32_t>> any_hud_segments;   // every camera's HUD passes
+        // what the game draws after the cameras' 3D passes, for no camera (camera 255): among it each team's health bar, a
+        // rectangle for each row of its bricks, at its camera's corner
+        std::vector<std::pair<uint32_t, uint32_t>> bar_segments;
+        for (size_t i = 0; i < frame.size(); i++) {
+            if (frame[i].kind == 0) {
+                if (frame[i].camera == 255) {
+                    bar_segments.push_back({ frame[i].gfx, i + 1 < frame.size() ? frame[i + 1].gfx : end });
+                }
+                continue;
+            }
+            size_t next = i + 1;
+            while (next < frame.size() && frame[next].kind == 0) {
+                next++;
+            }
+            const uint32_t stop = next < frame.size() ? frame[next].gfx : end;
+            if (frame[i].kind == 2) {
+                any_hud_segments.push_back({ frame[i].gfx, stop });
+            }
+            if (frame[i].camera != local) {
+                continue;
+            }
+            (frame[i].kind == 1 ? segments : hud_segments).push_back({ frame[i].gfx, stop });
+        }
+        const auto inside = [](const std::vector<std::pair<uint32_t, uint32_t>>& list, uint32_t address) {
+            for (const auto& item : list) {
+                if (address >= item.first && address < item.second) {
+                    return true;
+                }
+            }
+            return false;
+        };
+        // the HUD is laid out for the camera's own rectangle (its middle is where the game aims): moved so that
+        // the middle is the full-screen view's
+        const int32_t hud_shift = (int32_t)(int16_t)((uint32_t)MEM_W(field_viewports + 8, (gpr)(int32_t)full) & 0xFFFFu) -
+            (int32_t)(int16_t)((uint32_t)MEM_W(field_viewports + 8, (gpr)(int32_t)own) & 0xFFFFu);
+        // a one-time dump (the fourth logged frame, in play) of every command in the HUD passes, to see how the icons and
+        // the health bars are drawn
+        static int logged_frames = 0;
+        const bool dump_hud = log_it && ++logged_frames == 4;
+        if (dump_hud) {
+            for (const auto& segment : any_hud_segments) {
+                char line[120];
+                std::snprintf(line, sizeof(line), "[net view] HUD pass %08X..%08X (camera %d is %d)", segment.first, segment.second, 0, local);
+                conker::netsession::log(line);
+            }
+        }
+        int dumped = 0;
+        if (dump_hud) {
+            for (const Pass& pass : frame) {
+                char line[120];
+                std::snprintf(line, sizeof(line), "[net view] pass at %08X: camera %d kind %d", pass.gfx, pass.camera, pass.kind);
+                conker::netsession::log(line);
+            }
+            // every rectangle of the frame's own list, to find where the health bars are drawn
+            int listed = 0;
+            for (uint32_t address = start; address < end && listed < 400; address += 8) {
+                const uint32_t r0 = (uint32_t)MEM_W(0, (gpr)(int32_t)address), r1 = (uint32_t)MEM_W(4, (gpr)(int32_t)address);
+                const uint32_t rop = r0 >> 24;
+                if (rop == 0xE4 || rop == 0xE5 || rop == 0xF6 || rop == 0xDE || rop == 0xBF || rop == 0x05 || rop == 0x06 || rop == 0x07) {
+                    char line[120];
+                    std::snprintf(line, sizeof(line), "[net view] any %08X: %08X %08X%s", address, r0, r1, inside(any_hud_segments, address) ? " hud" : "");
+                    conker::netsession::log(line);
+                    listed++;
+                }
+            }
+        }
+        // The lists the HUD's passes call (G_DL): the icons, the health bars and the scores are drawn by them. They are
+        // the game's own static lists, so they are not changed: a copy of each is rewritten (in our own memory) and the
+        // call is pointed at it.
+        struct Range { uint32_t from, to; bool nested; };
+        std::vector<Range> ranges;
+        ranges.push_back({ start, end, false });
+        {
+            std::vector<std::pair<uint32_t, uint32_t>> copies;   // original, copy
+            const auto copy_list = [&](uint32_t source, auto&& self, int depth) -> uint32_t {
+                for (const auto& item : copies) {
+                    if (item.first == source) {
+                        return item.second;
+                    }
+                }
+                uint32_t last = source;
+                while (last - source < list_slot - 8u && (last & 0x7FFFFFu) < 0x7FFFF8u && ((uint32_t)MEM_W(0, (gpr)(int32_t)last) >> 24) != 0xDF) {
+                    last += 8;
+                }
+                if (((uint32_t)MEM_W(0, (gpr)(int32_t)last) >> 24) != 0xDF || copies.size() >= 24) {
+                    return 0;   // not a list that ends: left as it is
+                }
+                const uint32_t copy = 0x80000000u | (list_start + (list_next % list_slots) * list_slot);
+                list_next++;
+                copies.push_back({ source, copy });
+                for (uint32_t off = 0; off <= last - source; off += 4) {
+                    MEM_W(off, (gpr)(int32_t)copy) = MEM_W(off, (gpr)(int32_t)(source));
+                }
+                const uint32_t to = copy + (last - source) + 8;
+                ranges.push_back({ copy, to, true });
+                if (depth < 2) {
+                    for (uint32_t a = copy; a < to; a += 8) {
+                        const uint32_t c0 = (uint32_t)MEM_W(0, (gpr)(int32_t)a), c1 = (uint32_t)MEM_W(4, (gpr)(int32_t)a);
+                        if ((c0 >> 24) == 0xDE && ((c0 >> 16) & 0xFFu) == 0 && (c1 >> 24) == 0x80 && (c1 & 7u) == 0 && (c1 & 0x7FFFFFu) < 0x7FF000u) {
+                            const uint32_t inner = self(c1, self, depth + 1);
+                            if (inner != 0) {
+                                MEM_W(4, (gpr)(int32_t)a) = (int32_t)inner;
+                            }
+                        }
+                    }
+                }
+                return copy;
+            };
+            for (const auto& segment : any_hud_segments) {
+                for (uint32_t a = segment.first; a < segment.second; a += 8) {
+                    const uint32_t c0 = (uint32_t)MEM_W(0, (gpr)(int32_t)a), c1 = (uint32_t)MEM_W(4, (gpr)(int32_t)a);
+                    if ((c0 >> 24) == 0xDE && ((c0 >> 16) & 0xFFu) == 0 && (c1 >> 24) == 0x80 && (c1 & 7u) == 0 && (c1 & 0x7FFFFFu) < 0x7FF000u) {
+                        const uint32_t copy = copy_list(c1, copy_list, 0);
+                        if (copy != 0) {
+                            MEM_W(4, (gpr)(int32_t)a) = (int32_t)copy;
+                        }
+                    }
+                }
+            }
+        }
+        static const bool score_swap = []() { const char* text = SDL_getenv("CONKER_NET_SCORESWAP"); return text == nullptr || std::atoi(text) != 0; }();
+        static const bool keep_old_hidden = SDL_getenv("CONKER_NET_HIDEOLD") != nullptr;
+        const auto other_viewport = [&](uint32_t pointer) {
+            for (int k = 0; k < players; k++) {
+                const uint32_t record = base + k * camera_size;
+                if (k != local && pointer >= record + field_viewports && pointer < record + field_viewports + 0x40) {
+                    return true;
+                }
+            }
+            return false;
+        };
+        for (const Range& range : ranges)
+        for (uint32_t address = range.from; address < range.to; address += 8) {
+            const bool nested = range.nested;
+            const uint32_t w0 = (uint32_t)MEM_W(0, (gpr)(int32_t)address);
+            const uint32_t w1 = (uint32_t)MEM_W(4, (gpr)(int32_t)address);
+            const uint32_t op = w0 >> 24;
+            const uint32_t chain_op = nested ? 0u : op;
+            if (dump_hud && dumped < 2500 && (nested || inside(any_hud_segments, address))) {
+                char line[80];
+                std::snprintf(line, sizeof(line), "[net view] cmd %08X: %08X %08X", address, w0, w1);
+                conker::netsession::log(line);
+                dumped++;
+            }
+            if ((mask & 1u) != 0 && chain_op == 0xDC && (w0 & 0x00FFFFFFu) == 0x080008u && ((w1 >= own + field_viewports && w1 < own + field_viewports + 0x40) ||
+                    (w1 >= full + field_viewports && w1 < full + field_viewports + 0x40))) {
+                const bool own_viewport = w1 < own + field_viewports + 0x40 && w1 >= own + field_viewports;
+                const uint32_t target = own_viewport ? w1 - own + full : w1;
+                if (inside(hud_segments, address) && hud_shift != 0) {
+                    MEM_W(4, (gpr)(int32_t)address) = (int32_t)shifted_viewport_copy(rdram, target, hud_shift);
+                } else if (own_viewport) {
+                    MEM_W(4, (gpr)(int32_t)address) = (int32_t)target;
+                }
+                redirected++;
+            } else if ((mask & 1u) != 0 && !keep_old_hidden && chain_op == 0xDC && (w0 & 0x00FFFFFFu) == 0x080008u && other_viewport(w1)) {
+                // another player's camera pass (its scissor is emptied below): its viewport collapsed too, so that it can't
+                // draw over this machine's view whatever the renderer makes of an empty scissor
+                MEM_W(4, (gpr)(int32_t)address) = (int32_t)collapsed_viewport_copy(rdram, w1);
+                redirected++;
+            } else if ((mask & 2u) != 0 && chain_op == 0xED) {
+                for (int k = 0; k < players; k++) {
+                    if (w0 == scissor0[k] && w1 == scissor1[k]) {
+                        if (k == local) {
+                            MEM_W(0, (gpr)(int32_t)address) = (int32_t)scissor_word0(left, top);
+                            MEM_W(4, (gpr)(int32_t)address) = (int32_t)scissor_word1(right, bottom);
+                            shown++;
+                        } else {
+                            MEM_W(0, (gpr)(int32_t)address) = (int32_t)0xED000000u;
+                            MEM_W(4, (gpr)(int32_t)address) = 0;
+                            hidden++;
+                        }
+                        break;
+                    }
+                }
+            } else if ((mask & 4u) != 0 && chain_op == 0xF6) {
+                // a fill of a camera's own rectangle (a tint over its view): this machine's camera's, over the full view
+                if (w0 == (0xF6000000u | (scissor1[local] & 0xFFFFFFu)) && w1 == (scissor0[local] & 0xFFFFFFu)) {
+                    MEM_W(0, (gpr)(int32_t)address) = (int32_t)(0xF6000000u | (scissor_word1(right, bottom) & 0xFFFFFFu));
+                    MEM_W(4, (gpr)(int32_t)address) = (int32_t)(scissor_word0(left, top) & 0xFFFFFFu);
+                    fills++;
+                }
+            } else if ((mask & 8u) != 0 && chain_op == 0xDA && (w0 & 0x04u) != 0 && (scale_x != 1.0f || scale_y != 1.0f) && w1 >= own && w1 < own + camera_size) {
+                // Every load of this machine's camera's projection, in whatever pass: the game draws its characters in passes of
+                // their own after the cameras' (marked for no camera), with the same projection and the same viewport, and a
+                // viewport made full-screen needs the projection widened with it or what is drawn there doesn't fit the rest.
+                // the projection matrix in this machine's camera's record, loaded by its 3D pass: a copy, widened
+                MEM_W(4, (gpr)(int32_t)address) = (int32_t)scaled_matrix_copy(rdram, w1, scale_x, scale_y);
+                matrices++;
+            }
+            // The HUD's rectangles (icons, digits, bars, the aiming reticle's brackets) are placed in the game's 292 x 216
+            // screen, for the split-screen halves. Moved here, by where each one is:
+            //  - around the middle of this machine's camera's own rectangle: the reticle, which the game aims through,
+            //    moved to the middle of the full view with the 3D view;
+            //  - in the band at the screen's middle row (the timer and the scores, which sit between the halves): up
+            //    to the top corner on the right;
+            //  - inside this machine's camera's rectangle: at its corners, the corners of the full view;
+            //  - inside another camera's rectangle: gone (another player's HUD).
+            if (hud_layout && (op == 0xE4 || op == 0xE5 || op == 0xF6) && (nested || inside(any_hud_segments, address) || inside(bar_segments, address)) &&
+                    !(op == 0xF6 && w0 == (0xF6000000u | (scissor1[local] & 0xFFFFFFu)) && w1 == (scissor0[local] & 0xFFFFFFu))) {
+                const int32_t yl = (int32_t)(w0 & 0xFFFu), yh = (int32_t)(w1 & 0xFFFu);
+                const int32_t xl = (int32_t)((w0 >> 12) & 0xFFFu), xh = (int32_t)((w1 >> 12) & 0xFFFu);
+                const float cx = (float)(xl + xh) * 0.125f, cy = (float)(yl + yh) * 0.125f;
+                int32_t dx = 0, dy = 0;
+                bool hide = false;
+                const char* kind_name = "left";
+                const float own_l = get_float(rdram, own, field_left), own_r = get_float(rdram, own, field_right);
+                const float own_t = get_float(rdram, own, field_top), own_b = get_float(rdram, own, field_bottom);
+                const auto in_rect = [&](float l, float t, float r, float b) { return cx >= l && cx <= r && cy >= t && cy <= b; };
+                // A health bar (what is drawn after the 3D passes, apart from the HUD's passes): a small rectangle near a
+                // camera's left edge; anything else there (the pause screen's pictures, in strips) is left alone.
+                const bool bar = !nested && !inside(any_hud_segments, address);
+                const float width = (float)std::abs(xl - xh) * 0.25f, height = (float)std::abs(yl - yh) * 0.25f;
+                bool near_left = false;
+                for (int k = 0; k < players; k++) {
+                    const float l = get_float(rdram, base + k * camera_size, field_left);
+                    near_left = near_left || (cx >= l && cx < l + 40.0f);
+                }
+                // The radar (a grey circle, 32 x 32 in the game's screen, and its dot) at each camera's top right: with two
+                // players only this machine's player's is shown, at the full view's top right.
+                int radar_camera = -1;
+                if (bar && players == 2 && width <= 34.5f && height <= 34.5f) {
+                    for (int k = 0; k < players; k++) {
+                        const uint32_t record = base + k * camera_size;
+                        const float r_right = get_float(rdram, record, field_right), r_top = get_float(rdram, record, field_top);
+                        if (cx >= r_right - 72.0f && cx <= r_right && (cy >= r_top && cy <= r_top + 62.0f)) {
+                            radar_camera = k;
+                        }
+                    }
+                }
+                const bool leave = bar && radar_camera < 0 && (op == 0xF6 || !(width <= 16.5f && height <= 5.5f && near_left));
+                if (radar_camera >= 0) {
+                    if (radar_camera == local) {
+                        dy = (int32_t)((top - own_t) * 4.0f);
+                        kind_name = "radar or weapon";
+                    } else {
+                        hide = true;
+                        kind_name = "other radar or weapon";
+                    }
+                } else if (leave) {
+                    kind_name = "left alone";
+                } else if (!bar && std::fabs(cy - (own_t + own_b) * 0.5f) < 40.0f && std::fabs(cx - (own_l + own_r) * 0.5f) < 48.0f && in_rect(own_l, own_t, own_r, own_b)) {
+                    dy = hud_shift;
+                    kind_name = "aim";
+                } else if (!bar && cy >= 0.5f * (top + bottom) - 10.0f && cy <= 0.5f * (top + bottom) + 8.0f) {
+                    // the shared row (the timer, and with two players each one's score, an icon and its digits): the
+                    // game's own one-screen layout puts it along the bottom, the scores either side of the timer. The
+                    // left score is player 2's, the right one player 1's; the second machine's player gets theirs on
+                    // the right as well, so each sees its own team at the right (CONKER_NET_SCORESWAP=0 keeps them
+                    // where they are).
+                    dy = (int32_t)((top + 0.946f * (bottom - top) - 0.5f * (top + bottom)) * 4.0f);
+                    dx = 0;
+                    kind_name = "shared";
+                    const float middle = 0.5f * (left + right);
+                    if (players == 2 && local == 1 && score_swap && (cx < middle - 36.0f || cx > middle + 36.0f)) {
+                        dx = (int32_t)((cx < middle ? 120.0f : -120.0f) * 4.0f);
+                        kind_name = "score";
+                    }
+                } else if (in_rect(own_l, own_t, own_r, own_b)) {
+                    dx = (int32_t)(((cx < (own_l + own_r) * 0.5f) ? (left - own_l) : (right - own_r)) * 4.0f);
+                    dy = (int32_t)(((cy < (own_t + own_b) * 0.5f) ? (top - own_t) : (bottom - own_b)) * 4.0f);
+                    kind_name = "own";
+                } else {
+                    for (int k = 0; k < players && !hide; k++) {
+                        if (k == local) {
+                            continue;
+                        }
+                        const uint32_t record = base + k * camera_size;
+                        if (in_rect(get_float(rdram, record, field_left), get_float(rdram, record, field_top), get_float(rdram, record, field_right), get_float(rdram, record, field_bottom))) {
+                            hide = true;
+                            kind_name = "other";
+                        }
+                    }
+                }
+                if (log_it && rects_logged < 60) {
+                    char line[140];
+                    std::snprintf(line, sizeof(line), "[net view]   HUD rect %08X: %08X %08X (centre %g,%g) %s", address, w0, w1, cx, cy, kind_name);
+                    conker::netsession::log(line);
+                    rects_logged++;
+                }
+                if (hide) {
+                    // nothing left of it: as wide and as high as a point
+                    MEM_W(0, (gpr)(int32_t)address) = (int32_t)((w0 & ~0xFFFFFFu) | (uint32_t)(((uint32_t)xh & 0xFFFu) << 12) | ((uint32_t)yh & 0xFFFu));
+                    rects_hidden++;
+                } else if (dx != 0 || dy != 0) {
+                    const int32_t a0 = xl + dx, a1 = xh + dx, b0 = yl + dy, b1 = yh + dy;
+                    if (a1 >= 0 && b1 >= 0 && a0 <= 0xFFF && b0 <= 0xFFF) {
+                        MEM_W(0, (gpr)(int32_t)address) = (int32_t)((w0 & 0xFF000000u) | ((uint32_t)std::min(a0, 0xFFF) << 12) | (uint32_t)std::min(b0, 0xFFF));
+                        MEM_W(4, (gpr)(int32_t)address) = (int32_t)((w1 & 0xFF000000u) | ((uint32_t)std::max(a1, 0) << 12) | (uint32_t)std::max(b1, 0));
+                        rects_moved++;
+                    }
+                }
+            }
+            if (log_it && logged < 160 && (op == 0xDC || op == 0xED || op == 0xDA || op == 0xDE || op == 0xE0)) {
+                char line[120];
+                std::snprintf(line, sizeof(line), "[net view]   %08X: %08X %08X", address, w0, w1);
+                conker::netsession::log(line);
+                logged++;
+            }
+        }
+        if (log_it) {
+            char line[200];
+            std::snprintf(line, sizeof(line), "[net view] frame list %08X..%08X: %d viewports redirected, %d scissors shown, %d hidden, %d projection matrices (shape %g), %d fills, HUD shift %d, %d HUD rectangles moved, %d hidden, %zu passes",
+                start, end, redirected, shown, hidden, matrices, shape, fills, hud_shift, rects_moved, rects_hidden, frame.size());
+            conker::netsession::log(line);
+        }
+    }
+}
+
+// Nothing of the game's memory is changed for the view, so a snapshot can be taken or loaded at any time.
+bool conker::netview::busy() {
+    return false;
+}
+
+void conker::netview::port_read() {
+}
+
+void conker::netview::frame_begin(uint8_t* rdram) {
+    (void)rdram;
+    if (conker::netsession::active()) {
+        conker::netsession::watch_poll("dlb", 0);
+    }
+    passes.clear();
+}
+
+void conker::netview::frame_end(uint8_t* rdram, uint32_t list_end) {
+    if (conker::netsession::active()) {
+        conker::netsession::watch_poll("dle", 0);
+    }
+    std::vector<Pass> frame;
+    frame.swap(passes);
+    if (!view_is_full() || frame.empty()) {
+        return;
+    }
+    const int players = players_now(rdram);
+    // CONKER_NET_VIEWSLOT=n (a test): every machine shows player n's view, whoever it plays, so that the two machines
+    // rewrite their display lists the same way.
+    static const int forced_slot = []() { const char* text = SDL_getenv("CONKER_NET_VIEWSLOT"); return text != nullptr ? std::atoi(text) : -1; }();
+    const int local = forced_slot >= 0 ? forced_slot : conker::netsession::local_slot();
+    if (players <= 1 || players > max_cameras || local < 0 || local >= players) {
+        return;
+    }
+    const uint32_t base = (uint32_t)MEM_W(0, cameras_pointer);
+    if ((base >> 24) != 0x80 || (base & 0x7FFFFFu) + (players + 1) * camera_size > 0x800000u) {
+        return;
+    }
+    if (dumps_done == 0) {
+        dumps_done = 1;
+        dump_cameras(rdram, base, players);
+    }
+    // (frames' lists are logged a few times: the first three, and then one in 2000)
+    const bool log_it = frames_rewritten < 3 || frames_rewritten % 2000 == 1000;
+    uint32_t start = 0xFFFFFFFFu;
+    for (const Pass& pass : frame) {
+        start = std::min(start, pass.gfx);
+    }
+    static const bool keep_rewrite = SDL_getenv("CONKER_NET_KEEPREWRITE") != nullptr;
+    const bool can_journal = !keep_rewrite && (start >> 24) == 0x80 && (list_end >> 24) == 0x80 && list_end > start &&
+        list_end - start <= 0x100000u && (list_end & 0x7FFFFFu) <= 0x800000u;
+    std::vector<uint8_t> before;
+    if (can_journal) {
+        before.assign(rdram + (start & 0x7FFFFFu), rdram + (list_end & 0x7FFFFFu));
+    }
+    rewrite_frame(rdram, frame, list_end, base, players, local, log_it);
+    if (can_journal) {
+        Journal journal;
+        journal.start = start;
+        const uint8_t* now = rdram + (start & 0x7FFFFFu);
+        for (size_t off = 0; off + 4 <= before.size(); off += 4) {
+            uint32_t a, b;
+            std::memcpy(&a, &before[off], 4);
+            std::memcpy(&b, now + off, 4);
+            if (a != b) {
+                journal.words.push_back({ start + (uint32_t)off, a, b });
+            }
+        }
+        std::lock_guard<std::mutex> lock(journal_mutex);
+        journals.push_back(std::move(journal));
+        while (journals.size() > 4) {
+            journals.pop_front();
+        }
+    }
+    frames_rewritten++;
+}
+
+void conker::netview::render_done(uint8_t* rdram, uint32_t data_ptr) {
+    std::lock_guard<std::mutex> lock(journal_mutex);
+    if (journals.empty()) {
+        return;
+    }
+    const Journal& journal = journals.front();
+    if (journal.start < data_ptr || journal.start - data_ptr >= 0x100000u) {
+        return;
+    }
+    for (const auto& word : journal.words) {
+        uint32_t current;
+        std::memcpy(&current, rdram + (word[0] & 0x7FFFFFu), 4);
+        if (current == word[2]) {
+            std::memcpy(rdram + (word[0] & 0x7FFFFFu), &word[1], 4);
+        }
+    }
+    journals.pop_front();
+}
+
+// At the entry of func_15019464 (kind 1), func_15019BB8 (kind 2) and func_1501A490 (kind 0): where the frame's
+// display list has the setup of a camera's pass. Nothing of the game's is changed here.
+extern "C" void conker_net_view_pass(uint8_t* rdram, int gfx, int camera, int kind) {
+    (void)rdram;
+    if (!view_is_full()) {
+        return;
+    }
+    // (a pass calls func_1501A490 for its setup: the pass is already listed, and the setup comes just after its start)
+    if (kind == 0 && !passes.empty() && passes.back().gfx <= (uint32_t)gfx && (uint32_t)gfx < passes.back().gfx + 0x40) {
+        return;
+    }
+    passes.push_back({ (uint32_t)gfx, camera, kind });
+}
+
+
+// Online, the players are drawn for every camera (hooks in conker.toml, in func_1502C974, the game's drawing of one
+// object for one camera). The game hides an object from a camera in two ways, and hid the caveman from the raptor's
+// camera far away (while the raptor, a bigger model, was never hidden from the caveman's): a byte at +0x74 with a bit
+// for each camera it is hidden from, and a fade, func_1506196C: the object's byte for the camera (+0xB + camera, moved
+// 50 a frame towards 255 or 0 by the game's own visibility test) times the object's opacity (+7), over 256, and nothing
+// is drawn at 0. Both are overridden here for the players, in registers only: nothing in the game's memory changes, so
+// every machine plays on the same. A player's own camera is left to the game, which hides the body in the first person
+// (crossbow, knife). CONKER_NET_KEEPCULL puts the game's own choice back.
+//   which 0: after the +0x74 byte is loaded ($t7); 1 and 3: after func_1506196C's answer ($v0), the first check and
+//   the one for the opacity.
+extern "C" void conker_player_visibility(uint8_t* rdram, recomp_context* ctx, int which) {
+    const uint32_t object = (uint32_t)MEM_W(0x5C, ctx->r29);
+    const uint32_t camera = (uint32_t)MEM_W(0x60, ctx->r29);
+    static const bool keep_cull = std::getenv("CONKER_NET_KEEPCULL") != nullptr;
+    if (keep_cull || object >= 4 || camera >= 4 || object == camera || !conker::netsession::active()) {
+        return;
+    }
+    if (which == 0) {
+        ctx->r15 = ctx->r15 & ~((gpr)1 << camera);
+    } else {
+        const uint32_t obj = (uint32_t)MEM_W(0x2C, ctx->r29);
+        const uint32_t product = 0xFFu * (uint32_t)MEM_BU(7, (gpr)(int32_t)obj);
+        ctx->r2 = (gpr)(int64_t)(int32_t)(product != 0xFE01u ? (product >> 8) : 0xFFu);
+    }
+}

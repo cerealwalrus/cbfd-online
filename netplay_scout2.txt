@@ -1,0 +1,507 @@
+
+===== Functions calling osGetCount* (enclosing function : times) =====
+12 func_1500DE88 -> osGetCount_recomp(rdram, ctx);
+12 func_1500C2F0 -> osGetCount_recomp(rdram, ctx);
+11 func_1500D8C8 -> osGetCount_recomp(rdram, ctx);
+11 func_1500CE4C -> osGetCount_recomp(rdram, ctx);
+10 func_1500D3AC -> osGetCount_recomp(rdram, ctx);
+10 func_1500C8D0 -> osGetCount_recomp(rdram, ctx);
+6 func_16001700 -> osGetCount_recomp(rdram, ctx);
+6 func_15010A60 -> osGetCount_recomp(rdram, ctx);
+6 func_15008340 -> osGetCount_recomp(rdram, ctx);
+3 func_1509F850 -> osGetCount_recomp(rdram, ctx);
+3 func_15014B60 -> osGetCount_recomp(rdram, ctx);
+3 func_1500A990 -> osGetCount_recomp(rdram, ctx);
+2 func_15193CA0 -> osGetCount_recomp(rdram, ctx);
+1 getTime2 -> osGetCount_recomp(rdram, ctx);
+
+===== Functions calling osGetTime* (enclosing function : times) =====
+5 func_100052A0 -> osGetTime_recomp(rdram, ctx);
+
+===== Functions calling osSetTimer* (enclosing function : times) =====
+1 func_151DCFD8 -> osSetTimer_recomp(rdram, ctx);
+1 func_151DCEF0 -> osSetTimer_recomp(rdram, ctx);
+1 func_1501BB20 -> osSetTimer_recomp(rdram, ctx);
+1 func_100049E0 -> osSetTimer_recomp(rdram, ctx);
+
+===== Functions calling osViSetEvent* (enclosing function : times) =====
+1 func_100050A0 -> osViSetEvent_recomp(rdram, ctx);
+
+===== Functions calling osContStartReadData* (enclosing function : times) =====
+1 func_100049E0 -> osContStartReadData_recomp(rdram, ctx);
+
+===== Functions calling osContGetReadData* (enclosing function : times) =====
+1 func_1501BBB8 -> osContGetReadData_recomp(rdram, ctx);
+
+===== Functions calling osContInit* (enclosing function : times) =====
+2 func_15006234 -> osContInit_recomp(rdram, ctx);
+
+===== Functions calling osViGetCurrentFramebuffer* (enclosing function : times) =====
+1 func_10004DB0 -> osViGetCurrentFramebuffer_recomp(rdram, 
+
+===== Raw sample lines: how a libultra call looks in the generated C =====
+    osGetTime_recomp(rdram, ctx);
+    osGetTime_recomp(rdram, ctx);
+    osGetTime_recomp(rdram, ctx);
+    osGetTime_recomp(rdram, ctx);
+    osGetTime_recomp(rdram, ctx);
+    osGetCount_recomp(rdram, ctx);
+    osGetCount_recomp(rdram, ctx);
+    osGetCount_recomp(rdram, ctx);
+
+===== random_u32 definition (recompiled body) =====
+file: RecompiledFuncs/funcs_52.c
+RECOMP_FUNC void random_u32(uint8_t* rdram, recomp_context* ctx) {
+    uint64_t hi = 0, lo = 0, result = 0;
+    int c1cs = 0;
+    // 0x150ADA20: lui         $a0, 0x8009
+    ctx->r4 = S32(0X8009 << 16);
+    // 0x150ADA24: ld          $a0, -0x7A50($a0)
+    ctx->r4 = LD(ctx->r4, -0X7A50);
+    // 0x150ADA28: dsll32      $a2, $a0, 31
+    ctx->r6 = ctx->r4 << (31 + 32);
+    // 0x150ADA2C: dsrl        $a2, $a2, 31
+    ctx->r6 = ctx->r6 >> 31;
+    // 0x150ADA30: dsll        $a1, $a0, 31
+    ctx->r5 = ctx->r4 << 31;
+    // 0x150ADA34: dsrl32      $a1, $a1, 0
+    ctx->r5 = ctx->r5 >> (0 + 32);
+    // 0x150ADA38: or          $a2, $a2, $a1
+    ctx->r6 = ctx->r6 | ctx->r5;
+    // 0x150ADA3C: dsll32      $a0, $a0, 12
+    ctx->r4 = ctx->r4 << (12 + 32);
+    // 0x150ADA40: dsrl32      $a0, $a0, 0
+    ctx->r4 = ctx->r4 >> (0 + 32);
+    // 0x150ADA44: xor         $a2, $a2, $a0
+    ctx->r6 = ctx->r6 ^ ctx->r4;
+    // 0x150ADA48: dsrl        $a0, $a2, 20
+    ctx->r4 = ctx->r6 >> 20;
+    // 0x150ADA4C: andi        $a0, $a0, 0xFFF
+    ctx->r4 = ctx->r4 & 0XFFF;
+    // 0x150ADA50: xor         $a0, $a0, $a2
+    ctx->r4 = ctx->r4 ^ ctx->r6;
+    // 0x150ADA54: lui         $at, 0x8009
+    ctx->r1 = S32(0X8009 << 16);
+    // 0x150ADA58: sd          $a0, -0x7A50($at)
+    SD(ctx->r4, -0X7A50, ctx->r1);
+    // 0x150ADA5C: dsll32      $v0, $a0, 0
+    ctx->r2 = ctx->r4 << (0 + 32);
+    // 0x150ADA60: jr          $ra
+    // 0x150ADA64: dsra32      $v0, $v0, 0
+    ctx->r2 = SIGNED(ctx->r2) >> (0 + 32);
+    return;
+    // 0x150ADA64: dsra32      $v0, $v0, 0
+    ctx->r2 = SIGNED(ctx->r2) >> (0 + 32);
+;}
+RECOMP_FUNC void func_150ADA20(uint8_t* rdram, recomp_context* ctx) {
+    uint64_t hi = 0, lo = 0, result = 0;
+    int c1cs = 0;
+    // 0x150ADA20: lui         $a0, 0x8009
+    ctx->r4 = S32(0X8009 << 16);
+    // 0x150ADA24: ld          $a0, -0x7A50($a0)
+    ctx->r4 = LD(ctx->r4, -0X7A50);
+    // 0x150ADA28: dsll32      $a2, $a0, 31
+    ctx->r6 = ctx->r4 << (31 + 32);
+    // 0x150ADA2C: dsrl        $a2, $a2, 31
+    ctx->r6 = ctx->r6 >> 31;
+    // 0x150ADA30: dsll        $a1, $a0, 31
+    ctx->r5 = ctx->r4 << 31;
+    // 0x150ADA34: dsrl32      $a1, $a1, 0
+    ctx->r5 = ctx->r5 >> (0 + 32);
+    // 0x150ADA38: or          $a2, $a2, $a1
+    ctx->r6 = ctx->r6 | ctx->r5;
+    // 0x150ADA3C: dsll32      $a0, $a0, 12
+    ctx->r4 = ctx->r4 << (12 + 32);
+    // 0x150ADA40: dsrl32      $a0, $a0, 0
+    ctx->r4 = ctx->r4 >> (0 + 32);
+    // 0x150ADA44: xor         $a2, $a2, $a0
+    ctx->r6 = ctx->r6 ^ ctx->r4;
+    // 0x150ADA48: dsrl        $a0, $a2, 20
+    ctx->r4 = ctx->r6 >> 20;
+    // 0x150ADA4C: andi        $a0, $a0, 0xFFF
+    ctx->r4 = ctx->r4 & 0XFFF;
+    // 0x150ADA50: xor         $a0, $a0, $a2
+    ctx->r4 = ctx->r4 ^ ctx->r6;
+    // 0x150ADA54: lui         $at, 0x8009
+    ctx->r1 = S32(0X8009 << 16);
+    // 0x150ADA58: sd          $a0, -0x7A50($at)
+    SD(ctx->r4, -0X7A50, ctx->r1);
+    // 0x150ADA5C: dsll32      $v0, $a0, 0
+    ctx->r2 = ctx->r4 << (0 + 32);
+    // 0x150ADA60: jr          $ra
+    // 0x150ADA64: dsra32      $v0, $v0, 0
+    ctx->r2 = SIGNED(ctx->r2) >> (0 + 32);
+    return;
+    // 0x150ADA64: dsra32      $v0, $v0, 0
+    ctx->r2 = SIGNED(ctx->r2) >> (0 + 32);
+;}
+RECOMP_FUNC void random_float(uint8_t* rdram, recomp_context* ctx) {
+    uint64_t hi = 0, lo = 0, result = 0;
+    int c1cs = 0;
+    // 0x150ADA68: lui         $a0, 0x8009
+    ctx->r4 = S32(0X8009 << 16);
+    // 0x150ADA6C: ld          $a0, -0x7A50($a0)
+    ctx->r4 = LD(ctx->r4, -0X7A50);
+    // 0x150ADA70: dsll32      $a2, $a0, 31
+    ctx->r6 = ctx->r4 << (31 + 32);
+    // 0x150ADA74: dsrl        $a2, $a2, 31
+    ctx->r6 = ctx->r6 >> 31;
+    // 0x150ADA78: dsll        $a1, $a0, 31
+    ctx->r5 = ctx->r4 << 31;
+    // 0x150ADA7C: dsrl32      $a1, $a1, 0
+    ctx->r5 = ctx->r5 >> (0 + 32);
+    // 0x150ADA80: or          $a2, $a2, $a1
+    ctx->r6 = ctx->r6 | ctx->r5;
+    // 0x150ADA84: dsll32      $a0, $a0, 12
+    ctx->r4 = ctx->r4 << (12 + 32);
+    // 0x150ADA88: dsrl32      $a0, $a0, 0
+    ctx->r4 = ctx->r4 >> (0 + 32);
+    // 0x150ADA8C: xor         $a2, $a2, $a0
+    ctx->r6 = ctx->r6 ^ ctx->r4;
+    // 0x150ADA90: dsrl        $a0, $a2, 20
+    ctx->r4 = ctx->r6 >> 20;
+    // 0x150ADA94: andi        $a0, $a0, 0xFFF
+    ctx->r4 = ctx->r4 & 0XFFF;
+    // 0x150ADA98: xor         $a0, $a0, $a2
+    ctx->r4 = ctx->r4 ^ ctx->r6;
+    // 0x150ADA9C: lui         $at, 0x8009
+    ctx->r1 = S32(0X8009 << 16);
+    // 0x150ADAA0: sd          $a0, -0x7A50($at)
+    SD(ctx->r4, -0X7A50, ctx->r1);
+    // 0x150ADAA4: dsll32      $v0, $a0, 0
+    ctx->r2 = ctx->r4 << (0 + 32);
+    // 0x150ADAA8: dsra32      $v0, $v0, 0
+    ctx->r2 = SIGNED(ctx->r2) >> (0 + 32);
+    // 0x150ADAAC: andi        $v0, $v0, 0xFFFF
+    ctx->r2 = ctx->r2 & 0XFFFF;
+    // 0x150ADAB0: mtc1        $v0, $f2
+    ctx->f2.u32l = ctx->r2;
+    // 0x150ADAB4: lui         $at, 0x800A
+    ctx->r1 = S32(0X800A << 16);
+    // 0x150ADAB8: lwc1        $f4, -0x8C0($at)
+    ctx->f4.u32l = MEM_W(ctx->r1, -0X8C0);
+    // 0x150ADABC: cvt.s.w     $f0, $f2
+    CHECK_FR(ctx, 0);
+    CHECK_FR(ctx, 2);
+    ctx->f0.fl = CVT_S_W(ctx->f2.u32l);
+    // 0x150ADAC0: mul.s       $f0, $f0, $f4
+    CHECK_FR(ctx, 0);
+    CHECK_FR(ctx, 0);
+    CHECK_FR(ctx, 4);
+    NAN_CHECK(ctx->f0.fl); NAN_CHECK(ctx->f4.fl); 
+    ctx->f0.fl = MUL_S(ctx->f0.fl, ctx->f4.fl);
+    // 0x150ADAC4: jr          $ra
+    // 0x150ADAC8: nop
+
+    return;
+    // 0x150ADAC8: nop
+
+;}
+RECOMP_FUNC void func_150ADA68(uint8_t* rdram, recomp_context* ctx) {
+    uint64_t hi = 0, lo = 0, result = 0;
+    int c1cs = 0;
+    // 0x150ADA68: lui         $a0, 0x8009
+    ctx->r4 = S32(0X8009 << 16);
+
+===== random_float definition (recompiled body) =====
+file: RecompiledFuncs/funcs_52.c
+RECOMP_FUNC void random_float(uint8_t* rdram, recomp_context* ctx) {
+    uint64_t hi = 0, lo = 0, result = 0;
+    int c1cs = 0;
+    // 0x150ADA68: lui         $a0, 0x8009
+    ctx->r4 = S32(0X8009 << 16);
+    // 0x150ADA6C: ld          $a0, -0x7A50($a0)
+    ctx->r4 = LD(ctx->r4, -0X7A50);
+    // 0x150ADA70: dsll32      $a2, $a0, 31
+    ctx->r6 = ctx->r4 << (31 + 32);
+    // 0x150ADA74: dsrl        $a2, $a2, 31
+    ctx->r6 = ctx->r6 >> 31;
+    // 0x150ADA78: dsll        $a1, $a0, 31
+    ctx->r5 = ctx->r4 << 31;
+    // 0x150ADA7C: dsrl32      $a1, $a1, 0
+    ctx->r5 = ctx->r5 >> (0 + 32);
+    // 0x150ADA80: or          $a2, $a2, $a1
+    ctx->r6 = ctx->r6 | ctx->r5;
+    // 0x150ADA84: dsll32      $a0, $a0, 12
+    ctx->r4 = ctx->r4 << (12 + 32);
+    // 0x150ADA88: dsrl32      $a0, $a0, 0
+    ctx->r4 = ctx->r4 >> (0 + 32);
+    // 0x150ADA8C: xor         $a2, $a2, $a0
+    ctx->r6 = ctx->r6 ^ ctx->r4;
+    // 0x150ADA90: dsrl        $a0, $a2, 20
+    ctx->r4 = ctx->r6 >> 20;
+    // 0x150ADA94: andi        $a0, $a0, 0xFFF
+    ctx->r4 = ctx->r4 & 0XFFF;
+    // 0x150ADA98: xor         $a0, $a0, $a2
+    ctx->r4 = ctx->r4 ^ ctx->r6;
+    // 0x150ADA9C: lui         $at, 0x8009
+    ctx->r1 = S32(0X8009 << 16);
+    // 0x150ADAA0: sd          $a0, -0x7A50($at)
+    SD(ctx->r4, -0X7A50, ctx->r1);
+    // 0x150ADAA4: dsll32      $v0, $a0, 0
+    ctx->r2 = ctx->r4 << (0 + 32);
+    // 0x150ADAA8: dsra32      $v0, $v0, 0
+    ctx->r2 = SIGNED(ctx->r2) >> (0 + 32);
+    // 0x150ADAAC: andi        $v0, $v0, 0xFFFF
+    ctx->r2 = ctx->r2 & 0XFFFF;
+    // 0x150ADAB0: mtc1        $v0, $f2
+    ctx->f2.u32l = ctx->r2;
+    // 0x150ADAB4: lui         $at, 0x800A
+    ctx->r1 = S32(0X800A << 16);
+    // 0x150ADAB8: lwc1        $f4, -0x8C0($at)
+    ctx->f4.u32l = MEM_W(ctx->r1, -0X8C0);
+    // 0x150ADABC: cvt.s.w     $f0, $f2
+    CHECK_FR(ctx, 0);
+    CHECK_FR(ctx, 2);
+    ctx->f0.fl = CVT_S_W(ctx->f2.u32l);
+    // 0x150ADAC0: mul.s       $f0, $f0, $f4
+    CHECK_FR(ctx, 0);
+    CHECK_FR(ctx, 0);
+    CHECK_FR(ctx, 4);
+    NAN_CHECK(ctx->f0.fl); NAN_CHECK(ctx->f4.fl); 
+    ctx->f0.fl = MUL_S(ctx->f0.fl, ctx->f4.fl);
+    // 0x150ADAC4: jr          $ra
+    // 0x150ADAC8: nop
+
+    return;
+    // 0x150ADAC8: nop
+
+;}
+RECOMP_FUNC void func_150ADA68(uint8_t* rdram, recomp_context* ctx) {
+    uint64_t hi = 0, lo = 0, result = 0;
+    int c1cs = 0;
+    // 0x150ADA68: lui         $a0, 0x8009
+    ctx->r4 = S32(0X8009 << 16);
+    // 0x150ADA6C: ld          $a0, -0x7A50($a0)
+    ctx->r4 = LD(ctx->r4, -0X7A50);
+    // 0x150ADA70: dsll32      $a2, $a0, 31
+    ctx->r6 = ctx->r4 << (31 + 32);
+    // 0x150ADA74: dsrl        $a2, $a2, 31
+    ctx->r6 = ctx->r6 >> 31;
+    // 0x150ADA78: dsll        $a1, $a0, 31
+    ctx->r5 = ctx->r4 << 31;
+    // 0x150ADA7C: dsrl32      $a1, $a1, 0
+    ctx->r5 = ctx->r5 >> (0 + 32);
+    // 0x150ADA80: or          $a2, $a2, $a1
+    ctx->r6 = ctx->r6 | ctx->r5;
+    // 0x150ADA84: dsll32      $a0, $a0, 12
+    ctx->r4 = ctx->r4 << (12 + 32);
+    // 0x150ADA88: dsrl32      $a0, $a0, 0
+    ctx->r4 = ctx->r4 >> (0 + 32);
+    // 0x150ADA8C: xor         $a2, $a2, $a0
+    ctx->r6 = ctx->r6 ^ ctx->r4;
+    // 0x150ADA90: dsrl        $a0, $a2, 20
+    ctx->r4 = ctx->r6 >> 20;
+    // 0x150ADA94: andi        $a0, $a0, 0xFFF
+    ctx->r4 = ctx->r4 & 0XFFF;
+    // 0x150ADA98: xor         $a0, $a0, $a2
+    ctx->r4 = ctx->r4 ^ ctx->r6;
+    // 0x150ADA9C: lui         $at, 0x8009
+    ctx->r1 = S32(0X8009 << 16);
+    // 0x150ADAA0: sd          $a0, -0x7A50($at)
+    SD(ctx->r4, -0X7A50, ctx->r1);
+    // 0x150ADAA4: dsll32      $v0, $a0, 0
+    ctx->r2 = ctx->r4 << (0 + 32);
+    // 0x150ADAA8: dsra32      $v0, $v0, 0
+    ctx->r2 = SIGNED(ctx->r2) >> (0 + 32);
+    // 0x150ADAAC: andi        $v0, $v0, 0xFFFF
+    ctx->r2 = ctx->r2 & 0XFFFF;
+    // 0x150ADAB0: mtc1        $v0, $f2
+    ctx->f2.u32l = ctx->r2;
+    // 0x150ADAB4: lui         $at, 0x800A
+    ctx->r1 = S32(0X800A << 16);
+    // 0x150ADAB8: lwc1        $f4, -0x8C0($at)
+    ctx->f4.u32l = MEM_W(ctx->r1, -0X8C0);
+    // 0x150ADABC: cvt.s.w     $f0, $f2
+    CHECK_FR(ctx, 0);
+    CHECK_FR(ctx, 2);
+    ctx->f0.fl = CVT_S_W(ctx->f2.u32l);
+    // 0x150ADAC0: mul.s       $f0, $f0, $f4
+    CHECK_FR(ctx, 0);
+    CHECK_FR(ctx, 0);
+    CHECK_FR(ctx, 4);
+    NAN_CHECK(ctx->f0.fl); NAN_CHECK(ctx->f4.fl); 
+    ctx->f0.fl = MUL_S(ctx->f0.fl, ctx->f4.fl);
+    // 0x150ADAC4: jr          $ra
+    // 0x150ADAC8: nop
+
+    return;
+    // 0x150ADAC8: nop
+
+;}
+RECOMP_FUNC void func_150ADACC(uint8_t* rdram, recomp_context* ctx) {
+    uint64_t hi = 0, lo = 0, result = 0;
+    int c1cs = 0;
+    // 0x150ADACC: daddiu      $a0, $a0, 0x1
+    ctx->r4 = ctx->r4 + 0X1;
+    // 0x150ADAD0: lui         $at, 0x8009
+    ctx->r1 = S32(0X8009 << 16);
+    // 0x150ADAD4: sd          $a0, -0x7A50($at)
+    SD(ctx->r4, -0X7A50, ctx->r1);
+    // 0x150ADAD8: addiu       $a0, $zero, 0x0
+    ctx->r4 = ADD32(0, 0X0);
+    // 0x150ADADC: jr          $ra
+    // 0x150ADAE0: nop
+
+    return;
+    // 0x150ADAE0: nop
+
+    // 0x150ADAE4: nop
+
+    // 0x150ADAE8: nop
+
+    // 0x150ADAEC: nop
+
+;}
+RECOMP_FUNC void func_150ADAF0(uint8_t* rdram, recomp_context* ctx) {
+    uint64_t hi = 0, lo = 0, result = 0;
+    int c1cs = 0;
+
+===== Functions that call random_u32 most (top 25) =====
+25 func_150F892C
+17 func_151C577C
+17 func_15065A5C
+14 func_1516DB90
+14 func_15152B38
+14 func_15136F50
+14 func_15135DD0
+14 func_150BC488
+14 func_150265CC
+14 func_1500DE88
+13 func_150DC558
+13 func_150BD070
+13 func_1500C8D0
+12 func_15171200
+12 func_150DFEFC
+12 func_1500C2F0
+11 func_15175390
+11 func_150BBB5C
+11 func_1500D8C8
+11 func_1500CE4C
+10 func_151E5FF4
+10 func_150E9890
+10 func_150DA67C
+10 func_1500D3AC
+9 func_151BA518
+
+===== Hook targets in conker.toml (full function + the hook it calls) =====
+63:func = "recomp_entrypoint"
+68:func = "func_10005AB0"
+73:func = "func_10005AB0"
+78:func = "func_10005AB0"
+83:func = "func_10005AB0"
+88:func = "func_10005AB0"
+93:func = "func_10005AB0"
+101:func = "func_10005B04"
+106:func = "func_10005B04"
+113:func = "func_10001050"
+118:func = "func_10001050"
+126:func = "func_100052A0"
+139:func = "func_100095A0"
+144:func = "func_100095A0"
+145:before_vram = 0x100095D0
+146:text = "{ extern void osAiGetLength_recomp(uint8_t*, recomp_context*); osAiGetLength_recomp(rdram, ctx); ctx->r3 = ctx->r2; }"
+153:func = "func_10008CE8"
+154:before_vram = 0x10008D44
+155:text = "{ extern void conker_spin_wait_pass(uint8_t*, recomp_context*); conker_spin_wait_pass(rdram, ctx); }"
+158:func = "func_10008CE8"
+159:before_vram = 0x10008D98
+160:text = "{ extern void conker_spin_wait_pass(uint8_t*, recomp_context*); conker_spin_wait_pass(rdram, ctx); }"
+167:func = "func_10008CE8"
+168:before_vram = 0x10008EC4
+169:text = "{ extern void conker_song_started(uint8_t*, recomp_context*); conker_song_started(rdram, ctx); }"
+172:func = "func_1000853C"
+173:before_vram = 0x10008560
+174:text = "{ extern void conker_song_state(uint8_t*, recomp_context*); conker_song_state(rdram, ctx); }"
+177:func = "func_10008F24"
+178:before_vram = 0x10008F24
+179:text = "{ extern void conker_song_stopped(uint8_t*, recomp_context*); conker_song_stopped(rdram, ctx); }"
+185:func = "func_1000480C"
+190:func = "func_1000480C"
+195:func = "func_1000480C"
+196:before_vram = 0x100048B4
+197:text = "{ extern int32_t conker_kseg1_read32(uint8_t*, uint32_t); ctx->r24 = conker_kseg1_read32(rdram, (uint32_t)ctx->r15); }"
+200:func = "func_1000480C"
+205:func = "func_1000480C"
+206:before_vram = 0x100048E4
+207:text = "{ extern int32_t conker_kseg1_read32(uint8_t*, uint32_t); ctx->r12 = conker_kseg1_read32(rdram, (uint32_t)ctx->r11); }"
+210:func = "func_1000480C"
+215:func = "func_1000480C"
+216:before_vram = 0x10004924
+217:text = "{ extern int32_t conker_kseg1_read32(uint8_t*, uint32_t); ctx->r13 = conker_kseg1_read32(rdram, (uint32_t)ctx->r12); }"
+220:func = "func_1000480C"
+225:func = "func_1000480C"
+226:before_vram = 0x10004958
+227:text = "{ extern int32_t conker_kseg1_read32(uint8_t*, uint32_t); ctx->r10 = conker_kseg1_read32(rdram, (uint32_t)ctx->r25); }"
+230:func = "func_1000480C"
+235:func = "func_1000480C"
+236:before_vram = 0x10004984
+237:text = "{ extern int32_t conker_kseg1_read32(uint8_t*, uint32_t); ctx->r15 = conker_kseg1_read32(rdram, (uint32_t)ctx->r13); }"
+242:func = "func_15001A08"
+247:func = "func_15001A08"
+252:func = "func_15001A08"
+253:before_vram = 0x15001A78
+254:text = "{ extern int32_t conker_kseg1_read32(uint8_t*, uint32_t); ctx->r11 = conker_kseg1_read32(rdram, (uint32_t)ctx->r10); }"
+260:func = "func_150A6860"
+265:func = "func_150A6A5C"
+282:func = "func_150ADAF0"
+283:before_vram = 0x150ADAFC
+284:text = "{ extern jmp_buf conker_interpreter_exit; if (setjmp(conker_interpreter_exit)) { func_150AE0AC(rdram, ctx); return; } }"
+287:func = "func_150AE280"
+288:before_vram = 0x150AE290
+289:text = "{ extern jmp_buf conker_interpreter_exit; ctx->r29 = ctx->r10; longjmp(conker_interpreter_exit, 1); }"
+300:func = "func_150AC1B4"
+301:before_vram = 0x150AC1C4
+302:text = "{ func_150AC1C4(rdram, ctx); func_150AB6F0(rdram, ctx); return; }"
+307:func = "func_150AC0F8"
+308:before_vram = 0x150AC1C4
+309:text = "{ func_150AC1C4(rdram, ctx); func_150AB6F0(rdram, ctx); return; }"
+322:func = "func_15006234"
+323:before_vram = 0x15006288
+324:text = "{ extern void conker_create_eeprom_timer_queue(uint8_t*); conker_create_eeprom_timer_queue(rdram); }"
+331:func = "func_150FB4C0"
+336:func = "func_150FB4C0"
+344:func = "func_15130A9C"
+345:before_vram = 0x15130CEC
+346:text = "{ extern void conker_widen_sprite_cull_left(uint8_t*, recomp_context*); conker_widen_sprite_cull_left(rdram, ctx); }"
+349:func = "func_15130A9C"
+350:before_vram = 0x15130D08
+351:text = "{ extern void conker_widen_sprite_cull_right(uint8_t*, recomp_context*); conker_widen_sprite_cull_right(rdram, ctx); }"
+357:func = "func_15168118"
+358:before_vram = 0x15168640
+359:text = "{ extern void conker_bee_begin(uint8_t*, recomp_context*); conker_bee_begin(rdram, ctx); }"
+362:func = "func_15168118"
+363:before_vram = 0x15168648
+364:text = "{ extern void conker_bee_end(uint8_t*, recomp_context*); conker_bee_end(rdram, ctx); }"
+367:func = "func_15095760"
+368:before_vram = 0x15095878
+369:text = "{ extern void conker_bee_depth(uint8_t*, recomp_context*); conker_bee_depth(rdram, ctx); }"
+375:func = "func_15095B08"
+376:before_vram = 0x15095C70
+377:text = "{ extern void conker_widen_piece_cull_left(uint8_t*, recomp_context*); conker_widen_piece_cull_left(rdram, ctx); }"
+380:func = "func_15095B08"
+381:before_vram = 0x15095C84
+382:text = "{ extern void conker_widen_piece_cull_right(uint8_t*, recomp_context*); conker_widen_piece_cull_right(rdram, ctx); }"
+385:func = "func_15130A9C"
+386:before_vram = 0x15131168
+387:text = "{ extern void conker_emit_sprite_texrect(uint8_t*, recomp_context*); conker_emit_sprite_texrect(rdram, ctx); goto L_15131360; }"
+390:func = "func_15130A9C"
+391:before_vram = 0x15130DA0
+392:text = "{ extern void conker_enable_extended_gbi(uint8_t*, recomp_context*); conker_enable_extended_gbi(rdram, ctx); }"
+398:func = "func_1501B22C"
+399:before_vram = 0x1501B308
+400:text = "{ extern void conker_widen_frustum(uint8_t*, recomp_context*); conker_widen_frustum(rdram, ctx); }"
+407:func = "func_151103C8"
+408:before_vram = 0x15110458
+409:text = "{ extern void conker_camera_background_fill(uint8_t*, recomp_context*); conker_camera_background_fill(rdram, ctx); }"
+415:func = "func_1510B128"
+416:before_vram = 0x1510B1A8
+417:text = "{ extern void conker_field_of_view(uint8_t*, recomp_context*); conker_field_of_view(rdram, ctx); }"
+422:func = "updateCullScales_1510B958"
+423:before_vram = 0x1510B9C8
+424:text = "{ extern void conker_widen_cull_scale(uint8_t*, recomp_context*); conker_widen_cull_scale(rdram, ctx); }"
+434:func = "func_15000AD0"
+435:before_vram = 0x15000B80
+436:text = "{ extern void conker_widen_backdrop_buffers(uint8_t*, recomp_context*); conker_widen_backdrop_buffers(rdram, ctx); }"
+442:func = "func_15111AF4"
+443:before_vram = 0x15111BC4

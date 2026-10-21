@@ -81,6 +81,15 @@ namespace {
         return std::max(1.0f, (float)width / (float)height / (4.0f / 3.0f));
     }
 
+    // What the game's culls (which decide what its logic sees: objects in view run their own code, and so on) widen
+    // by. In an online session every machine has to cull the same, so it is a fixed 16:9, not this window's shape.
+    float cull_ratio() {
+        if (conker::netsession::active()) {
+            return (16.0f / 9.0f) / (4.0f / 3.0f);
+        }
+        return widescreen_ratio();
+    }
+
     // TEMP-DEBUG: CONKER_CULL_EXTRA widens the frustum and cull scale this much more than
     // the window, to tell whether a missing piece is theirs.
     float cull_extra() {
@@ -102,7 +111,7 @@ namespace {
     // width more), and a little more. A fixed 160 fell short on 32:9 screens.
     float sprite_cull_margin(uint8_t* rdram) {
         const float half_frame = (float)MEM_W(0, (gpr)(int32_t)0x800BE620) * 0.5f;
-        return half_frame * (widescreen_ratio() - 1.0f) + 8.0f;
+        return half_frame * (cull_ratio() - 1.0f) + 8.0f;
     }
 
     void put_command(uint8_t* rdram, gpr& dl, uint32_t w0, uint32_t w1) {
@@ -219,6 +228,7 @@ namespace {
 
 // func_1501878C, as it starts the frame's display list.
 extern "C" void conker_frame_dl_begin(uint8_t* rdram, recomp_context* ctx) {
+    conker::netview::frame_begin(rdram);
     extended_enabled = false;
     conker::cutscene_aspect::update(rdram);
     conker::shadows::game_frame();
@@ -585,7 +595,7 @@ extern "C" void conker_iris_end(uint8_t* rdram, recomp_context* ctx) {
 // camera), rebuild the left and right planes from the horizontal field of view
 // as wide as the window shows it: tan(half angle) grows with the aspect ratio.
 extern "C" void conker_widen_frustum(uint8_t* rdram, recomp_context* ctx) {
-    const float ratio = widescreen_ratio();
+    const float ratio = cull_ratio();
     if (ratio <= 1.0f || no_cull_widen()) {
         return;
     }
@@ -631,7 +641,7 @@ extern "C" void conker_camera_background_fill(uint8_t* rdram, recomp_context* ct
 extern "C" void conker_widen_cull_scale(uint8_t* rdram, recomp_context* ctx) {
     // Camera: Field of View first ($v0 is the camera).
     conker::field_of_view::adjust_cull_scales(rdram, ctx->r2);
-    const float ratio = widescreen_ratio();
+    const float ratio = cull_ratio();
     if (ratio <= 1.0f || no_cull_widen()) {
         return;
     }

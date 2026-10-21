@@ -29,6 +29,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -185,6 +186,71 @@ namespace {
         return true;
     }
 
+    // --- The online session's states (net_session.cpp) ---
+    // A state taken for another machine, or one from another machine's game, loaded: one job at a time, done at
+    // the next safe point like a key's. The job's callback is called without the mutex held.
+
+    struct NetJob {
+        bool save = false;
+        std::vector<uint8_t> state;
+        std::function<void(bool, std::vector<uint8_t>&&)> save_done;
+        std::function<void(bool)> load_done;
+        clock::time_point at;
+        uint32_t attempts = 0;
+    };
+    std::mutex net_mutex;
+    std::unique_ptr<NetJob> net_job;
+    std::atomic<bool> net_pending = false;
+    constexpr auto net_gives_up_after = std::chrono::seconds(8);
+
+    void update_safe_points_wanted() {
+        ultramodern::save_states::set_safe_points_wanted(request.load() != Request::None || net_pending.load());
+    }
+
+    void run_net_job(uint8_t* rdram) {
+        std::unique_ptr<NetJob> job;
+        bool ok = false;
+        {
+            std::lock_guard lock{ net_mutex };
+            if (!net_job) {
+                net_pending = false;
+                return;
+            }
+            net_job->attempts++;
+            const bool timed_out = clock::now() - net_job->at > net_gives_up_after;
+            bool done = false;
+            if (ultramodern::save_states::is_quiet() && !conker::netview::busy()) {
+                std::string error;
+                if (net_job->save) {
+                    ok = recomp::save_states::capture(rdram, net_job->state, error);
+                    done = ok;
+                }
+                else {
+                    const auto result = recomp::save_states::restore(rdram, net_job->state, error);
+                    ok = result == recomp::save_states::LoadResult::Loaded;
+                    done = ok || result == recomp::save_states::LoadResult::Invalid;
+                }
+                if (!done) {
+                    log_line("[net state] try %u: %s", net_job->attempts, error.c_str());
+                }
+            }
+            if (!done && !timed_out) {
+                return;
+            }
+            log_line("[net state] %s %s after %u tries", net_job->save ? "save" : "load", ok ? "done" : "failed", net_job->attempts);
+            job = std::move(net_job);
+            net_pending = false;
+            update_safe_points_wanted();
+        }
+        // Called back without the mutex: the session takes its own, and asks for jobs holding it.
+        if (job->save) {
+            job->save_done(ok, ok ? std::move(job->state) : std::vector<uint8_t>());
+        }
+        else {
+            job->load_done(ok);
+        }
+    }
+
     // --- The safe points ---
 
     void finish() {
@@ -192,7 +258,7 @@ namespace {
         load_state.shrink_to_fit();
         load_progress.clear();
         request = Request::None;
-        ultramodern::save_states::set_safe_points_wanted(false);
+        update_safe_points_wanted();
     }
 
     // Whether the request has waited too long for a moment it can be done at.
@@ -205,6 +271,9 @@ namespace {
     }
 
     void on_safe_point(uint8_t* rdram) {
+        if (net_pending.load()) {
+            run_net_job(rdram);
+        }
         const Request pending = request.load();
         if (pending == Request::None) {
             return;
@@ -339,6 +408,45 @@ namespace {
         }
         return 0;
     }
+}
+
+bool conker::save_states::runtime_quiet() {
+    return ultramodern::save_states::is_quiet();
+}
+
+bool conker::save_states::net_capture(std::function<void(bool, std::vector<uint8_t>&&)> done) {
+    auto job = std::make_unique<NetJob>();
+    job->save = true;
+    job->save_done = std::move(done);
+    job->at = clock::now();
+    {
+        std::lock_guard lock{ net_mutex };
+        if (net_job) {
+            return false;
+        }
+        net_job = std::move(job);
+        net_pending = true;
+    }
+    ultramodern::save_states::set_safe_points_wanted(true);
+    return true;
+}
+
+bool conker::save_states::net_restore(std::vector<uint8_t>&& state, std::function<void(bool)> done) {
+    auto job = std::make_unique<NetJob>();
+    job->save = false;
+    job->state = std::move(state);
+    job->load_done = std::move(done);
+    job->at = clock::now();
+    {
+        std::lock_guard lock{ net_mutex };
+        if (net_job) {
+            return false;
+        }
+        net_job = std::move(job);
+        net_pending = true;
+    }
+    ultramodern::save_states::set_safe_points_wanted(true);
+    return true;
 }
 
 void conker::save_states::init() {

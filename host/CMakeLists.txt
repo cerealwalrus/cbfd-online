@@ -164,7 +164,7 @@ if (CONKER_RT64)
     add_custom_command(TARGET ConkerRecomp POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/assets" "$<TARGET_FILE_DIR:ConkerRecomp>/assets")
 
-    target_sources(ConkerRecomp PRIVATE src/frontend.cpp src/conker_config.cpp src/audio_output.cpp src/rumble.cpp src/fps_counter.cpp src/reticle.cpp src/pad_mappings.cpp src/texture_packs.cpp src/gliden64_packs.cpp src/notices.cpp src/local_achievements.cpp src/save_states.cpp)
+    target_sources(ConkerRecomp PRIVATE src/frontend.cpp src/conker_config.cpp src/audio_output.cpp src/rumble.cpp src/fps_counter.cpp src/reticle.cpp src/pad_mappings.cpp src/texture_packs.cpp src/gliden64_packs.cpp src/notices.cpp src/local_achievements.cpp src/save_states.cpp src/netplay.cpp src/net_session.cpp src/net_view.cpp)
 
     # CONKER_RT64 selects the window build; the rest are what rt64 compiles its own headers with.
     target_compile_definitions(ConkerRecomp PRIVATE CONKER_RT64 HLSL_CPU)
@@ -212,7 +212,7 @@ if (UNIX)
     target_link_options(ConkerRecomp PRIVATE -rdynamic)
 elseif (WIN32)
     # The crash handler symbolises the stack with DbgHelp.
-    target_link_libraries(ConkerRecomp PRIVATE DbgHelp)
+    target_link_libraries(ConkerRecomp PRIVATE DbgHelp ws2_32)
     # Mods replace recompiled functions by patching their machine code, so identical
     # functions must not be folded into one.
     target_link_options(ConkerRecomp PRIVATE /OPT:NOICF)

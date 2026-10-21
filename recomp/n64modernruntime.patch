@@ -996,7 +996,7 @@ index 0000000..0c9078a
 +
 +#endif
 diff --git a/ultramodern/include/ultramodern/ultramodern.hpp b/ultramodern/include/ultramodern/ultramodern.hpp
-index 46aea61..17be6dd 100644
+index 46aea61..8f19c0e 100644
 --- a/ultramodern/include/ultramodern/ultramodern.hpp
 +++ b/ultramodern/include/ultramodern/ultramodern.hpp
 @@ -25,6 +25,19 @@ struct UltraThreadContext {
@@ -1019,7 +1019,7 @@ index 46aea61..17be6dd 100644
  };
  
  namespace ultramodern {
-@@ -96,6 +109,9 @@ enum class ThreadPriority {
+@@ -96,12 +109,18 @@ enum class ThreadPriority {
  void set_native_thread_name(const std::string& name);
  void set_native_thread_priority(ThreadPriority pri);
  PTR(OSThread) this_thread();
@@ -1029,6 +1029,15 @@ index 46aea61..17be6dd 100644
  void set_entrypoint_thread();
  bool is_entrypoint_thread();
  bool is_game_thread();
+ void submit_rsp_task(RDRAM_ARG PTR(OSTask) task);
+ void send_si_message();
+ uint32_t get_speed_multiplier();
++// Netplay: when a source is set, osGetCount returns what it gives instead of the real clock, so the game
++// sees the same "time" on every machine. Pass nullptr to go back to the real clock.
++void set_count_source(uint32_t (*source)());
+ 
+ // Time
+ std::chrono::high_resolution_clock::time_point get_start();
 diff --git a/ultramodern/src/events.cpp b/ultramodern/src/events.cpp
 index 17d7a47..d4fb0de 100644
 --- a/ultramodern/src/events.cpp
@@ -1609,7 +1618,7 @@ index 6e3ed18..221ad3d 100644
  }
  
 diff --git a/ultramodern/src/timer.cpp b/ultramodern/src/timer.cpp
-index ee26c45..2cde81b 100644
+index ee26c45..7fb9ec2 100644
 --- a/ultramodern/src/timer.cpp
 +++ b/ultramodern/src/timer.cpp
 @@ -1,10 +1,15 @@
@@ -1772,7 +1781,24 @@ index ee26c45..2cde81b 100644
          }
      }
  }
-@@ -180,6 +153,7 @@ extern "C" void osSetTime(OSTime t) {
+@@ -157,7 +130,16 @@ std::chrono::high_resolution_clock::duration ultramodern::time_since_start() {
+     return std::chrono::high_resolution_clock::now() - start_time;
+ }
+ 
++static std::atomic<uint32_t (*)()> count_source{ nullptr };
++
++void ultramodern::set_count_source(uint32_t (*source)()) {
++    count_source.store(source);
++}
++
+ extern "C" u32 osGetCount() {
++    if (auto source = count_source.load()) {
++        return source();
++    }
+     uint64_t total_count = time_now();
+ 
+     // Allow for overflows, which is how osGetCount behaves
+@@ -180,6 +162,7 @@ extern "C" void osSetTime(OSTime t) {
  
  extern "C" int osSetTimer(RDRAM_ARG PTR(OSTimer) t_, OSTime countdown, OSTime interval, PTR(OSMesgQueue) mq, OSMesg msg) {
      OSTimer* t = TO_PTR(OSTimer, t_);
@@ -1780,7 +1806,7 @@ index ee26c45..2cde81b 100644
  
      // Determine the time when this timer will trigger off
      if (countdown == 0) {
-@@ -192,18 +166,53 @@ extern "C" int osSetTimer(RDRAM_ARG PTR(OSTimer) t_, OSTime countdown, OSTime in
+@@ -192,18 +175,53 @@ extern "C" int osSetTimer(RDRAM_ARG PTR(OSTimer) t_, OSTime countdown, OSTime in
      t->mq = mq;
      t->msg = msg;
  
@@ -1805,10 +1831,10 @@ index ee26c45..2cde81b 100644
 +    // TODO libultra returns -1 for a timer that isn't running; 0 as before, so games see no change.
 +    return 0;
 +}
++
++// --- Save states (save_states.hpp) ---
  
 -    // TODO don't blindly return 0 here; requires some response from the timer thread to know what the returned value was
-+// --- Save states (save_states.hpp) ---
-+
 +int32_t ultramodern::save_states::timer_actions_pending() {
 +    // osSetTimer and osStopTimer change the timers themselves (under the lock), so nothing waits.
      return 0;

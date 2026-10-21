@@ -19,6 +19,7 @@
 // widescreen.cpp.)
 
 #include "recomp.h"
+#include "conker.hpp"
 
 // func_151408A4 at 0x15140DB4, just after it compared the depths: $t3 is the light's depth
 // ($t8) less the sample's ($a2), $a0 the raw sample. Zero passes the test.
@@ -104,14 +105,15 @@ extern "C" void conker_frame_clear(uint8_t* rdram, recomp_context* ctx) {
 // func_1510B9D0 at 0x1510BE18: $t2 (camera +0x84 & 8) decides whether func_1512E5F0 samples.
 extern "C" void conker_depth_copy_camera(uint8_t* rdram, recomp_context* ctx) {
     static const bool skip = SDL_getenv("CONKER_SKIP_DEPTH_CAMERA") != nullptr;
-    if (skip) {
+    // Online the game must not read pixels RT64 drew: each machine draws its own view, so they would differ.
+    if (skip || conker::netsession::active()) {
         ctx->r10 = 0;
     }
 }
 // func_151742EC at 0x1517432C: $t6 (its camera argument) nonzero returns before any copy.
 extern "C" void conker_depth_copy_probes(uint8_t* rdram, recomp_context* ctx) {
     static const bool skip = SDL_getenv("CONKER_SKIP_DEPTH_PROBES") != nullptr;
-    if (skip) {
+    if (skip || conker::netsession::active()) {
         ctx->r14 = 1;
     }
 }

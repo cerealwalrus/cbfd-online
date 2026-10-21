@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <mutex>
 #include <string>
@@ -83,6 +84,20 @@ namespace {
     std::mutex open_controllers_mutex;
     std::vector<std::pair<SDL_JoystickID, SDL_GameController*>> open_controllers;
 
+    // Online (or with CONKER_IGNORE_DIRECTINPUT=1) only XInput controllers are used: a pad Windows lists a second time as a
+    // DirectInput device (or one that is only that) is left out, so it can't be a second controller or take the place of
+    // another. CONKER_ALLOW_DIRECTINPUT=1 keeps them.
+    bool ignore_directinput() {
+        static const bool value = []() {
+            if (SDL_getenv("CONKER_ALLOW_DIRECTINPUT") != nullptr) {
+                return false;
+            }
+            const char* ignore = SDL_getenv("CONKER_IGNORE_DIRECTINPUT");
+            return (ignore != nullptr && std::atoi(ignore) != 0) || SDL_getenv("CONKER_NET_HOST") != nullptr || SDL_getenv("CONKER_NET_JOIN") != nullptr;
+        }();
+        return value;
+    }
+
     // From the main thread: the controller at device index, if it's one SDL has a mapping for and
     // it isn't in the list yet.
     void open_controller(int index) {
@@ -101,6 +116,12 @@ namespace {
         SDL_GameController* controller = SDL_GameControllerOpen(index);
         if (controller == nullptr) {
             std::printf("[controller] couldn't open device %d: %s\n", index, SDL_GetError());
+            return;
+        }
+        if (ignore_directinput() && SDL_GameControllerGetPlayerIndex(controller) < 0) {
+            std::printf("[controller] ignoring %s (not an XInput controller)\n", SDL_GameControllerName(controller) != nullptr ? SDL_GameControllerName(controller) : "a controller");
+            std::fflush(stdout);
+            SDL_GameControllerClose(controller);
             return;
         }
         std::lock_guard lock{ open_controllers_mutex };
@@ -152,6 +173,9 @@ namespace {
         SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_PS5_RUMBLE, "1");
         SDL_SetHint(SDL_HINT_MOUSE_FOCUS_CLICKTHROUGH, "1");
         SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
+        if (ignore_directinput()) {
+            SDL_SetHint("SDL_JOYSTICK_DIRECTINPUT", "0");   // SDL's DirectInput driver off: XInput pads stay
+        }
 #if defined(__linux__)
         // Nintendo's online classic controllers (the N64 one, and pads like the 8BitDo 64 in its
         // Switch mode) through the kernel's driver, not SDL's HIDAPI one, so there's one layout for
@@ -346,12 +370,42 @@ namespace {
         }
     }
 
+    // Wraps the real renderer: once it has read a task's display list, the words the view rewrote in it are restored.
+    class RewriteRestoringRenderer : public ultramodern::renderer::RendererContext {
+    public:
+        RewriteRestoringRenderer(std::unique_ptr<ultramodern::renderer::RendererContext> real_renderer, uint8_t* ram)
+            : real(std::move(real_renderer)), rdram(ram) {
+            setup_result = real->get_setup_result();
+            chosen_api = real->get_chosen_api();
+        }
+        bool valid() override { return real->valid(); }
+        ultramodern::renderer::SetupResult get_setup_result() const override { return real->get_setup_result(); }
+        ultramodern::renderer::GraphicsApi get_chosen_api() const override { return real->get_chosen_api(); }
+        bool update_config(const ultramodern::renderer::GraphicsConfig& a, const ultramodern::renderer::GraphicsConfig& b) override {
+            return real->update_config(a, b);
+        }
+        void enable_instant_present() override { real->enable_instant_present(); }
+        void send_dl(const OSTask* task) override {
+            real->send_dl(task);
+            conker::netview::render_done(rdram, (uint32_t)task->t.data_ptr);
+        }
+        void send_dummy_workload(uint32_t fb_address) override { real->send_dummy_workload(fb_address); }
+        void update_screen() override { real->update_screen(); }
+        void shutdown() override { real->shutdown(); }
+        uint32_t get_display_framerate() const override { return real->get_display_framerate(); }
+        float get_resolution_scale() const override { return real->get_resolution_scale(); }
+    private:
+        std::unique_ptr<ultramodern::renderer::RendererContext> real;
+        uint8_t* rdram;
+    };
+
     std::unique_ptr<ultramodern::renderer::RendererContext> create_render_context(
         uint8_t* rdram, ultramodern::renderer::WindowHandle window_handle, bool developer_mode) {
-        return recompui::renderer::create_render_context(rdram, window_handle,
+        auto real = recompui::renderer::create_render_context(rdram, window_handle,
             ultramodern::renderer::PresentationMode::PresentEarly,
             // TEMP-DEBUG: CONKER_DEV_MODE turns on RT64's developer tools (F1: inspector).
             developer_mode || SDL_getenv("CONKER_DEV_MODE") != nullptr);
+        return std::make_unique<RewriteRestoringRenderer>(std::move(real), rdram);
     }
 
 }
@@ -616,7 +670,34 @@ namespace {
         *y = std::clamp(cur_y, -1.0f, 1.0f);
     }
 
+    bool get_port_input_live(int port, uint16_t* buttons, float* x, float* y);
+
+    // The online session's own player is whoever holds this machine's first port.
+    bool online_local_sampler(uint16_t* buttons, float* x, float* y) {
+        return get_port_input_live(0, buttons, x, y);
+    }
+
+    // Netplay's determinism test (netplay.cpp) sits between the game and the devices: it counts the game's
+    // frames, and either records what the devices answer or answers from a recording. Without its environment
+    // variables set, this is the devices' answer, unchanged.
     bool get_port_input(int port, uint16_t* buttons, float* x, float* y) {
+        // The online session (net_session.cpp) goes first: the first read of a frame waits until the
+        // frame's inputs, everyone's, are agreed, and every port is then answered from them.
+        conker::netsession::on_port_read(port);
+        conker::netplay::on_port_read(port);
+        bool plugged = false;
+        if (conker::netsession::input(port, &plugged, buttons, x, y)) {
+            return plugged;
+        }
+        if (conker::netplay::replay_input(port, &plugged, buttons, x, y)) {
+            return plugged;
+        }
+        const bool answered = get_port_input_live(port, buttons, x, y);
+        conker::netplay::record_input(port, answered, *buttons, *x, *y);
+        return answered;
+    }
+
+    bool get_port_input_live(int port, uint16_t* buttons, float* x, float* y) {
         // recompinput's own multiplayer mode (players assigned in its menus) gives each
         // player their controller and profiles already.
         if (!recompinput::players::is_single_player_mode()) {
@@ -634,12 +715,65 @@ namespace {
         if (port >= std::max(connected, 1)) {
             return false;
         }
-        if (!recompinput::game_input_disabled()) {
+        // (online with CONKER_NET_INPUT set, two windows on one PC: the window that isn't in front still plays, with its own
+        // controller, so the game's "input disabled" is not asked)
+        if (!recompinput::game_input_disabled() || conker::netsession::input_filter() != 0) {
             // Port 1 has the keyboard, and its controller once one has pressed a button.
-            read_port(port < count ? controllers[port] : nullptr, port == 0,
-                port == 0 && conker::mouse_camera::stick_turns_camera(), conker::look_aim::swap_sticks_now(port), conker::look_aim::z_turns_aim(port), buttons, x, y);
+            // An online game on one PC (two windows) can give one window the keyboard and the other the gamepad
+            // (CONKER_NET_INPUT=keyboard or gamepad, net_session.cpp); otherwise both feed this port.
+            const int filter = conker::netsession::input_filter();
+            // (filters 3 and 4: the second controller by the order the computer lists them in, not by who pressed a button
+            // first, which each window only sees while it has the focus; CONKER_NET_PAD=n picks another one, for these
+            // and for filter 2)
+            static const int forced_pad = []() { const char* text = SDL_getenv("CONKER_NET_PAD"); return text != nullptr ? std::atoi(text) : -1; }();
+            SDL_GameController* pad = (port < count && filter != 1) ? controllers[port] : nullptr;
+            if (filter >= 2) {
+                // (filter 2, the gamepad: the first controller listed)
+                const int index = forced_pad >= 0 ? forced_pad : (filter == 2 ? 0 : 1);
+                pad = nullptr;
+                std::lock_guard open_lock{ open_controllers_mutex };
+                // by the controller's XInput slot (the player number SDL gives it: the ring's light on a 360 pad), which
+                // is what "controller 1" and "controller 2" mean, and only without one by the order listed
+                for (const auto& item : open_controllers) {
+                    if (SDL_GameControllerGetPlayerIndex(item.second) == index) {
+                        pad = item.second;
+                        break;
+                    }
+                }
+                if (pad == nullptr && index < (int)open_controllers.size()) {
+                    pad = open_controllers[index].second;
+                }
+            }
+            {
+                // the choice is logged (once, and again when it changes), to see which controller a window listens to
+                static const SDL_GameController* last_pad = (const SDL_GameController*)1;
+                static bool first = true;
+                if (first || pad != last_pad) {
+                    first = false;
+                    last_pad = pad;
+                    std::string text = "[net] input: filter " + std::to_string(filter) + ", CONKER_NET_PAD " + std::to_string(forced_pad) + ", port " + std::to_string(port) + ", controllers listed:";
+                    {
+                        std::lock_guard open_lock{ open_controllers_mutex };
+                        for (size_t i = 0; i < open_controllers.size(); i++) {
+                            const char* name = SDL_GameControllerName(open_controllers[i].second);
+                            text += " [" + std::to_string(i) + "] " + (name != nullptr ? name : "?") + " (player " + std::to_string(SDL_GameControllerGetPlayerIndex(open_controllers[i].second)) + ")" + (open_controllers[i].second == pad ? " (USED)" : "");
+                        }
+                    }
+                    text += pad == nullptr ? " -> no controller used" : "";
+                    conker::netsession::log(text.c_str());
+                }
+            }
+            const bool keys = port == 0 && filter != 2 && filter != 3;   // (4: the keyboard too)
+            read_port(pad, keys,
+                keys && conker::mouse_camera::stick_turns_camera(), conker::look_aim::swap_sticks_now(port), conker::look_aim::z_turns_aim(port), buttons, x, y);
         }
         return true;
+    }
+}
+
+void conker::frontend::start_online(uint8_t* rdram) {
+    if (conker::netsession::init(rdram, online_local_sampler)) {
+        conker::netplay::enter_online(rdram);
     }
 }
 
@@ -647,7 +781,28 @@ int conker::frontend::port_controllers(std::array<SDL_GameController*, max_ports
     return get_port_controllers(out);
 }
 
+namespace {
+    ultramodern::input::connected_device_info_t get_connected_device_info_live(int controller_num);
+}
+
+// Netplay's determinism test (netplay.cpp) records which controllers are plugged in, or answers from a recording.
 ultramodern::input::connected_device_info_t conker::frontend::get_connected_device_info(int controller_num) {
+    bool present = false;
+    if (conker::netsession::device_present(controller_num, &present)) {
+        return present ? ultramodern::input::connected_device_info_t{ ultramodern::input::Device::Controller, ultramodern::input::Pak::RumblePak }
+                       : ultramodern::input::connected_device_info_t{ ultramodern::input::Device::None, ultramodern::input::Pak::None };
+    }
+    if (conker::netplay::replay_device(controller_num, &present)) {
+        return present ? ultramodern::input::connected_device_info_t{ ultramodern::input::Device::Controller, ultramodern::input::Pak::RumblePak }
+                       : ultramodern::input::connected_device_info_t{ ultramodern::input::Device::None, ultramodern::input::Pak::None };
+    }
+    const ultramodern::input::connected_device_info_t info = get_connected_device_info_live(controller_num);
+    conker::netplay::record_device(controller_num, info.connected_device != ultramodern::input::Device::None);
+    return info;
+}
+
+namespace {
+ultramodern::input::connected_device_info_t get_connected_device_info_live(int controller_num) {
     if (!recompinput::players::is_single_player_mode()) {
         if (recompinput::players::get_player_is_assigned(controller_num)) {
             return { ultramodern::input::Device::Controller, ultramodern::input::Pak::RumblePak };
@@ -662,6 +817,7 @@ ultramodern::input::connected_device_info_t conker::frontend::get_connected_devi
     }
     return { ultramodern::input::Device::None, ultramodern::input::Pak::None };
 }
+} // namespace
 
 std::u8string conker::program_id() {
     return SDL_getenv("CONKER_TEST_PROFILE") != nullptr ? u8"ConkerRecompiledTest" : u8"ConkerRecompiled";

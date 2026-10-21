@@ -316,6 +316,11 @@ void conker::look_aim::on_input_poll() {
     Movement m;
     recompinput::get_mouse_deltas(&m.mouse_x, &m.mouse_y);
     recompinput::get_gyro_deltas(0, &m.gyro_x, &m.gyro_y);
+    if (conker::netsession::active()) {
+        // Online the game's state is the same on every machine, made from the controllers' buttons and sticks that
+        // travel: this machine's mouse and gyro turn nothing in it.
+        m = Movement{};
+    }
     std::lock_guard lock{queue_mutex};
     queue.push_back(m);
     while (queue.size() > 2) {
@@ -493,6 +498,9 @@ void conker::look_aim::leap_stick(float& x, float& y) {
     }
     float mouse_x = 0.0f, mouse_y = 0.0f;
     recompinput::get_mouse_deltas(&mouse_x, &mouse_y);
+    if (conker::netsession::active()) {
+        mouse_x = mouse_y = 0.0f;
+    }
     // The mouse's y grows downward and the stick's upward: without inverting, the mouse up is the stick up.
     apply_invert(option<Invert>(options::mouse_invert), mouse_x, mouse_y);
     leap_x += mouse_x / leap_full_tilt;
