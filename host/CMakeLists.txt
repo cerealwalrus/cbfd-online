@@ -219,7 +219,7 @@ if (UNIX)
     target_link_options(ConkerRecomp PRIVATE -rdynamic)
 elseif (WIN32)
     # The crash handler symbolises the stack with DbgHelp.
-    target_link_libraries(ConkerRecomp PRIVATE DbgHelp ws2_32 winhttp)
+    target_link_libraries(ConkerRecomp PRIVATE DbgHelp ws2_32 winhttp bcrypt)
     # Mods replace recompiled functions by patching their machine code, so identical
     # functions must not be folded into one.
     target_link_options(ConkerRecomp PRIVATE /OPT:NOICF)

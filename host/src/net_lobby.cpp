@@ -13,6 +13,7 @@
 #include <mutex>
 #include <string>
 
+#include <SDL.h>
 #include "librecomp/game.hpp"
 #include "recompui/recompui.h"
 #include "elements/ui_button.h"
@@ -24,7 +25,7 @@
 #include "conker.hpp"
 
 namespace {
-    enum class Action { Show, Host, Join, Start, Leave, Back, Players, Delay, Input };
+    enum class Action { Show, Host, Join, Start, Leave, Back, Players, Delay, Input, Update };
 
     std::mutex action_mutex;
     std::deque<Action> actions;
@@ -86,6 +87,8 @@ namespace {
     recompui::Label* message_label = nullptr;
     recompui::Label* info_label = nullptr;
     recompui::Label* version_label = nullptr;
+    recompui::Button* update_button = nullptr;
+    bool update_quit_sent = false;
     std::string version_text_shown;
     recompui::Label* player_labels[4] = {};
     std::string last_signature;
@@ -174,6 +177,8 @@ namespace {
 
         title_label = context.create_element<recompui::Label>(panel, "Online", recompui::theme::Typography::Header3);
         version_label = make_label(panel, std::string("Version ") + conker::updates::current_version(), recompui::LabelStyle::Small);
+        update_button = make_button(panel, "Update now", recompui::ButtonStyle::Success, Action::Update);
+        update_button->set_display(recompui::Display::None);
 
         // --- the setup page: host or join ---
         setup_page = context.create_element<recompui::Element>(panel);
@@ -392,6 +397,10 @@ void conker::netlobby::update(const std::u8string& game_id) {
                     conker::netsession::lobby_leave();
                     show_page(false);
                     break;
+                case Action::Update:
+                    update_button->set_display(recompui::Display::None);
+                    conker::updates::start_install();
+                    break;
                 case Action::Back:
                     conker::netsession::lobby_leave();
                     recompui::hide_context(context);
@@ -406,14 +415,40 @@ void conker::netlobby::update(const std::u8string& game_id) {
             // the version line: this build's, and the newer release once the check has found one
             std::string text = std::string("Version ") + conker::updates::current_version();
             std::string tag, page;
-            if (conker::updates::newer_available(&tag, &page)) {
-                text += "  -  a newer version is out: " + tag + " (" + page + ")";
+            const conker::updates::Status up = conker::updates::status();
+            const bool offer = conker::updates::newer_available(&tag, &page);
+            if (up.state == 1) {
+                text += "  -  downloading " + tag + ": " + std::to_string(up.percent) + "%";
             }
+            else if (up.state == 2) {
+                text += "  -  checking the download...";
+            }
+            else if (up.state == 4) {
+                text += "  -  updating: the game closes and starts again by itself";
+            }
+            else if (offer) {
+                text += "  -  a newer version is out: " + tag;
+                if (up.state == 3) {
+                    text += " (the update failed: " + up.message + "; get it from " + page + ")";
+                }
+                else if (!conker::updates::install_possible()) {
+                    text += " (" + page + ")";
+                }
+            }
+            const bool show_button = offer && up.state == 0 && conker::updates::install_possible();
             if (text != version_text_shown) {
                 version_text_shown = text;
                 context.open();
                 version_label->set_text(text);
+                update_button->set_display(show_button || (up.state == 3 && offer) ? recompui::Display::Flex : recompui::Display::None);
                 context.close();
+            }
+            if (up.state == 4 && !update_quit_sent) {
+                update_quit_sent = true;
+                SDL_Event quit;
+                SDL_zero(quit);
+                quit.type = SDL_QUIT;
+                SDL_PushEvent(&quit);
             }
         }
         if (shown && !launched && in_lobby) {

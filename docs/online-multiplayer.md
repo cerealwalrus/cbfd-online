@@ -157,3 +157,11 @@ Swap Sticks, no weapon, R held: Z holds a grenade (look_aim.cpp, no_weapon_walk)
 Swap Sticks, the grenade's look (kind 0x26): the stick-walking is not applied (it read the held C-Down as walking back and turned the view each frame).
 
 Rocket launcher's look (kind 0x16): the frame has an extra pass of this machine's camera before its HUD pass, which draws the green overlay for the split screen's half; its scissors are emptied (net_view.cpp), so it is not drawn. This is done for every player using the rocket launcher, so the other player's screen does not show it either. The explosion (and the game's other screen-space sprites, such as sparkles) is emitted by the game as RT64's extended texture rectangle in the camera's own rectangle; in the rocket look those in this machine's camera's passes are moved down with the aim (the same shift as the HUD's aim) so the explosion lands where the missile does.
+
+## Updating from the launcher (Windows)
+
+When the Online screen finds a newer GitHub release that has a `.zip` file, an **Update now** button appears. It downloads the zip to
+`%TEMP%\conker_update`, checks it against GitHub's SHA-256 when the release lists one, closes the game, and a small script (`update.bat`)
+unpacks the zip over the game's folder (files named *.z64, *.n64, *.v64, *.rom are never touched) and starts the game again. The zip's files
+can be at its top level or inside one folder. If anything fails, the script restarts the old game and opens `update.log`.
+Releases must be non-draft, non-prerelease, tagged `v` + the version in `host/src/version.hpp`.

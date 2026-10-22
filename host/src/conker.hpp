@@ -378,6 +378,16 @@ namespace conker {
         bool newer_available(std::string* tag, std::string* page);
         // This build's version (version.hpp).
         const char* current_version();
+        // Windows: whether the newer release has a .zip that start_install can fetch.
+        bool install_possible();
+        // Downloads the release, then (state 4) a script is waiting for the game to close: the caller closes the game.
+        void start_install();
+        struct Status {
+            int state = 0;          // 0 not started, 1 downloading, 2 checking, 3 failed (message), 4 ready: close the game now
+            int percent = 0;
+            std::string message;
+        };
+        Status status();
     }
 
     // net_lobby.cpp: the launcher's Online screen (the lobby), see net_session.cpp's lobby functions.
