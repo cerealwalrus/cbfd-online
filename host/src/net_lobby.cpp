@@ -39,7 +39,7 @@ namespace {
     int players = 2;
     int delay_frames = 3;
     int input_choice = 0;
-    std::string address_text = "142.179.68.208";   // filled in for joining
+    std::string address_text = "conkerstavern.servebeer.com";   // filled in for joining
     std::string nickname_text;
     bool nickname_loaded = false;
 
