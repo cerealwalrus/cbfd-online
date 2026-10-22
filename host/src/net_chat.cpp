@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cstdio>
 #include <deque>
@@ -49,6 +50,9 @@ namespace {
     bool open = false;
     std::atomic<bool> input_focused{ false };   // the typing box has the keyboard (the UI drops it when the mouse moves)
     std::string typed;
+    bool swallow_key = false;                    // the key that opened the box is still down: its character is not part of the line
+    int64_t swallow_until_ms = 0;                // ... and a moment after it came up
+    bool clear_box = false;
     bool y_was_down = false, enter_was_down = false;
     std::string shown_signature;
 
@@ -134,7 +138,15 @@ namespace {
         input = input_context.create_element<recompui::TextInput>(bar);
         input->set_flex_grow(1.0f);
         input->set_width(100.0f, recompui::Unit::Percent);
-        input->add_text_changed_callback([](const std::string& text) { typed = text; });
+        input->add_text_changed_callback([](const std::string& text) {
+            // opening the box with a key also types that key's character into it: the first letter, still in the box, is dropped
+            if (!text.empty() && text.size() == 1 && (swallow_key || now_ms() < swallow_until_ms)) {
+                typed.clear();
+                clear_box = true;
+                return;
+            }
+            typed = text;
+        });
         input->set_focus_callback([](bool active) { input_focused = active; });
         input_context.close();
         created = true;
@@ -152,6 +164,9 @@ namespace {
         open = true;
         typing_now = true;
         input_focused = false;
+        swallow_key = true;
+        swallow_until_ms = 0;
+        clear_box = false;
     }
 
     void close_box() {
@@ -182,8 +197,14 @@ namespace {
             const int k = (int)visible.size() - 1 - i;
             if (k >= 0) {
                 const Line* line = visible[k];
-                line_labels[i]->set_text(conker::netsession::player_name(line->slot) + ": " + line->text);
-                line_labels[i]->set_color(player_color(line->slot));
+                if (line->slot < 0) {
+                    line_labels[i]->set_text(line->text);
+                    line_labels[i]->set_color(recompui::Color{ 255, 226, 90, 255 });
+                }
+                else {
+                    line_labels[i]->set_text(conker::netsession::player_name(line->slot) + ": " + line->text);
+                    line_labels[i]->set_color(player_color(line->slot));
+                }
                 line_labels[i]->set_display(recompui::Display::Block);
             }
             else {
@@ -237,8 +258,22 @@ void conker::netchat::update() {
     }
     else if (enter_down && !enter_was_down) {
         std::string text = typed;
-        const bool sent = !text.empty() && conker::netsession::chat_send(text);
-        (void)sent;
+        std::string command = text;
+        command.erase(0, command.find_first_not_of(' '));
+        while (!command.empty() && command.back() == ' ') {
+            command.pop_back();
+        }
+        std::transform(command.begin(), command.end(), command.begin(), [](unsigned char ch) { return (char)std::tolower(ch); });
+        if (command == "/network") {
+            // answered here, not sent to the others
+            for (const std::string& line : conker::netsession::network_report()) {
+                lines.push_back({ -1, line, now + std::chrono::seconds(20) });
+            }
+        }
+        else {
+            const bool sent = !text.empty() && conker::netsession::chat_send(text);
+            (void)sent;
+        }
         close_box();
     }
     else if (!focused) {
@@ -249,6 +284,16 @@ void conker::netchat::update() {
     if (open && recompui::is_context_shown(input_context) && !input_focused) {
         input_context.open();
         input->focus();
+        input_context.close();
+    }
+    if (open && swallow_key && !y_down) {
+        swallow_key = false;
+        swallow_until_ms = now_ms() + 150;
+    }
+    if (open && clear_box) {
+        clear_box = false;
+        input_context.open();
+        input->set_text("");
         input_context.close();
     }
     y_was_down = y_down;

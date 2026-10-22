@@ -316,6 +316,8 @@ namespace conker {
         // Text chat during a game (net_chat.cpp is its screen).
         bool chat_available();
         bool chat_send(const std::string& text);
+        // The lines the /network command shows (only on this machine): the round trip to the host (the host: to each player).
+        std::vector<std::string> network_report();
         // The lines that have come in since the last call: (player slot, text).
         std::vector<std::pair<int, std::string>> chat_poll();
         void lobby_open(const LobbySettings& settings);

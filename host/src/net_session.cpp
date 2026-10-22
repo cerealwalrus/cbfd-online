@@ -291,6 +291,8 @@ namespace {
         double rtt_all_max = 0;
         std::array<double, 10> rtt_recent{};   // the last ten answers, for the launcher
         uint32_t rtt_recent_n = 0;
+        double rtt_total_sum = 0, rtt_total_min = 1e9;   // since the connection began
+        uint64_t rtt_total_n = 0;
         uint32_t rtt_count = 0;
 
         bool send_message(const std::vector<uint8_t>& bytes) {
@@ -898,6 +900,9 @@ namespace {
             std::lock_guard lock{ peer->rtt_mutex };
             peer->pongs_got++;
             peer->rtt_last = ms;
+            peer->rtt_total_sum += ms;
+            peer->rtt_total_n++;
+            peer->rtt_total_min = std::min(peer->rtt_total_min, ms);
             peer->rtt_recent[peer->rtt_recent_n++ % peer->rtt_recent.size()] = ms;
             peer->rtt_sum += ms;
             peer->rtt_sq += ms * ms;
@@ -914,7 +919,7 @@ namespace {
         std::vector<Peer*> to;
         {
             std::lock_guard lock{ mtx };
-            if (!enabled || failed) {
+            if (!(enabled || lobby_phase == 2) || failed) {
                 return;
             }
             for (auto& peer : peers) {
@@ -1865,6 +1870,41 @@ bool conker::netsession::lobby_start() {
 bool conker::netsession::chat_available() {
     std::lock_guard lock{ mtx };
     return enabled && started && !failed;
+}
+
+// The /network chat command: lines about the connection (to the host, or from the host to each player).
+std::vector<std::string> conker::netsession::network_report() {
+    std::lock_guard lock{ mtx };
+    std::vector<std::string> out;
+    if (!enabled || !started || failed) {
+        out.push_back("Network: no online game is running.");
+        return out;
+    }
+    for (auto& peer : peers) {
+        if (!peer->alive || peer->retired) {
+            continue;
+        }
+        std::lock_guard rtt{ peer->rtt_mutex };
+        const std::string who = is_host ? name_of(peer->slot) : std::string("the host");
+        if (peer->rtt_total_n == 0) {
+            out.push_back("Network: no answer from " + who + " yet.");
+            continue;
+        }
+        char text[200];
+        const uint32_t recent_n = std::min<uint32_t>(peer->rtt_recent_n, (uint32_t)peer->rtt_recent.size());
+        double recent = 0;
+        for (uint32_t k = 0; k < recent_n; k++) {
+            recent += peer->rtt_recent[k];
+        }
+        recent /= std::max<uint32_t>(recent_n, 1);
+        std::snprintf(text, sizeof(text), "Network: ping to %s averages %.0f ms (now %.0f, best %.0f, worst %.0f), input delay %u frames",
+            who.c_str(), peer->rtt_total_sum / (double)peer->rtt_total_n, recent, peer->rtt_total_min, peer->rtt_all_max, (unsigned)delay);
+        out.push_back(text);
+    }
+    if (out.empty()) {
+        out.push_back("Network: nobody else is connected.");
+    }
+    return out;
 }
 
 bool conker::netsession::chat_send(const std::string& text) {
