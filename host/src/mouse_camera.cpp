@@ -166,6 +166,51 @@ namespace {
         return 1;
     }
 
+    // The orbit runs on every machine of an online game, for every player's camera, and has to give the same numbers on all
+    // of them, so it doesn't use the C library's trigonometry (the library picks a version by the processor): these are
+    // made of plain arithmetic, which is exact and the same everywhere. Accurate to about a hundred-thousandth of a radian.
+    constexpr double pi = 3.14159265358979323846;
+    double det_sin_d(double x) {
+        x = std::remainder(x, 2.0 * pi);
+        if (x > pi / 2) {
+            x = pi - x;
+        }
+        else if (x < -pi / 2) {
+            x = -pi - x;
+        }
+        const double z = x * x;
+        return x * (1.0 + z * (-1.0 / 6 + z * (1.0 / 120 + z * (-1.0 / 5040 + z * (1.0 / 362880 + z * (-1.0 / 39916800))))));
+    }
+    float det_sin(float x) {
+        return (float)det_sin_d((double)x);
+    }
+    float det_cos(float x) {
+        return (float)det_sin_d((double)x + pi / 2);
+    }
+    double det_atan_unit(double x) {   // |x| <= 1
+        const double z = x * x;
+        return x * (0.9998660 + z * (-0.3302995 + z * (0.1801410 + z * (-0.0851330 + z * 0.0208351))));
+    }
+    float det_atan2(float yf, float xf) {
+        const double y = yf, x = xf;
+        if (x == 0.0 && y == 0.0) {
+            return 0.0f;
+        }
+        const double ax = std::fabs(x), ay = std::fabs(y);
+        double a = ay > ax ? pi / 2 - det_atan_unit(ax / ay) : det_atan_unit(ay / ax);
+        if (x < 0.0) {
+            a = pi - a;
+        }
+        return (float)(y < 0.0 ? -a : a);
+    }
+
+    // The orbit's per frame time online: the game's frames, the same for everybody (not the clock).
+    constexpr float online_frame_seconds = 1.0f / 30.0f;
+    // Online the turn travels in 1/10000 of a radian.
+    constexpr float online_turn_unit = 10000.0f;
+    constexpr uint32_t camera_stride = 0x9A0;
+    constexpr int max_cameras = 4;
+
     struct Orbit {
         bool engaged = false;
         bool follow_camera_ran = false; // func_1512D390 ran since the last view
@@ -196,9 +241,29 @@ namespace {
         bool placed = false;            // the orbit placed the eye this frame, at placed_eye
         float placed_eye[3] = {};
         std::chrono::steady_clock::time_point stick_time;
-    } orbit;
+    };
+    Orbit orbits[max_cameras];
 
     float read_float(uint8_t* rdram, gpr base, int32_t offset);
+
+    // The orbit of a camera of the camera array (the pointer at current_camera): player 1's alone, but in an online game
+    // everybody's. Null for any other camera.
+    Orbit* pick(uint8_t* rdram, gpr camera, int* index = nullptr) {
+        const uint32_t base = (uint32_t)MEM_W(0, (gpr)(int32_t)current_camera);
+        const uint32_t at = (uint32_t)camera;
+        if (at < base || base == 0) {
+            return nullptr;
+        }
+        const uint32_t i = (at - base) / camera_stride;
+        if (at != base + i * camera_stride || i >= (uint32_t)(conker::netsession::active() ? max_cameras : 1)) {
+            return nullptr;
+        }
+        if (index != nullptr) {
+            *index = (int)i;
+        }
+        return &orbits[i];
+    }
+
     void write_float(uint8_t* rdram, gpr base, int32_t offset, float value);
 
     // The floor's height below (x, from_y, z), or no_floor: func_1510E8BC as func_1512BB10 calls it
@@ -245,7 +310,7 @@ namespace {
 
     // The yaw of the eye at camera + offset around the look-at point (cx, cz), as orbit.yaw.
     float eye_yaw(uint8_t* rdram, gpr camera, int32_t offset, float cx, float cz) {
-        return std::atan2(read_float(rdram, camera, offset + 8) - cz, read_float(rdram, camera, offset) - cx);
+        return det_atan2(read_float(rdram, camera, offset + 8) - cz, read_float(rdram, camera, offset) - cx);
     }
 
     bool mouse_turns_camera() {
@@ -260,9 +325,6 @@ namespace {
     }
 
     bool stick_turns_camera_setting() {
-        if (conker::netsession::active()) {
-            return false;
-        }
 #if defined(CONKER_RT64)
         return conker::look_aim::stick_free_camera();
 #else
@@ -273,7 +335,7 @@ namespace {
     // The orbit's turn (yaw) and tilt (pitch) from player 1's right stick since the last read, in
     // radians: its tilt past the deadzone, at Camera: Turning Speed and Invert Turning, for the time
     // since the last read. Right turns the way the mouse moving right does; up tilts to look up.
-    void read_stick(float& yaw, float& pitch) {
+    void read_stick(Orbit& orbit, float& yaw, float& pitch) {
         yaw = 0.0f;
         pitch = 0.0f;
         const auto now = std::chrono::steady_clock::now();
@@ -338,9 +400,12 @@ namespace {
 // (+0x36C points at the buttons held).
 extern "C" void conker_mouse_camera_follow(uint8_t* rdram, recomp_context* ctx) {
     const gpr camera = ctx->r16;
-    if ((uint32_t)camera != (uint32_t)MEM_W(0, (gpr)(int32_t)current_camera)) {
+    int camera_index = 0;
+    Orbit* picked = pick(rdram, camera, &camera_index);
+    if (picked == nullptr) {
         return;
     }
+    Orbit& orbit = *picked;
     orbit.follow_camera_ran = true;
     const gpr buttons = (gpr)(int32_t)MEM_W(0x36C, camera);
     orbit.c_turning = ((uint32_t)MEM_HU(0, buttons) & 0x3) != 0;
@@ -350,7 +415,14 @@ extern "C" void conker_mouse_camera_follow(uint8_t* rdram, recomp_context* ctx) 
 // its first instruction. The mouse aims there (look_aim.cpp), so the orbit leaves the
 // camera to it: otherwise both turned with the mouse, and the view ran ahead of the aim.
 extern "C" void conker_mouse_camera_look_mode(uint8_t* rdram, recomp_context* ctx) {
-    orbit.look_mode_ran = true;
+    // ($a0 the camera.) Offline it's player 1's whatever camera it is; online each player's own.
+    if (!conker::netsession::active()) {
+        orbits[0].look_mode_ran = true;
+        return;
+    }
+    if (Orbit* picked = pick(rdram, ctx->r4)) {
+        picked->look_mode_ran = true;
+    }
 }
 
 // func_1512BB10 (the camera's collision), after its first instruction: $a0 is the camera.
@@ -360,11 +432,17 @@ extern "C" void conker_mouse_camera_look_mode(uint8_t* rdram, recomp_context* ct
 // placed the eye the game wants by now (+0x2F8), turned from last frame's (+0x304).
 extern "C" void conker_mouse_camera_collide(uint8_t* rdram, recomp_context* ctx) {
     const gpr camera = ctx->r4;
-    if ((uint32_t)camera != (uint32_t)MEM_W(0, (gpr)(int32_t)current_camera)) {
+    int camera_index = 0;
+    Orbit* picked = pick(rdram, camera, &camera_index);
+    if (picked == nullptr) {
         return;
     }
+    Orbit& orbit = *picked;
+    const bool online = conker::netsession::active();
     const bool use_mouse = mouse_turns_camera();
-    const bool use_stick = stick_turns_camera_setting();
+    // Online the turn is what the player sent with the frame's input (their settings already applied), for every camera.
+    float online_yaw = 0.0f, online_pitch = 0.0f;
+    const bool use_stick = online ? conker::netsession::camera_turn(camera_index, &online_yaw, &online_pitch) : stick_turns_camera_setting();
     // Nor in the bank's slow motion leaps, where the mouse moves the crosshair instead (issue #85, look_aim.cpp).
     if (!orbit.follow_camera_ran || orbit.look_mode_ran || conker::look_aim::leaping_now() || (!use_mouse && !use_stick)) {
         orbit.engaged = false;
@@ -390,7 +468,13 @@ extern "C" void conker_mouse_camera_collide(uint8_t* rdram, recomp_context* ctx)
             wheel_notches = 0;
         }
         if (use_stick) {
-            read_stick(stick_yaw, stick_pitch);
+            if (online) {
+                stick_yaw = online_yaw;
+                stick_pitch = online_pitch;
+            }
+            else {
+                read_stick(orbit, stick_yaw, stick_pitch);
+            }
         }
         orbit.turned = true;
         orbit.moved = mouse_x != 0.0f || mouse_y != 0.0f || notches != 0 || stick_yaw != 0.0f || stick_pitch != 0.0f;
@@ -425,12 +509,17 @@ extern "C" void conker_mouse_camera_collide(uint8_t* rdram, recomp_context* ctx)
         orbit.tight_frames = 0;
         orbit.wall = 0.0f;
         orbit.wall_frames = 0;
-        orbit.yaw = std::atan2(ez, ex);
-        orbit.pitch = std::atan2(ey, std::sqrt(ex * ex + ez * ez));
+        orbit.yaw = det_atan2(ez, ex);
+        orbit.pitch = det_atan2(ey, std::sqrt(ex * ex + ez * ez));
         if (orbit.wanted == 0.0f) {
             orbit.wanted = wanted_distance;
         }
         orbit.engaged = true;
+        static bool logged[max_cameras] = {};
+        if (conker::netsession::active() && !logged[camera_index]) {
+            logged[camera_index] = true;
+            conker::netsession::log(("[camera] the orbit took over camera " + std::to_string(camera_index) + " (online)").c_str());
+        }
     }
     // Until the scroll wheel sets a distance, the orbit keeps the game's, so C-Down zooms it.
     if (!orbit.wheel_zoomed) {
@@ -447,7 +536,7 @@ extern "C" void conker_mouse_camera_collide(uint8_t* rdram, recomp_context* ctx)
         nearest = (i == 0) ? d : std::min(nearest, d);
         farthest = (i == 0) ? d : std::max(farthest, d);
     }
-    orbit.wanted = std::clamp(orbit.wanted * std::pow(zoom_step, (float)-notches), nearest, farthest);
+    orbit.wanted = std::clamp(orbit.wanted * (notches != 0 ? std::pow(zoom_step, (float)-notches) : 1.0f), nearest, farthest);
     orbit.yaw += mouse_x * degrees_per_pixel * degrees_to_radians + stick_yaw;
     if (first && orbit.c_turning) {
         // The C-buttons' turn this frame: as far as the game turned its own eye.
@@ -460,7 +549,7 @@ extern "C" void conker_mouse_camera_collide(uint8_t* rdram, recomp_context* ctx)
     // was out of view, as the eye always looked at the look-at point. Tilting back down takes the aim
     // off first, then the eye comes back up.
     const float drop = std::max(look_height * (1.0f - ground_clearance), 0.0f);
-    const float lowest_pitch = std::max(min_pitch, -std::atan2(drop, body_clearance));
+    const float lowest_pitch = std::max(min_pitch, -det_atan2(drop, body_clearance));
     const float tilt = orbit.pitch - orbit.aim + mouse_y * degrees_per_pixel * degrees_to_radians + stick_pitch;
     if (tilt >= lowest_pitch) {
         orbit.pitch = std::min(tilt, max_pitch);
@@ -473,9 +562,9 @@ extern "C" void conker_mouse_camera_collide(uint8_t* rdram, recomp_context* ctx)
     }
 
     // The eye's direction from the look-at point.
-    const float dx = std::cos(orbit.pitch) * std::cos(orbit.yaw);
-    const float dy = std::sin(orbit.pitch);
-    const float dz = std::cos(orbit.pitch) * std::sin(orbit.yaw);
+    const float dx = det_cos(orbit.pitch) * det_cos(orbit.yaw);
+    const float dy = det_sin(orbit.pitch);
+    const float dz = det_cos(orbit.pitch) * det_sin(orbit.yaw);
 
     // At rest: nothing the orbit goes by changed since last frame, against something (rest_move).
     if (first) {
@@ -511,7 +600,7 @@ extern "C" void conker_mouse_camera_collide(uint8_t* rdram, recomp_context* ctx)
         // Looking up, in close enough that the eye stays above Conker's feet, but not into him
         // (issue #70). Eased too: far out, a small tilt here moves the eye a long way in.
         if (dy < 0.0f && -dy * goal > drop) {
-            goal = std::min(goal, std::max(drop / -dy, body_clearance / std::cos(orbit.pitch)));
+            goal = std::min(goal, std::max(drop / -dy, body_clearance / det_cos(orbit.pitch)));
         }
         if (orbit.shown <= 0.0f) {
             orbit.shown = goal;
@@ -556,9 +645,12 @@ extern "C" void conker_mouse_camera_collide(uint8_t* rdram, recomp_context* ctx)
 // frame's camera update is done: start over for the next one.
 extern "C" void conker_mouse_camera(uint8_t* rdram, recomp_context* ctx) {
     const gpr camera = ctx->r4;
-    if ((uint32_t)camera != (uint32_t)MEM_W(0, (gpr)(int32_t)current_camera)) {
+    int camera_index = 0;
+    Orbit* picked = pick(rdram, camera, &camera_index);
+    if (picked == nullptr) {
         return;
     }
+    Orbit& orbit = *picked;
     if (!orbit.follow_camera_ran || orbit.look_mode_ran) {
         orbit.engaged = false;
         orbit.aim = 0.0f;
@@ -575,7 +667,7 @@ extern "C" void conker_mouse_camera(uint8_t* rdram, recomp_context* ctx) {
             write_float(rdram, camera, 0x2FC, std::max(orbit.placed_eye[1], ey - game_floor_lift + floor_clearance));
         }
         // Held across by a wall: how far from the look-at point, to come in to (wall_margin).
-        if (std::hypot(ex - orbit.placed_eye[0], ez - orbit.placed_eye[2]) > wall_held_slack) {
+        if (std::sqrt((ex - orbit.placed_eye[0]) * (ex - orbit.placed_eye[0]) + (ez - orbit.placed_eye[2]) * (ez - orbit.placed_eye[2])) > wall_held_slack) {
             const float lx = read_float(rdram, camera, 0x2BC), ly = read_float(rdram, camera, 0x2C0), lz = read_float(rdram, camera, 0x2C4);
             orbit.wall = std::sqrt((ex - lx) * (ex - lx) + (ey - ly) * (ey - ly) + (ez - lz) * (ez - lz));
             orbit.wall_frames = tight_hold;
@@ -597,8 +689,11 @@ extern "C" void conker_mouse_camera(uint8_t* rdram, recomp_context* ctx) {
     }
     orbit.placed = false;
     // For the controller's input until the next update: whether the stick turns this camera.
-    was_normal_camera = orbit.follow_camera_ran && !orbit.look_mode_ran;
-    stick_owns_camera = was_normal_camera && stick_turns_camera_setting();
+    // (Online that's this machine's own player's camera that counts: it's the controller of this machine.)
+    if (!conker::netsession::active() || camera_index == conker::netsession::local_slot()) {
+        was_normal_camera = orbit.follow_camera_ran && !orbit.look_mode_ran;
+        stick_owns_camera = was_normal_camera && stick_turns_camera_setting();
+    }
     // The eye wanted this frame, to tell next frame how far the orbit itself moved.
     orbit.has_target = orbit.engaged;
     std::memcpy(orbit.target, orbit.next_target, sizeof(orbit.target));
@@ -619,9 +714,11 @@ extern "C" void conker_mouse_camera(uint8_t* rdram, recomp_context* ctx) {
 // and Conker's movement (by the eye's direction across the ground) are as they were.
 extern "C" void conker_mouse_camera_aim(uint8_t* rdram, recomp_context* ctx) {
     const gpr camera = ctx->r16;
-    if (!orbit.engaged || orbit.aim <= 0.0f || (uint32_t)camera != (uint32_t)MEM_W(0, (gpr)(int32_t)current_camera)) {
+    Orbit* picked = pick(rdram, camera);
+    if (picked == nullptr || !picked->engaged || picked->aim <= 0.0f) {
         return;
     }
+    Orbit& orbit = *picked;
     // The eye from where it's copied (+0x2F8): the copy's z (+0x2F4) is stored after this, in the branch's delay slot.
     const float ex = read_float(rdram, camera, 0x2F8), ey = read_float(rdram, camera, 0x2FC), ez = read_float(rdram, camera, 0x300);
     const float lx = read_float(rdram, camera, 0x2E0) - ex, ly = read_float(rdram, camera, 0x2E4) - ey, lz = read_float(rdram, camera, 0x2E8) - ez;
@@ -630,10 +727,10 @@ extern "C" void conker_mouse_camera_aim(uint8_t* rdram, recomp_context* ctx) {
         return;
     }
     const float distance = std::sqrt(across * across + ly * ly);
-    const float view = std::min(std::atan2(ly, across) + orbit.aim, highest_view);
-    const float scale = distance * std::cos(view) / across;
+    const float view = std::min(det_atan2(ly, across) + orbit.aim, highest_view);
+    const float scale = distance * det_cos(view) / across;
     write_float(rdram, camera, 0x2E0, ex + lx * scale);
-    write_float(rdram, camera, 0x2E4, ey + distance * std::sin(view));
+    write_float(rdram, camera, 0x2E4, ey + distance * det_sin(view));
     write_float(rdram, camera, 0x2E8, ez + lz * scale);
 }
 
@@ -671,4 +768,46 @@ extern "C" void conker_leap_view_lift(uint8_t* rdram, recomp_context* ctx) {
 // frontend.cpp, once SDL is up: listen for the scroll wheel.
 void conker_mouse_camera_init() {
     SDL_AddEventWatch(watch_wheel, nullptr);
+}
+
+// Online: this machine's own player's turn of the camera for the next frame, from the right stick, with this machine's
+// settings (Camera: Turning Speed and Invert Turning) already applied, so every machine turns the camera the same: the
+// frame's input carries it (net_session.cpp). False when the stick isn't turning the camera now (the controller's input
+// then has the stick on the C-buttons as usual).
+bool conker::mouse_camera::online_turn(float* yaw, float* pitch) {
+    *yaw = 0.0f;
+    *pitch = 0.0f;
+    if (!stick_owns_camera.load(std::memory_order_relaxed)) {
+        return false;
+    }
+#if defined(CONKER_RT64)
+    // This window's own controller (two windows on one PC each have theirs).
+    SDL_GameController* pad = conker::frontend::local_pad();
+    if (pad == nullptr) {
+        return true;
+    }
+    const float x = SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_RIGHTX) / 32767.0f;
+    const float y = SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_RIGHTY) / 32767.0f;
+    const float tilt = std::sqrt(x * x + y * y);
+    if (tilt <= stick_deadzone) {
+        return true;
+    }
+    const float scaled = std::min((tilt - stick_deadzone) / (1.0f - stick_deadzone), 1.0f);
+    const float strength = scaled * scaled / tilt;
+    bool invert_x = false, invert_y = false;
+    conker::look_aim::free_camera_invert(invert_x, invert_y);
+    const float speed = conker::look_aim::camera_turn_speed() * online_frame_seconds * degrees_to_radians;
+    // in whole units, as they travel
+    *yaw = std::round(std::clamp(x * strength * stick_yaw_speed * speed * (invert_x ? -1.0f : 1.0f), -3.0f, 3.0f) * online_turn_unit) / online_turn_unit;
+    *pitch = std::round(std::clamp(y * strength * stick_pitch_speed * speed * (invert_y ? -1.0f : 1.0f), -3.0f, 3.0f) * online_turn_unit) / online_turn_unit;
+#endif
+    return true;
+}
+
+// A snapshot was taken or loaded (a resync, or the start state): the orbit's own memory isn't in it, so every machine
+// starts it over at that same moment, from the game's memory that is.
+void conker::mouse_camera::reset() {
+    for (Orbit& o : orbits) {
+        o = Orbit{};
+    }
 }

@@ -23,6 +23,9 @@
 // - zoomed in (the sniper scope): the scope draws its own crosshair.
 // - for a camera that isn't full screen (multiplayer's split screen): the middle of the window isn't
 //   the middle of its view. Only player 1's camera counts, as every player's aims in turn.
+// Online each machine shows the full-screen view of its own player (net_view.cpp), so there the reticle is for that
+// player's camera, whatever the camera's own screen rectangle in the game's memory says, and it's shown for the guns
+// that aim in R-Look too (the SMG and the M4: states 0x39 and 0x09, as look_aim.cpp found), in the middle.
 //
 // Like the FPS counter (fps_counter.cpp) it's a recompui context of its own that takes no input and
 // no mouse, made once the launcher's init has run (on_ui_ready), and updated on the main thread.
@@ -168,7 +171,8 @@ namespace {
     // screen and not zoomed in, shows the reticle.
     void aiming_frame(uint8_t* rdram, gpr camera, uint32_t state) {
         const uint32_t index = MEM_BU(0x23D, camera);
-        if (index != 0) {
+        const bool online = conker::netsession::active();
+        if (index != (uint32_t)(online ? conker::netsession::local_slot() : 0)) {
             return;
         }
         const gpr view = (gpr)(int32_t)((uint32_t)MEM_W(0, cameras_pointer) + index * camera_size);
@@ -177,7 +181,7 @@ namespace {
         const bool zoomed = fov > 0.0f && unzoomed > 0.0f && fov < unzoomed - 0.5f;
         // A full-screen camera's view is clipped to 2..290 across (widescreen.cpp): split-screen ones
         // stop in the middle.
-        const bool full_screen = read_float(rdram, view, camera_left) <= 4.0f && read_float(rdram, view, camera_right) >= 286.0f &&
+        const bool full_screen = online || read_float(rdram, view, camera_left) <= 4.0f && read_float(rdram, view, camera_right) >= 286.0f &&
             read_float(rdram, view, camera_top) <= 4.0f && read_float(rdram, view, camera_bottom) >= 210.0f;
         last_aim_shown = !zoomed && full_screen;
         last_aim_state = state;
@@ -192,7 +196,11 @@ void conker::reticle::aim_frame(uint8_t* rdram, gpr camera) {
 void conker::reticle::look_frame(uint8_t* rdram, gpr camera, uint32_t state) {
     // The slingshot and the throwing knives; plain R-Look (0x0) and the rest aren't aiming anything.
     constexpr uint32_t slingshot = 0x2, throwing_knives = 0xA;
+    constexpr uint32_t online_guns[] = { 0x39, 0x09 };   // the SMG and the M4
     if (state == slingshot || state == throwing_knives) {
+        aiming_frame(rdram, camera, state);
+    }
+    else if (conker::netsession::active() && (state == online_guns[0] || state == online_guns[1])) {
         aiming_frame(rdram, camera, state);
     }
 }
@@ -214,7 +222,9 @@ void conker::reticle::update() {
     if (!created) {
         create();
     }
-    place(last_aim_state.load() == no_state ? 0.0f : thrown_raise_percent);
+    // (the slingshot's shots and the knives end up above the middle; the second aiming mode and the guns are in the middle)
+    const uint32_t shown_state = last_aim_state.load();
+    place((shown_state == 0x2 || shown_state == 0xA) ? thrown_raise_percent : 0.0f);
     if (!recompui::is_context_shown(context)) {
         recompui::show_context(context, "");
     }

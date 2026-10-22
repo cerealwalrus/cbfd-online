@@ -10,6 +10,10 @@ cmake_minimum_required(VERSION 3.20)
 #   cmake --build host/build
 
 project(ConkerRecomp C CXX)
+if (WIN32)
+    # The executable's icon (ConkerRecomp.rc).
+    enable_language(RC)
+endif()
 if (APPLE)
     # RT64 and RecompFrontend have Objective-C++ sources (Metal, Cocoa); rt64 enables
     # the languages only in its own directory.
@@ -96,6 +100,9 @@ add_executable(ConkerRecomp
     # The audio microcode, recompiled by RSPRecomp (recomp/audio_ucode.toml, run by recomp/recompile.py).
     "${REPO_ROOT}/RecompiledFuncs/rsp/audio_ucode.cpp"
 )
+if (WIN32)
+    target_sources(ConkerRecomp PRIVATE ConkerRecomp.rc)
+endif()
 if (MSVC)
     set_source_files_properties("${REPO_ROOT}/RecompiledFuncs/rsp/audio_ucode.cpp" PROPERTIES COMPILE_OPTIONS "/W0;/bigobj")
 endif()
@@ -164,7 +171,7 @@ if (CONKER_RT64)
     add_custom_command(TARGET ConkerRecomp POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/assets" "$<TARGET_FILE_DIR:ConkerRecomp>/assets")
 
-    target_sources(ConkerRecomp PRIVATE src/frontend.cpp src/conker_config.cpp src/audio_output.cpp src/rumble.cpp src/fps_counter.cpp src/reticle.cpp src/pad_mappings.cpp src/texture_packs.cpp src/gliden64_packs.cpp src/notices.cpp src/local_achievements.cpp src/save_states.cpp src/netplay.cpp src/net_session.cpp src/net_view.cpp src/net_menu.cpp src/net_lobby.cpp src/menu_skin.cpp)
+    target_sources(ConkerRecomp PRIVATE src/frontend.cpp src/conker_config.cpp src/audio_output.cpp src/rumble.cpp src/fps_counter.cpp src/reticle.cpp src/pad_mappings.cpp src/texture_packs.cpp src/gliden64_packs.cpp src/notices.cpp src/local_achievements.cpp src/save_states.cpp src/netplay.cpp src/net_session.cpp src/net_view.cpp src/net_menu.cpp src/net_lobby.cpp src/menu_skin.cpp src/net_chat.cpp src/update_check.cpp)
 
     # CONKER_RT64 selects the window build; the rest are what rt64 compiles its own headers with.
     target_compile_definitions(ConkerRecomp PRIVATE CONKER_RT64 HLSL_CPU)
@@ -212,7 +219,7 @@ if (UNIX)
     target_link_options(ConkerRecomp PRIVATE -rdynamic)
 elseif (WIN32)
     # The crash handler symbolises the stack with DbgHelp.
-    target_link_libraries(ConkerRecomp PRIVATE DbgHelp ws2_32)
+    target_link_libraries(ConkerRecomp PRIVATE DbgHelp ws2_32 winhttp)
     # Mods replace recompiled functions by patching their machine code, so identical
     # functions must not be folded into one.
     target_link_options(ConkerRecomp PRIVATE /OPT:NOICF)

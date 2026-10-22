@@ -7,10 +7,13 @@
 // launcher is up: the buttons only queue an action, and the update does it.
 
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
 #include <deque>
 #include <mutex>
 #include <string>
 
+#include "librecomp/game.hpp"
 #include "recompui/recompui.h"
 #include "elements/ui_button.h"
 #include "elements/ui_container.h"
@@ -35,7 +38,37 @@ namespace {
     int players = 2;
     int delay_frames = 3;
     int input_choice = 0;
-    std::string address_text;
+    std::string address_text = "142.179.68.208";   // filled in for joining
+    std::string nickname_text;
+    bool nickname_loaded = false;
+
+    // The nickname is kept between runs, in a small text file beside the settings.
+    std::filesystem::path nickname_path() {
+        return recomp::get_config_path() / "online_nickname.txt";
+    }
+    void load_nickname() {
+        if (nickname_loaded) {
+            return;
+        }
+        nickname_loaded = true;
+        try {
+            std::ifstream file(nickname_path());
+            std::getline(file, nickname_text);
+        }
+        catch (...) {
+        }
+        if (nickname_text.size() > 16) {
+            nickname_text.resize(16);
+        }
+    }
+    void save_nickname() {
+        try {
+            std::ofstream file(nickname_path(), std::ios::trunc);
+            file << nickname_text << "\n";
+        }
+        catch (...) {
+        }
+    }
     std::string port_text = "47000";
 
     recompui::ContextId context = recompui::ContextId::null();
@@ -52,6 +85,8 @@ namespace {
     recompui::Label* title_label = nullptr;
     recompui::Label* message_label = nullptr;
     recompui::Label* info_label = nullptr;
+    recompui::Label* version_label = nullptr;
+    std::string version_text_shown;
     recompui::Label* player_labels[4] = {};
     std::string last_signature;
 
@@ -138,6 +173,7 @@ namespace {
         panel->set_background_color(recompui::theme::color::ModalOverlay);
 
         title_label = context.create_element<recompui::Label>(panel, "Online", recompui::theme::Typography::Header3);
+        version_label = make_label(panel, std::string("Version ") + conker::updates::current_version(), recompui::LabelStyle::Small);
 
         // --- the setup page: host or join ---
         setup_page = context.create_element<recompui::Element>(panel);
@@ -148,6 +184,13 @@ namespace {
         setup_page->set_gap(12.0f);
 
         make_label(setup_page, "To host: choose the settings and press Host. To join: type the host's address and press Join.", recompui::LabelStyle::Small);
+
+        make_label(setup_page, "Your nickname (shown in chat and in game; empty: Player 1, 2...)", recompui::LabelStyle::Small);
+        load_nickname();
+        recompui::TextInput* nickname = context.create_element<recompui::TextInput>(setup_page);
+        nickname->set_width(300.0f, recompui::Unit::Dp);
+        nickname->set_text(nickname_text);
+        nickname->add_text_changed_callback([](const std::string& text) { nickname_text = text.substr(0, 16); });
 
         make_label(setup_page, "Host's address (to join)", recompui::LabelStyle::Small);
         recompui::TextInput* address = context.create_element<recompui::TextInput>(setup_page);
@@ -216,7 +259,7 @@ namespace {
     // The lobby page, from the session's state.
     void refresh_lobby(const conker::netsession::LobbyStatus& st) {
         std::string signature = std::to_string(st.phase) + "|" + std::to_string(st.mask) + "|" + std::to_string(st.expected) + "|" +
-            std::to_string(st.delay) + "|" + std::to_string(st.slot) + "|" + std::to_string(st.can_start) + "|" + st.message;
+            std::to_string(st.delay) + "|" + std::to_string(st.slot) + "|" + std::to_string(st.can_start) + "|" + st.message + "|" + st.names[0] + "|" + st.names[1] + "|" + st.names[2] + "|" + st.names[3] + "|" + st.log_path;
         if (signature == last_signature) {
             return;
         }
@@ -236,11 +279,11 @@ namespace {
             message = "Joined. Waiting for the host to start the game.";
         }
         message_label->set_text(message);
-        info_label->set_text(st.phase == 2 ? "Input delay: " + std::to_string(st.delay) + (st.delay == 1 ? " frame" : " frames") + " (the host chose it)" : std::string());
+        info_label->set_text(st.phase == 2 ? "Input delay: " + std::to_string(st.delay) + (st.delay == 1 ? " frame" : " frames") + " (the host chose it)" + (st.log_path.empty() ? std::string() : "\nLog file: " + st.log_path) : std::string());
         for (int i = 0; i < 4; i++) {
             std::string line;
             if (i < st.expected && st.phase == 2) {
-                line = "Player " + std::to_string(i + 1);
+                line = (((st.mask >> i) & 1) && !st.names[i].empty()) ? st.names[i] : "Player " + std::to_string(i + 1);
                 line += i == 0 ? " (host)" : "";
                 line += i == st.slot ? " (you)" : "";
                 line += ((st.mask >> i) & 1) ? "  -  here" : "  -  waiting for a player...";
@@ -281,6 +324,7 @@ void conker::netlobby::update(const std::u8string& game_id) {
                     recompui::message_box("Load the game's ROM first: choose Load ROM (the first option) and pick it.");
                     continue;
                 }
+                conker::updates::check_in_background();
                 if (!created) {
                     build();
                 }
@@ -324,6 +368,8 @@ void conker::netlobby::update(const std::u8string& game_id) {
                     conker::netsession::LobbySettings settings;
                     settings.host = a == Action::Host;
                     settings.address = address_text;
+                    settings.nickname = nickname_text;
+                    save_nickname();
                     settings.port = std::atoi(port_text.c_str());
                     if (settings.port < 1 || settings.port > 65535) {
                         settings.port = 47000;
@@ -355,6 +401,20 @@ void conker::netlobby::update(const std::u8string& game_id) {
                     break;
             }
             context.close();
+        }
+        if (shown && created) {
+            // the version line: this build's, and the newer release once the check has found one
+            std::string text = std::string("Version ") + conker::updates::current_version();
+            std::string tag, page;
+            if (conker::updates::newer_available(&tag, &page)) {
+                text += "  -  a newer version is out: " + tag + " (" + page + ")";
+            }
+            if (text != version_text_shown) {
+                version_text_shown = text;
+                context.open();
+                version_label->set_text(text);
+                context.close();
+            }
         }
         if (shown && !launched && in_lobby) {
             const conker::netsession::LobbyStatus st = conker::netsession::lobby_status();

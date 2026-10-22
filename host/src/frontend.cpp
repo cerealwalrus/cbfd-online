@@ -265,6 +265,7 @@ namespace {
         conker::texture_packs::update_unpacking();
         conker::fps_counter::update();
         conker::notices::update();
+        conker::netchat::update();
         conker::reticle::update();
         std::string title;
         {
@@ -756,6 +757,9 @@ namespace {
 
     bool get_port_input_live(int port, uint16_t* buttons, float* x, float* y);
 
+    // (the game thread's: the sampler, and what asks for it, run there)
+    SDL_GameController* local_pad_used = nullptr;
+
     // The online session's own player is whoever holds this machine's first port.
     bool online_local_sampler(uint16_t* buttons, float* x, float* y) {
         return get_port_input_live(0, buttons, x, y);
@@ -770,7 +774,7 @@ namespace {
         conker::netsession::on_port_read(port);
         conker::netplay::on_port_read(port);
         bool plugged = false;
-        if (conker::netsession::input(port, &plugged, buttons, x, y)) {
+        if (conker::netsession::input_for_game(port, &plugged, buttons, x, y)) {
             return plugged;
         }
         if (conker::netplay::replay_input(port, &plugged, buttons, x, y)) {
@@ -848,8 +852,50 @@ namespace {
                 }
             }
             const bool keys = port == 0 && filter != 2 && filter != 3;   // (4: the keyboard too)
-            read_port(pad, keys,
-                keys && conker::mouse_camera::stick_turns_camera(), conker::look_aim::swap_sticks_now(port), conker::look_aim::z_turns_aim(port), buttons, x, y);
+            if (port == 0) {
+                local_pad_used = pad;
+            }
+            // The right stick turns the camera (Right Stick: Free Camera): it presses no C-button. That's about the controller,
+            // not the keyboard (an online window on one PC that has only the gamepad has no `keys`, and its stick still has to).
+            const bool free_stick = port == 0 && (conker::netsession::active() ? conker::look_aim::stick_free_camera() : conker::mouse_camera::stick_turns_camera());
+            {
+                static int last_free = -1;
+                if (conker::netsession::active() && last_free != (free_stick ? 1 : 0)) {
+                    last_free = free_stick ? 1 : 0;
+                    conker::netsession::log(free_stick ? "[input] right stick: free camera, no C-buttons from it" : "[input] right stick: C-buttons (Free Camera off)");
+                }
+            }
+            // Online (Aiming: Swap Sticks, with a gamepad): the player aims with the right stick and moves with the left
+            // while they aim in R-Look. The sticks are swapped from the moment the game aims, or R is held (it starts the
+            // aim, three frames before this input is played: held R swaps at once, not after the aim has begun). The swap
+            // travels with the frame's input (net_session.cpp) so every machine acts on it at the same frame.
+            const bool online_game = conker::netsession::active();
+            const int aim_player = online_game ? conker::netsession::local_slot() : port;
+            const bool online_swap = online_game && port == 0 && pad != nullptr && conker::look_aim::online_swap_enabled();
+            bool swapped = online_game ? (online_swap && conker::look_aim::aiming_recently(aim_player)) : conker::look_aim::swap_sticks_now(port);
+            // (while the sticks are swapped the right stick is the aim's, not the camera's: no free camera then)
+            read_port(pad, keys, free_stick && !swapped, swapped, conker::look_aim::z_turns_aim(aim_player), buttons, x, y);
+            if (online_swap && !swapped && (*buttons & 0x0010) != 0) {
+                swapped = true;
+                read_port(pad, keys, false, true, conker::look_aim::z_turns_aim(aim_player), buttons, x, y);
+            }
+            // Online, from R pressed until the game's look mode starts (its stage, +0x73C of the camera, is 0 until then; it
+            // moves in at once, but not always) the right stick does nothing: the camera turned (or the head did) ahead of the aim and then
+            // the view jerked in. Swapped, the stick is the aim's (x, y); else it's the camera's, C-buttons or free.
+            const bool entry_hold = online_game && port == 0 && pad != nullptr && (*buttons & 0x0010) != 0
+                && conker::look_aim::look_stage(aim_player) == 0 && !conker::look_aim::aiming_recently(aim_player);
+            if (entry_hold) {
+                if (swapped) {
+                    *x = 0.0f;
+                    *y = 0.0f;
+                } else {
+                    read_port(pad, keys, true, false, conker::look_aim::z_turns_aim(aim_player), buttons, x, y);
+                }
+            }
+            if (port == 0) {
+                conker::look_aim::set_sampled_swap(online_game && swapped);
+                conker::look_aim::set_entry_hold(entry_hold);
+            }
         }
         return true;
     }
@@ -859,6 +905,10 @@ void conker::frontend::start_online(uint8_t* rdram) {
     if (conker::netsession::init(rdram, online_local_sampler)) {
         conker::netplay::enter_online(rdram);
     }
+}
+
+SDL_GameController* conker::frontend::local_pad() {
+    return local_pad_used;
 }
 
 int conker::frontend::port_controllers(std::array<SDL_GameController*, max_ports>& out) {

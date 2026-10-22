@@ -37,6 +37,7 @@
 #include <cmath>
 #include <cstring>
 #include <deque>
+#include <filesystem>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -48,6 +49,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <dbghelp.h>
 #else
 #include <arpa/inet.h>
 #include <netdb.h>
@@ -59,10 +61,12 @@
 
 #include <SDL.h>
 
+#include "librecomp/game.hpp"
 #include "ultramodern/ultramodern.hpp"
 #include "recomp.h"
 
 #include "conker.hpp"
+#include "version.hpp"
 
 #ifdef _WIN32
 #pragma comment(lib, "ws2_32.lib")
@@ -85,20 +89,27 @@ namespace {
 
     constexpr int max_players = 4;
     constexpr uint32_t magic = 0x544E4243;  // "CBNT"
-    constexpr uint32_t protocol_version = 3;
+    constexpr uint32_t protocol_version = 6;
     constexpr uint32_t check_every = 30;
     constexpr uint32_t history = 1200;       // frames of inputs kept (for resyncs)
     constexpr uint32_t max_message = 64u << 20;
     constexpr auto host_waits_for_player = std::chrono::seconds(5);
     constexpr auto client_waits_for_host = std::chrono::seconds(10);
 
-    enum Msg : uint8_t { Hello = 1, Welcome = 2, Start = 3, Input = 4, Frame = 5, Check = 6, ResyncRequest = 7, Snapshot = 8, FrameRngMsg = 9, DiagRequest = 10, DiagData = 11, LobbyInfo = 12, Refused = 13 };
+    enum Msg : uint8_t { Hello = 1, Welcome = 2, Start = 3, Input = 4, Frame = 5, Check = 6, ResyncRequest = 7, Snapshot = 8, FrameRngMsg = 9, DiagRequest = 10, DiagData = 11, LobbyInfo = 12, Refused = 13, Chat = 14 };
 
     struct PlayerInput {
         uint8_t plugged = 0;
         uint16_t buttons = 0;
         float x = 0.0f;
         float y = 0.0f;
+        // The right stick turns this player's camera (Right Stick: Free Camera): how far this frame, yaw and pitch in
+        // 1/10000 of a radian, with the player's own settings already applied (mouse_camera.cpp).
+        uint8_t cam_on = 0;
+        // The player's sticks are swapped (Aiming: Swap Sticks): they aim with the right stick and move with the left.
+        uint8_t swap = 0;
+        int16_t cam_yaw = 0;
+        int16_t cam_pitch = 0;
         // Only the host's input has any: for each of the game's 16 sound slots, the handle of a sound that has finished
         // playing on the host's audio thread (0: none). Every machine acts on it at the same frame, see the sound notes below.
         std::array<uint16_t, 16> ended{};
@@ -129,6 +140,11 @@ namespace {
             bytes.insert(bytes.end(), b, b + sizeof(T));
             return *this;
         }
+        Writer& put_string(const std::string& text) {
+            const uint8_t size = (uint8_t)std::min<size_t>(text.size(), 255);
+            put(size);
+            return put_bytes(text.data(), size);
+        }
         Writer& put_bytes(const void* data, size_t size) {
             const uint8_t* b = static_cast<const uint8_t*>(data);
             bytes.insert(bytes.end(), b, b + size);
@@ -136,6 +152,10 @@ namespace {
         }
         Writer& put_input(const PlayerInput& in) {
             put(in.plugged).put(in.buttons).put(in.x).put(in.y);
+            put((uint8_t)((in.cam_on ? 1 : 0) | (in.swap ? 2 : 0)));
+            if (in.cam_on) {
+                put(in.cam_yaw).put(in.cam_pitch);
+            }
             uint8_t count = 0;
             for (uint16_t h : in.ended) {
                 count += h != 0 ? 1 : 0;
@@ -171,12 +191,29 @@ namespace {
             at += sizeof(T);
             return v;
         }
+        std::string get_string() {
+            const uint8_t size = get<uint8_t>();
+            if (bad || at + size > this->size) {
+                bad = true;
+                return {};
+            }
+            std::string text(reinterpret_cast<const char*>(data + at), size);
+            at += size;
+            return text;
+        }
         PlayerInput get_input() {
             PlayerInput in;
             in.plugged = get<uint8_t>();
             in.buttons = get<uint16_t>();
             in.x = get<float>();
             in.y = get<float>();
+            const uint8_t flags = get<uint8_t>();
+            in.cam_on = flags & 1;
+            in.swap = (flags & 2) ? 1 : 0;
+            if (in.cam_on) {
+                in.cam_yaw = get<int16_t>();
+                in.cam_pitch = get<int16_t>();
+            }
             const uint8_t count = get<uint8_t>();
             for (uint8_t i = 0; i < count && !bad; i++) {
                 const uint8_t k = get<uint8_t>();
@@ -365,10 +402,20 @@ namespace {
     bool game_launch = false;                    // client: the host started the game, the launcher should too
     uint8_t lobby_mask = 0;                      // bit per player slot that is in the lobby
     int lobby_input = 0;                         // the Controller choice (0 any, 1 keyboard, 2 gamepad)
-    std::vector<std::unique_ptr<Peer>> graveyard;   // peers let go of: their reader threads still point at them
+    // Nicknames: only for showing (the lobby, the chat, the notices), not part of the game. Empty: "Player N".
+    std::string my_name;
+    std::array<std::string, 4> names;
+    std::vector<std::unique_ptr<Peer>> graveyard;
+
+    // Text chat: it doesn't touch the lockstep. A line goes to the host, which sends it on to everybody (the sender included,
+    // so all see the lines in the same order); each machine's UI takes what has come in.
+    std::deque<std::pair<int, std::string>> chat_inbox;       // (player slot, text)
+    clock::time_point chat_last[max_players][5];                // when each player's last five lines were
+    int chat_next[max_players] = {};   // peers let go of: their reader threads still point at them
     uint32_t test_desync_frame = 0xFFFFFFFFu;   // CONKER_NET_TEST_DESYNC: a client upsets its own RNG at that frame
 
     FILE* log_file = nullptr;
+    std::string log_path;   // where it is (for the lobby to say)
     void log_line(const char* format, ...) {
         if (log_file == nullptr) {
             return;
@@ -390,7 +437,20 @@ namespace {
         const char* env = SDL_getenv("CONKER_NET_LOG");
         const std::string path = (env != nullptr && env[0] != 0) ? std::string(env) : default_name;
         if (!path.empty()) {
+            // Beside the game, or where it was started from; if that can't be written to (a protected folder), in the
+            // folder of the settings.
             log_file = std::fopen(path.c_str(), "w");
+            std::error_code ec;
+            if (log_file != nullptr) {
+                log_path = std::filesystem::absolute(path, ec).string();
+            }
+            else {
+                const std::filesystem::path other = recomp::get_config_path() / std::filesystem::path(path).filename();
+                log_file = std::fopen(other.string().c_str(), "w");
+                if (log_file != nullptr) {
+                    log_path = other.string();
+                }
+            }
         }
     }
 
@@ -679,12 +739,105 @@ namespace {
         lobby_mask = mask;
         Writer w(LobbyInfo);
         w.put((uint8_t)players_expected).put(mask).put(delay);
+        for (int s = 0; s < max_players; s++) {
+            w.put_string(connected[s] ? names[s] : std::string());
+        }
         const auto& bytes = w.finish();
         for (auto& peer : peers) {
             if (peer->alive) {
                 peer->send_message(bytes);
             }
         }
+    }
+
+    // A nickname: printable characters, no leading or trailing spaces, up to 16 bytes (not in the middle of a UTF-8 character).
+    std::string clean_name(const std::string& text) {
+        std::string out;
+        for (unsigned char c : text) {
+            if (c >= 32 && c != 127) {
+                out += (char)c;
+            }
+        }
+        const size_t first = out.find_first_not_of(' ');
+        out = first == std::string::npos ? std::string() : out.substr(first);
+        if (out.size() > 16) {
+            out.resize(16);
+            while (!out.empty() && (static_cast<unsigned char>(out.back()) & 0xC0) == 0x80) {
+                out.pop_back();
+            }
+            // (a character cut in half leaves its first byte behind)
+            if (!out.empty() && static_cast<unsigned char>(out.back()) >= 0xC0) {
+                out.pop_back();
+            }
+        }
+        while (!out.empty() && out.back() == ' ') {
+            out.pop_back();
+        }
+        return out;
+    }
+
+    // A player's name for the screen. Mutex held.
+    std::string name_of(int slot) {
+        if (slot >= 0 && slot < max_players && !names[slot].empty()) {
+            return names[slot];
+        }
+        return "Player " + std::to_string(slot + 1);
+    }
+
+    std::string clean_chat(std::string text) {
+        std::string out;
+        for (unsigned char c : text) {
+            if (c >= 32 && c != 127) {
+                out += (char)c;
+            }
+        }
+        if (out.size() > 120) {
+            out.resize(120);
+            while (!out.empty() && (static_cast<unsigned char>(out.back()) & 0xC0) == 0x80) {
+                out.pop_back();   // not in the middle of a UTF-8 character
+            }
+        }
+        return out;
+    }
+
+    // Mutex held (host). A line from a player: sent on to everybody and kept for this machine's chat.
+    void host_chat(int slot, const std::string& raw) {
+        const std::string text = clean_chat(raw);
+        if (text.empty() || slot < 0 || slot >= max_players) {
+            return;
+        }
+        // no more than five lines in four seconds from one player
+        const auto now = clock::now();
+        const auto oldest = chat_last[slot][chat_next[slot]];
+        if (oldest.time_since_epoch().count() != 0 && now - oldest < std::chrono::seconds(4)) {
+            return;
+        }
+        chat_last[slot][chat_next[slot]] = now;
+        chat_next[slot] = (chat_next[slot] + 1) % 5;
+        Writer w(Chat);
+        w.put((uint8_t)slot).put((uint16_t)text.size()).put_bytes(text.data(), text.size());
+        const auto& bytes = w.finish();
+        for (auto& peer : peers) {
+            if (peer->alive) {
+                peer->send_message(bytes);
+            }
+        }
+        chat_inbox.emplace_back(slot, text);
+        while (chat_inbox.size() > 50) {
+            chat_inbox.pop_front();
+        }
+        log_line("[chat] player %d: %s", slot + 1, text.c_str());
+    }
+
+    bool read_chat(Reader& r, int* slot, std::string* text) {
+        *slot = r.get<uint8_t>();
+        const uint16_t n = r.get<uint16_t>();
+        if (r.bad || r.at + n > r.size) {
+            return false;
+        }
+        text->assign(reinterpret_cast<const char*>(r.data + r.at), n);
+        r.at += n;
+        return true;
     }
 
     // Mutex held. The first `delay` frames have nobody's input yet, so they are neutral for all.
@@ -734,6 +887,13 @@ namespace {
                     on_resync_requested(peer->slot, frame, diverged);
                 }
             }
+            else if (type == Chat) {
+                int from;
+                std::string text;
+                if (read_chat(r, &from, &text)) {
+                    host_chat(peer->slot, text);   // (the slot in the message is ignored: it's whoever sent it)
+                }
+            }
         }
         std::lock_guard lock{ mtx };
         peer->alive = false;
@@ -745,15 +905,19 @@ namespace {
         }
         connected[peer->slot] = false;
         if (!started) {
+            names[peer->slot].clear();
             send_lobby_info();
         }
         try_broadcast();
         cv.notify_all();
     }
 
-    void refuse(socket_t s, uint8_t reason) {
+    void refuse(socket_t s, uint8_t reason, const std::string& text = std::string()) {
         Writer w(Refused);
         w.put(reason);
+        if (!text.empty()) {
+            w.put_string(text);
+        }
         send_all(s, w.finish().data(), w.bytes.size());
         close_socket(s);
     }
@@ -817,6 +981,20 @@ namespace {
                 refuse(s, 2);
                 continue;
             }
+            const std::string joiner_name = clean_name(r.get_string());
+            // the joiner's build (after its name; an older build sends none)
+            std::string joiner_build = "an older build";
+            if (!r.bad && r.at < r.size) {
+                const std::string heard = r.get_string();
+                if (!r.bad && !heard.empty()) {
+                    joiner_build = heard;
+                }
+            }
+            if (joiner_build != CONKER_ONLINE_VERSION) {
+                log_line("[net] a player on version %s was refused (this is %s)", joiner_build.c_str(), CONKER_ONLINE_VERSION);
+                refuse(s, 4, CONKER_ONLINE_VERSION);
+                continue;
+            }
             std::unique_lock lock{ mtx };
             if (gen != lobby_gen.load()) {
                 lock.unlock();
@@ -851,6 +1029,23 @@ namespace {
             log_line("[net] player %d joined", slot + 1);
             Peer* raw = peer.get();
             connected[slot] = true;
+            {
+                // two players with the same name: the later gets a number
+                std::string name = joiner_name;
+                const std::string base = name;
+                for (int n = 2; !name.empty(); n++) {
+                    bool taken = false;
+                    for (int k = 0; k < max_players; k++) {
+                        taken |= k != slot && connected[k] && names[k] == name;
+                    }
+                    if (!taken) {
+                        break;
+                    }
+                    name = base.substr(0, 13) + " " + std::to_string(n);
+                }
+                names[slot] = name;
+                log_line("[net] player %d is called \"%s\"", slot + 1, name.c_str());
+            }
             peers.push_back(std::move(peer));
             raw->reader = std::thread(host_reader, raw);
             raw->reader.detach();
@@ -884,14 +1079,30 @@ namespace {
                     game_launch = true;
                     log_line("[net] the game starts");
                     break;
+                case Chat: {
+                    int from;
+                    std::string text;
+                    if (read_chat(r, &from, &text) && from >= 0 && from < max_players) {
+                        chat_inbox.emplace_back(from, clean_chat(text));
+                        while (chat_inbox.size() > 50) {
+                            chat_inbox.pop_front();
+                        }
+                    }
+                    break;
+                }
                 case LobbyInfo: {
                     const uint8_t expected = r.get<uint8_t>();
                     const uint8_t mask = r.get<uint8_t>();
                     const uint32_t d = r.get<uint32_t>();
+                    std::array<std::string, 4> heard;
+                    for (auto& name : heard) {
+                        name = clean_name(r.get_string());
+                    }
                     if (!r.bad && expected >= 2 && expected <= max_players) {
                         players_expected = expected;
                         lobby_mask = mask;
                         delay = d;
+                        names = heard;
                     }
                     break;
                 }
@@ -1172,7 +1383,7 @@ namespace {
         int one = 1;
         setsockopt(s, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&one), sizeof(one));
         Writer hello(Hello);
-        hello.put(magic).put(protocol_version);
+        hello.put(magic).put(protocol_version).put_string(my_name).put_string(CONKER_ONLINE_VERSION);
         if (!send_all(s, hello.finish().data(), hello.bytes.size())) {
             close_socket(s);
             return fail("The host closed the connection.");
@@ -1186,6 +1397,12 @@ namespace {
         if (type == Refused) {
             const uint8_t reason = payload.empty() ? 0 : payload[0];
             close_socket(s);
+            if (reason == 4) {
+                Reader heard{ payload.data() + 1, payload.size() - 1 };
+                const std::string host_build = heard.get_string();
+                return fail("The host is on version " + (host_build.empty() ? std::string("?") : host_build) + " and you are on version " + CONKER_ONLINE_VERSION +
+                    ". You both need the same version: get the newer one from the releases page.");
+            }
             return fail(reason == 1 ? "The game is full." : reason == 2 ? "The host has a different version of the game. Both of you need the same build."
                 : reason == 3 ? "The game has already started." : "The host refused the connection.");
         }
@@ -1395,6 +1612,11 @@ void conker::netsession::lobby_open(const LobbySettings& cfg) {
     const uint32_t gen = ++lobby_gen;
     is_host = cfg.host;
     lobby_input = std::clamp(cfg.input, 0, 2);
+    my_name = clean_name(cfg.nickname);
+    names = {};
+    if (cfg.host) {
+        names[0] = my_name;
+    }
     players_expected = std::clamp(cfg.players, 2, max_players);
     delay = (uint32_t)std::clamp(cfg.delay, 1, 30);
     log_line("[net] lobby: %s, %d players, delay %u", cfg.host ? "hosting" : "joining", players_expected, delay);
@@ -1462,6 +1684,8 @@ conker::netsession::LobbyStatus conker::netsession::lobby_status() {
     st.expected = players_expected;
     st.delay = (int)delay;
     st.message = lobby_message;
+    st.names = names;
+    st.log_path = log_path;
     uint8_t mask = 0;
     if (is_host) {
         for (int k = 0; k < max_players; k++) {
@@ -1499,6 +1723,36 @@ bool conker::netsession::lobby_start() {
     return true;
 }
 
+bool conker::netsession::chat_available() {
+    std::lock_guard lock{ mtx };
+    return enabled && started && !failed;
+}
+
+bool conker::netsession::chat_send(const std::string& text) {
+    std::lock_guard lock{ mtx };
+    if (!enabled || !started || failed) {
+        return false;
+    }
+    if (is_host) {
+        host_chat(0, text);
+        return true;
+    }
+    const std::string clean = clean_chat(text);
+    if (clean.empty() || peers.empty() || !peers[0]->alive) {
+        return false;
+    }
+    Writer w(Chat);
+    w.put((uint8_t)my_slot).put((uint16_t)clean.size()).put_bytes(clean.data(), clean.size());
+    return peers[0]->send_message(w.finish());
+}
+
+std::vector<std::pair<int, std::string>> conker::netsession::chat_poll() {
+    std::lock_guard lock{ mtx };
+    std::vector<std::pair<int, std::string>> lines(chat_inbox.begin(), chat_inbox.end());
+    chat_inbox.clear();
+    return lines;
+}
+
 bool conker::netsession::active() {
     std::lock_guard lock{ mtx };
     return enabled && !failed;
@@ -1515,6 +1769,32 @@ int conker::netsession::input_filter() {
 
 int conker::netsession::local_slot() {
     return my_slot;
+}
+
+std::string conker::netsession::player_name(int slot) {
+    std::lock_guard lock{ mtx };
+    return name_of(slot);
+}
+
+bool conker::netsession::swap_flag(int player) {
+    std::lock_guard lock{ mtx };
+    return enabled && !failed && player >= 0 && player < max_players && current.p[player].swap != 0;
+}
+
+bool conker::netsession::camera_turn(int player, float* yaw, float* pitch) {
+    *yaw = 0.0f;
+    *pitch = 0.0f;
+    std::lock_guard lock{ mtx };
+    if (!enabled || failed || player < 0 || player >= max_players) {
+        return false;
+    }
+    const PlayerInput& in = current.p[player];
+    if (!in.cam_on) {
+        return false;
+    }
+    *yaw = (float)in.cam_yaw / 10000.0f;
+    *pitch = (float)in.cam_pitch / 10000.0f;
+    return true;
 }
 
 void conker::netsession::log(const char* line) {
@@ -1555,7 +1835,68 @@ namespace {
     }
 }
 
+// The audio library's list of voices in use (D_8002BA20: the first voice; each voice's first word is the next one). A freeze found in a
+// long session had the game thread going round this list for ever (func_10017604, which stops sounds), so the list is looked at before
+// that function walks it: if it comes back on a voice it has had (a loop), or runs to nothing that is a voice, it is cut there.
+namespace {
+    const uint32_t voice_list_head = 0x8002BA20u;
+
+    // Looks at the list through `base` (the game's memory); `repair` cuts it where it is broken. Returns how many voices it has, or -1 if
+    // it is a loop, -2 if it runs into something that is not a voice.
+    int check_voice_list(uint8_t* base, bool repair, uint32_t* bad_at) {
+        std::vector<uint32_t> seen;
+        seen.reserve(64);
+        uint32_t previous = 0;
+        uint32_t current = ram_w(base, voice_list_head);
+        while (current != 0) {
+            if (!ram_pointer(current) || (current & 3u) != 0) {
+                if (repair) {
+                    const uint32_t zero = 0;
+                    if (previous != 0) {
+                        std::memcpy(base + ((previous) & 0x7FFFFFu), &zero, 4);
+                    }
+                    else {
+                        std::memcpy(base + (voice_list_head & 0x7FFFFFu), &zero, 4);
+                    }
+                }
+                if (bad_at != nullptr) {
+                    *bad_at = current;
+                }
+                return -2;
+            }
+            if (std::find(seen.begin(), seen.end(), current) != seen.end() || seen.size() >= 4096) {
+                if (repair) {
+                    const uint32_t zero = 0;
+                    std::memcpy(base + ((previous) & 0x7FFFFFu), &zero, 4);
+                }
+                if (bad_at != nullptr) {
+                    *bad_at = current;
+                }
+                return -1;
+            }
+            seen.push_back(current);
+            previous = current;
+            current = ram_w(base, current);
+        }
+        return (int)seen.size();
+    }
+}
+
 extern "C" void conker_net_sound_hook(uint8_t* rdram, recomp_context* ctx, int which) {
+    if (which == 2) {
+        // func_10017604 is about to walk the list of voices
+        static int logged = 0;
+        uint32_t bad = 0;
+        const int count = check_voice_list(rdram, true, &bad);
+        if (count < 0 && logged < 20) {
+            logged++;
+            conker::netsession::log("[sound] the audio library's list of voices was broken (a loop, or a link to something that is not a voice) as func_10017604 was about to go through it: cut");
+            char line[160];
+            std::snprintf(line, sizeof(line), "[sound]   it came to %08X (%s)", (unsigned)bad, count == -1 ? "a voice it had already passed" : "not a voice");
+            conker::netsession::log(line);
+        }
+        return;
+    }
     if (!sound_sync.load(std::memory_order_relaxed)) {
         return;
     }
@@ -1573,6 +1914,171 @@ extern "C" void conker_net_sound_hook(uint8_t* rdram, recomp_context* ctx, int w
         if (arg >= sound_slots + 8u && arg < sound_slots + 8u + 16u * 12u && (arg - sound_slots - 8u) % 12u == 0) {
             ctx->r2 = ram_w(rdram, arg) != 0 ? 1 : 0;
         }
+    }
+}
+
+// --- A watch on the game thread (for a freeze found in a long session: both machines stopped, with nothing in the log) ---
+// A thread of its own looks once a second at when the game thread last started a frame. If it has been still for a few seconds
+// it logs where the game thread is (the addresses on its stack that are in this program, with their names if the symbols are
+// at hand), and whether it is in the wait for the other machine's inputs.
+namespace {
+    std::atomic<uint32_t> watch_frame{ 0 };
+    std::atomic<int64_t> watch_last_ms{ 0 };
+    std::atomic<int> watch_waiting{ 0 };
+    std::atomic<bool> watch_started{ false };
+#ifdef _WIN32
+    HANDLE watch_game_thread = nullptr;
+#endif
+
+    int64_t watch_now_ms() {
+        return (int64_t)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    }
+
+#if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
+    typedef BOOL(WINAPI* SymInitializeFn)(HANDLE, PCSTR, BOOL);
+    typedef BOOL(WINAPI* SymFromAddrFn)(HANDLE, DWORD64, PDWORD64, PSYMBOL_INFO);
+
+    void watch_log_game_thread_stack() {
+        if (watch_game_thread == nullptr) {
+            return;
+        }
+        static SymInitializeFn sym_initialize = nullptr;
+        static SymFromAddrFn sym_from_addr = nullptr;
+        static bool symbols_tried = false;
+        if (!symbols_tried) {
+            symbols_tried = true;
+            HMODULE dbghelp = LoadLibraryA("dbghelp.dll");
+            if (dbghelp != nullptr) {
+                sym_initialize = (SymInitializeFn)(void*)GetProcAddress(dbghelp, "SymInitialize");
+                sym_from_addr = (SymFromAddrFn)(void*)GetProcAddress(dbghelp, "SymFromAddr");
+                if (sym_initialize != nullptr && !sym_initialize(GetCurrentProcess(), nullptr, TRUE)) {
+                    sym_from_addr = nullptr;
+                }
+            }
+        }
+        CONTEXT context;
+        std::memset(&context, 0, sizeof(context));
+        context.ContextFlags = CONTEXT_CONTROL;
+        if (SuspendThread(watch_game_thread) == (DWORD)-1) {
+            return;
+        }
+        const bool got = GetThreadContext(watch_game_thread, &context) != 0;
+        std::vector<uint64_t> stack;
+        if (got) {
+            stack.resize(512);
+            SIZE_T read = 0;
+            if (!ReadProcessMemory(GetCurrentProcess(), (LPCVOID)context.Rsp, stack.data(), stack.size() * sizeof(uint64_t), &read)) {
+                stack.resize(read / sizeof(uint64_t));
+            }
+            else {
+                stack.resize(read / sizeof(uint64_t));
+            }
+        }
+        const uint64_t rip = got ? context.Rip : 0;
+        ResumeThread(watch_game_thread);
+        if (!got) {
+            return;
+        }
+        const uint8_t* image = (const uint8_t*)GetModuleHandleA(nullptr);
+        uint64_t image_size = 0;
+        if (image != nullptr) {
+            const IMAGE_DOS_HEADER* dos = (const IMAGE_DOS_HEADER*)image;
+            const IMAGE_NT_HEADERS* nt = (const IMAGE_NT_HEADERS*)(image + dos->e_lfanew);
+            image_size = nt->OptionalHeader.SizeOfImage;
+        }
+        const auto describe = [&](uint64_t address) {
+            std::string text;
+            char buffer[sizeof(SYMBOL_INFO) + 256];
+            std::memset(buffer, 0, sizeof(buffer));
+            SYMBOL_INFO* symbol = (SYMBOL_INFO*)buffer;
+            symbol->SizeOfStruct = sizeof(SYMBOL_INFO);
+            symbol->MaxNameLen = 255;
+            DWORD64 displacement = 0;
+            if (sym_from_addr != nullptr && sym_from_addr(GetCurrentProcess(), (DWORD64)address, &displacement, symbol)) {
+                text = symbol->Name;
+                text += "+0x";
+                char hex[24];
+                std::snprintf(hex, sizeof(hex), "%llX", (unsigned long long)displacement);
+                text += hex;
+            }
+            return text;
+        };
+        {
+            char line[400];
+            std::snprintf(line, sizeof(line), "[net] watchdog: game thread at %llX (offset %llX) %s", (unsigned long long)rip,
+                (unsigned long long)(rip - (uint64_t)(uintptr_t)image), describe(rip).c_str());
+            log_line("%s", line);
+        }
+        int shown = 0;
+        for (uint64_t value : stack) {
+            if (value >= (uint64_t)(uintptr_t)image && value < (uint64_t)(uintptr_t)image + image_size && shown < 40) {
+                shown++;
+                char line[400];
+                std::snprintf(line, sizeof(line), "[net] watchdog:   on its stack %llX (offset %llX) %s", (unsigned long long)value,
+                    (unsigned long long)(value - (uint64_t)(uintptr_t)image), describe(value).c_str());
+                log_line("%s", line);
+            }
+        }
+    }
+#endif
+
+    void watch_main() {
+        uint32_t reported_frame = 0xFFFFFFFFu;
+        int reports = 0;
+        for (;;) {
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+            const uint32_t frame = watch_frame.load();
+            const int64_t last = watch_last_ms.load();
+            if (last == 0) {
+                continue;
+            }
+            const int64_t idle = watch_now_ms() - last;
+            if (frame != reported_frame) {
+                reported_frame = frame;
+                reports = 0;
+            }
+            if (idle >= 4000 && reports < 6 && idle >= 4000 + (int64_t)reports * 4000) {
+                reports++;
+                log_line("[net] watchdog: the game has not started a frame for %lld s (last frame %u), %s", (long long)(idle / 1000), frame,
+                    watch_waiting.load() != 0 ? "waiting for the other machine's inputs" : "NOT in the wait for inputs (the game itself is stuck)");
+                if (ram != nullptr && reports == 1) {
+                    // the voice list as it is now, without changing it (a loop shows as the same address twice)
+                    std::vector<uint32_t> seen;
+                    uint32_t current = ram_w(ram, voice_list_head);
+                    std::string text;
+                    while (current != 0 && seen.size() < 80) {
+                        char piece[48];
+                        const bool again = std::find(seen.begin(), seen.end(), current) != seen.end();
+                        std::snprintf(piece, sizeof(piece), " %08X%s", (unsigned)current, again ? "(again)" : "");
+                        text += piece;
+                        if (again || !ram_pointer(current) || (current & 3u) != 0) {
+                            break;
+                        }
+                        seen.push_back(current);
+                        current = ram_w(ram, current);
+                    }
+                    log_line("[net] watchdog: the audio library's voice list:%s", text.c_str());
+                }
+#if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
+                watch_log_game_thread_stack();
+#endif
+            }
+        }
+    }
+
+    // Called by the game thread at the start of each frame.
+    void watch_frame_started(uint32_t f) {
+        if (!watch_started.exchange(true)) {
+#ifdef _WIN32
+            HANDLE duplicate = nullptr;
+            if (DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &duplicate, 0, FALSE, DUPLICATE_SAME_ACCESS)) {
+                watch_game_thread = duplicate;
+            }
+#endif
+            std::thread(watch_main).detach();
+        }
+        watch_frame = f;
+        watch_last_ms = watch_now_ms();
     }
 }
 
@@ -1622,6 +2128,22 @@ void conker::netsession::on_port_read(int port) {
     bool plugged = true;
     if (sampler != nullptr) {
         plugged = sampler(&buttons, &x, &y);
+    }
+    // The right stick turning this player's camera: asked right after the controller was read, as it goes with it.
+    float cam_yaw = 0.0f, cam_pitch = 0.0f;
+    bool cam_on = sampler != nullptr && conker::mouse_camera::online_turn(&cam_yaw, &cam_pitch);
+    bool swapped = sampler != nullptr && conker::look_aim::sampled_swap();
+    if (cam_on && conker::look_aim::entry_hold()) {
+        cam_on = false;
+        cam_yaw = cam_pitch = 0.0f;
+    }
+    if (conker::netchat::typing()) {
+        // typing in the chat: this player's game gets a still controller (only what this machine sends changes)
+        buttons = 0;
+        x = 0.0f;
+        y = 0.0f;
+        cam_yaw = cam_pitch = 0.0f;
+        swapped = false;
     }
 
     std::unique_lock lock{ mtx };
@@ -1766,6 +2288,8 @@ void conker::netsession::on_port_read(int port) {
             buttons = 0;
             x = 0.0f;
             y = 0.0f;
+            cam_yaw = cam_pitch = 0.0f;
+            swapped = false;
         }
         else {
             hold_off = false;
@@ -1834,6 +2358,10 @@ void conker::netsession::on_port_read(int port) {
     mine.buttons = buttons;
     mine.x = x;
     mine.y = y;
+    mine.cam_on = cam_on ? 1 : 0;
+    mine.swap = swapped ? 1 : 0;
+    mine.cam_yaw = (int16_t)std::lround(std::clamp(cam_yaw, -3.0f, 3.0f) * 10000.0f);
+    mine.cam_pitch = (int16_t)std::lround(std::clamp(cam_pitch, -3.0f, 3.0f) * 10000.0f);
     sound_sync = true;
     if (pending_leave.on) {
         mine.leave = pending_leave;
@@ -1862,6 +2390,68 @@ void conker::netsession::on_port_read(int port) {
                     logged++;
                     log_line("[sound] f=%u slot %u: sound %04X has ended", f, k, (unsigned)handle);
                 }
+            }
+        }
+    }
+    if (ram != nullptr && f % 300 == 0) {
+        // (A voice in use that no sound slot of the game points at, for 15 seconds or more: a sound the game can no longer stop, such as a
+        // looping gun that stays on. Voice fields: +0x38 the slot's pointer it was started for, +0x44 the sound, +0x53 flags, +0x54 its state.)
+        static std::map<uint32_t, std::pair<uint16_t, uint32_t>> loose;   // voice -> (sound, frame first seen)
+        static int loose_logged = 0;
+        std::map<uint32_t, std::pair<uint16_t, uint32_t>> now;
+        int in_use = 0, playing = 0;
+        std::vector<uint32_t> seen;
+        uint32_t current = ram_w(ram, voice_list_head);
+        while (current != 0 && ram_pointer(current) && (current & 3u) == 0 && seen.size() < 256 && std::find(seen.begin(), seen.end(), current) == seen.end()) {
+            seen.push_back(current);
+            in_use++;
+            if (ram_b(ram, current + 0x54u) != 0) {
+                playing++;
+                const uint32_t link = ram_w(ram, current + 0x38u);
+                const bool held = ram_pointer(link) && ram_w(ram, link) == current;
+                if (!held) {
+                    const uint16_t sound = ram_h(ram, current + 0x44u);
+                    auto it = loose.find(current);
+                    const uint32_t first = (it != loose.end() && it->second.first == sound) ? it->second.second : f;
+                    now[current] = { sound, first };
+                    if (f - first >= 900 && (f - first) % 900 == 0 && loose_logged < 100) {
+                        loose_logged++;
+                        log_line("[sound] f=%u voice %08X (sound %04X, flags %02X, state %02X) has played for %u frames with no slot of the game's holding it", f, (unsigned)current,
+                            (unsigned)sound, (unsigned)ram_b(ram, current + 0x53u), (unsigned)ram_b(ram, current + 0x54u), f - first);
+                    }
+                }
+            }
+            current = ram_w(ram, current);
+        }
+        loose.swap(now);
+        static int summary_logged = 0;
+        if (f % 3000 == 0 && summary_logged < 60) {
+            summary_logged++;
+            log_line("[sound] f=%u voices in use: %d, playing: %d, without a slot: %d", f, in_use, playing, (int)loose.size());
+        }
+    }
+    if (ram != nullptr) {
+        // (A sound that keeps its slot and voice for a long time, on this machine: a stuck one, such as a looping laser, shows here.)
+        static std::array<uint16_t, 16> held_handle{};
+        static std::array<uint32_t, 16> held_since{};
+        static int stuck_logged = 0;
+        for (uint32_t k = 0; k < 16; k++) {
+            const uint32_t slot = sound_slots + k * 12u;
+            const uint16_t handle = ram_h(ram, slot);
+            const uint32_t voice = ram_w(ram, slot + 8u);
+            if (handle != 0 && ram_pointer(voice)) {
+                if (held_handle[k] != handle) {
+                    held_handle[k] = handle;
+                    held_since[k] = f;
+                }
+                else if (f - held_since[k] >= 900 && (f - held_since[k]) % 900 == 0 && stuck_logged < 80) {
+                    stuck_logged++;
+                    log_line("[sound] f=%u slot %u: sound %04X (handle %04X) has had its voice for %u frames; voice state %02X, link %08X", f, k,
+                        (unsigned)ram_h(ram, slot + 4u), (unsigned)handle, f - held_since[k], (unsigned)ram_b(ram, voice + 0x54u), (unsigned)ram_w(ram, voice + 0x38u));
+                }
+            }
+            else {
+                held_handle[k] = 0;
             }
         }
     }
@@ -1934,6 +2524,8 @@ void conker::netsession::on_port_read(int port) {
         }
     }
 
+    watch_frame_started(f);
+    watch_waiting = 1;
     const auto began = clock::now();
     while (ready.find(f) == ready.end() && !failed) {
         // (the machines start the game a little apart: the first frames wait longer)
@@ -1965,6 +2557,7 @@ void conker::netsession::on_port_read(int port) {
             }
         }
     }
+    watch_waiting = 0;
     if (failed) {
         return;
     }
@@ -1998,7 +2591,7 @@ void conker::netsession::on_port_read(int port) {
             set8(0x8008FE2Cu, lv.fe2c);
             set8(0x80087270u, lv.v7270);
             log_line("[net] f=%u player %d chose QUIT: back to the multiplayer menu", f, slot + 1);
-            conker::notices::show(("Player " + std::to_string(slot + 1) + " ended the match").c_str());
+            conker::notices::show((name_of(slot) + " ended the match").c_str());
         }
     }
     if (ram != nullptr) {
@@ -2058,7 +2651,7 @@ void conker::netsession::on_port_read(int port) {
         for (int s = 1; s < max_players; s++) {
             const bool now = current.p[s].plugged != 0;
             if (was_plugged[s] && !now) {
-                conker::notices::show("Player " + std::to_string(s + 1) + " left the match");
+                conker::notices::show(name_of(s) + " left the match");
             }
             was_plugged[s] = now;
         }
@@ -2085,6 +2678,48 @@ bool conker::netsession::input(int port, bool* plugged, uint16_t* buttons, float
     }
     *x = in.x;
     *y = in.y;
+    return true;
+}
+
+bool conker::netsession::input_for_game(int port, bool* plugged, uint16_t* buttons, float* x, float* y) {
+    if (!input(port, plugged, buttons, x, y)) {
+        return false;
+    }
+    bool swapped = false;
+    uint8_t* rdram = nullptr;
+    {
+        std::lock_guard lock{ mtx };
+        swapped = port >= 0 && port < max_players && current.p[port].swap != 0;
+        rdram = ram;
+    }
+    // Swap Sticks: the left stick is the C-buttons while aiming (R held). Letting go of R with the stick still held made C-Down arrive
+    // with R up, and the game threw a grenade. After R is let go the C-buttons are held back until none is pressed any more.
+    static bool prev_r[max_players] = {};
+    static bool hold_back[max_players] = {};
+    if (port >= 0 && port < max_players) {
+        if (!swapped) {
+            prev_r[port] = false;
+            hold_back[port] = false;
+        } else {
+            const bool r = (*buttons & 0x0010) != 0;
+            if (r) {
+                hold_back[port] = false;
+            } else if (prev_r[port]) {
+                hold_back[port] = true;
+            }
+            prev_r[port] = r;
+            if (hold_back[port]) {
+                if ((*buttons & 0x000F) == 0) {
+                    hold_back[port] = false;
+                } else {
+                    *buttons &= (uint16_t)~0x000F;
+                }
+            }
+        }
+    }
+    if (swapped && rdram != nullptr) {
+        conker::look_aim::no_weapon_walk(rdram, port, buttons);
+    }
     return true;
 }
 
@@ -2115,6 +2750,9 @@ namespace {
             // On the game's idle thread, at the safe point the state was taken at.
             uint32_t at_frame;
             uint32_t mask;
+            if (ok) {
+                conker::mouse_camera::reset();   // (at the safe point; the machine that loads it does the same)
+            }
             {
                 std::lock_guard lock{ mtx };
                 at_frame = frames_started;
@@ -2187,6 +2825,7 @@ namespace {
                 log_line("[net] the snapshot could not be loaded");
                 return;
             }
+            conker::mouse_camera::reset();
             // The game goes on from the state: it was in the frame before at_frame.
             frames_started = at_frame;
             current_frame = at_frame > 0 ? at_frame - 1 : 0;

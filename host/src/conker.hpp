@@ -87,6 +87,9 @@ namespace conker {
         ultramodern::input::connected_device_info_t get_connected_device_info(int controller_num);
         // The controllers holding ports 1-4, in port order; returns how many hold one.
         int port_controllers(std::array<_SDL_GameController*, 4>& out);
+        // The controller the online game's own player (this machine's port 1) is read from, as the last read chose it: with
+        // two windows on one PC that is each window's own, not the first one listed. Null if none.
+        _SDL_GameController* local_pad();
         // From the game's init (main.cpp): starts the online session if the environment asks for one.
         void start_online(uint8_t* rdram);
     }
@@ -151,6 +154,23 @@ namespace conker {
         // are swapped (frontend.cpp): the right stick aims and the left moves. Not with recompinput's own
         // multiplayer mode (players assigned in its menus), which maps each controller itself.
         bool swap_sticks_now(int player = 0);
+        // Online, with Right Stick: Free Camera on, a player's controller aims with the right stick and moves with the left
+        // while they aim in R-Look (frontend.cpp swaps the sticks for what this machine sends, and the swap travels with the
+        // frame's input, see netsession::swap_flag, so every machine acts on it at the same frame).
+        bool online_swap_enabled();
+        // Whether either aiming mode ran for the player's camera in the last few frames (the setting needn't be on).
+        bool aiming_recently(int player);
+        // The stage of a player's look mode (+0x73C of the camera: 0 not started, 1 moving in, 2 aiming, 3 leaving), as of the last view.
+        int look_stage(int player);
+        // Swap Sticks online, no weapon: the C-buttons the left stick pressed (buttons, as agreed) turned into the game's own strafe,
+        // facing set so it goes the way pressed from the view. Called for the game's read of the controller only.
+        void no_weapon_walk(uint8_t* rdram, int port, uint16_t* buttons);
+        // What the last read of this machine's controller did (set by frontend.cpp), for net_session.cpp to send along.
+        void set_sampled_swap(bool swapped);
+        // R is held online but the game's look mode hasn't started (about a second): the right stick does nothing yet.
+        void set_entry_hold(bool hold);
+        bool entry_hold();
+        bool sampled_swap();
         // Whether the player's character is aiming the shotgun (state 0x3B), where Z (the laser sight) makes
         // C-Left and C-Right turn the aim: the swapped left stick leaves them out while Z is held (frontend.cpp).
         bool z_turns_aim(int player);
@@ -273,6 +293,7 @@ namespace conker {
         struct LobbySettings {
             bool host = true;
             std::string address;     // a client's: the host's address, with or without :port
+            std::string nickname;    // how this player is called on the screen (empty: Player N)
             int port = 47000;
             int players = 2;         // the host's: how many play (2 to 4)
             int delay = 3;           // the host's: frames of input delay
@@ -285,10 +306,17 @@ namespace conker {
             int expected = 2;
             int delay = 3;
             int mask = 0;            // a bit for each player slot that is in
+            std::array<std::string, 4> names;   // their nicknames (empty: none chosen)
+            std::string log_path;    // the log file the session writes (netplay_host.txt or netplay_join.txt), once open
             bool can_start = false;  // host: everybody is here
             bool launch = false;     // client: the host pressed Start
             std::string message;
         };
+        // Text chat during a game (net_chat.cpp is its screen).
+        bool chat_available();
+        bool chat_send(const std::string& text);
+        // The lines that have come in since the last call: (player slot, text).
+        std::vector<std::pair<int, std::string>> chat_poll();
         void lobby_open(const LobbySettings& settings);
         void lobby_leave();
         LobbyStatus lobby_status();
@@ -298,6 +326,16 @@ namespace conker {
         // The game frame that has just started, and this machine's player slot (0 is the host, port 1).
         uint32_t frame();
         int local_slot();
+        // The name a player goes by on the screen: their nickname, or "Player N".
+        std::string player_name(int slot);
+        // Online: whether that player's right stick turns their camera this frame (the frame's agreed input), and by how
+        // much (yaw and pitch, radians).
+        bool camera_turn(int player, float* yaw, float* pitch);
+        // Online: whether that player's sticks are swapped this frame (aiming with the right stick, moving with the
+        // left), from the frame's agreed input.
+        bool swap_flag(int player);
+        // The game's read of a port (input, and Swap Sticks' no weapon walking).
+        bool input_for_game(int port, bool* plugged, uint16_t* buttons, float* x, float* y);
         // Every port read, before it is answered: the first of a pass waits for the frame's agreed inputs.
         void on_port_read(int port);
         // True if the session answers this port; false means ask the real device.
@@ -321,6 +359,25 @@ namespace conker {
         // corner: options that become small buttons in the corner when there is a background picture (Version, Add ROM).
         void apply(recompui::LauncherMenu* menu, recompui::GameOptionsMenu* options, const std::vector<recompui::GameOption*>& corner);
         void update();
+    }
+
+    // net_chat.cpp: the chat's screen during an online game (Y opens it).
+    namespace netchat {
+        // The Online tab of the settings (the chat key).
+        void add_options(recomp::config::Config& config);
+        void update();
+        // True while the player is typing (and for a moment after): their controller is held still.
+        bool typing();
+    }
+
+    // update_check.cpp: whether a newer release of this build is published on GitHub.
+    namespace updates {
+        // Starts the check (once a run, on a thread of its own).
+        void check_in_background();
+        // True once it has found a release newer than this build; the tag and the page to get it from.
+        bool newer_available(std::string* tag, std::string* page);
+        // This build's version (version.hpp).
+        const char* current_version();
     }
 
     // net_lobby.cpp: the launcher's Online screen (the lobby), see net_session.cpp's lobby functions.
@@ -386,6 +443,11 @@ namespace conker {
         // on, the normal camera, not R-Look or aiming): the controller's input then leaves the right
         // stick off the C-buttons (frontend.cpp). Safe from any thread.
         bool stick_turns_camera();
+        // Online: the local player's turn of the camera from the right stick for the next frame (yaw and pitch in radians, in
+        // whole 1/10000), settings applied; false if the stick isn't turning the camera now.
+        bool online_turn(float* yaw, float* pitch);
+        // Every camera's orbit starts over (after a snapshot is taken or loaded).
+        void reset();
     }
 
     // SDL sound output (audio_output.cpp).

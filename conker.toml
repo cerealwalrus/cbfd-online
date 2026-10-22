@@ -628,6 +628,13 @@ func = "func_15063A38"
 before_vram = 0x15063A80
 text = "{ extern void conker_aim_lock_on(uint8_t*, recomp_context*); conker_aim_lock_on(rdram, ctx); }"
 
+# Online, the look mode's first stage (host/src/look_aim.cpp, conker_look_stage_one): the camera's yaw goes
+# to the aim at once, at the start of func_15120158 ($a0 the camera).
+[[patches.hook]]
+func = "func_15120158"
+before_vram = 0x15120158
+text = "{ extern void conker_look_stage_one(uint8_t*, recomp_context*); conker_look_stage_one(rdram, ctx); }"
+
 # The bank's slow motion leaps (host/src/mouse_camera.cpp, issue #85): the view's eye is raised in a leap
 # (conker_leap_view_lift, in the func_1512C490 hook below) and lowered back as func_15122C5C, the follow
 # camera's update, starts, once $s0 is the camera (0x15122C64), before it copies the view's eye back
@@ -791,6 +798,13 @@ text = "{ extern void conker_netplay_rng(uint8_t*, recomp_context*); conker_netp
 func = "func_10017298"
 before_vram = 0x10017298
 text = "{ extern void conker_net_sound_hook(uint8_t*, recomp_context*, int); conker_net_sound_hook(rdram, ctx, 0); }"
+
+# func_10017604 (stops the sounds with some flags) goes through the list of voices in use; if that list has become a loop the game
+# thread never comes out (a freeze in a long online match): the list is checked, and cut if broken, as the function starts.
+[[patches.hook]]
+func = "func_10017604"
+before_vram = 0x10017604
+text = "{ extern void conker_net_sound_hook(uint8_t*, recomp_context*, int); conker_net_sound_hook(rdram, ctx, 2); }"
 
 [[patches.hook]]
 func = "func_100173C4"

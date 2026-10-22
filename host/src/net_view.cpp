@@ -262,6 +262,13 @@ namespace {
             }
             (frame[i].kind == 1 ? segments : hud_segments).push_back({ frame[i].gfx, stop });
         }
+        // every pass of this machine's camera except its HUD (3D passes and the passes of what is drawn in the world: characters, effects, sprites)
+        std::vector<std::pair<uint32_t, uint32_t>> local_world_passes;
+        for (size_t i = 0; i < frame.size(); i++) {
+            if (frame[i].camera == local && frame[i].kind != 2) {
+                local_world_passes.push_back({ frame[i].gfx, i + 1 < frame.size() ? frame[i + 1].gfx : end });
+            }
+        }
         const auto inside = [](const std::vector<std::pair<uint32_t, uint32_t>>& list, uint32_t address) {
             for (const auto& item : list) {
                 if (address >= item.first && address < item.second) {
@@ -283,6 +290,64 @@ namespace {
                 char line[120];
                 std::snprintf(line, sizeof(line), "[net view] HUD pass %08X..%08X (camera %d is %d)", segment.first, segment.second, 0, local);
                 conker::netsession::log(line);
+            }
+        }
+        // The rocket launcher's look (kind 0x16 of this machine's player's camera): the green overlay it draws is a rectangle as large as the
+        // camera's own, placed for the split screen's half and not moved with the view. It is hidden (below).
+        bool rocket_look = false;
+        unsigned rocket_mask = 0;   // every player whose look is the rocket launcher's
+        {
+            // (the look cameras, another array than the view's: pointer at 0x800DBFF0, 0x9A0 apart, the player at +0x23D, the look's kind at +0x23E)
+            const uint32_t look_base = (uint32_t)MEM_W(0, (gpr)(int32_t)0x800DBFF0);
+            if ((look_base >> 24) == 0x80 && (look_base & 0x7FFFFFu) < 0x7F0000u) {
+                for (int k = 0; k < 4; k++) {
+                    const gpr record = (gpr)(int32_t)(look_base + (uint32_t)k * 0x9A0u);
+                    if (MEM_BU(0x23E, record) == 0x16 && (int)MEM_BU(0x23D, record) < 4) {
+                        rocket_mask |= 1u << (int)MEM_BU(0x23D, record);
+                        if ((int)MEM_BU(0x23D, record) == local) {
+                            rocket_look = true;
+                        }
+                    }
+                }
+            }
+        }
+        for (int ovp = 0; ovp < 4; ovp++) if (((rocket_mask >> ovp) & 1u) != 0) {
+            // With the rocket launcher's look the frame has one more pass of this machine's camera before its HUD pass (a long one, its
+            // setup and the green filter, then the usual short setup pass): the long one is the overlay, drawn for the split screen's half and
+            // not for the full view. Its scissors are made empty, so nothing of it is seen.
+            int hud_pass = -1;
+            for (size_t i = 0; i < frame.size(); i++) {
+                if (frame[i].kind == 2 && frame[i].camera == ovp) {
+                    hud_pass = (int)i;
+                }
+            }
+            std::vector<int> setups;
+            for (int i = hud_pass - 1; i >= 0 && frame[i].kind == 0 && frame[i].camera == ovp; i--) {
+                setups.push_back(i);
+            }
+            if (hud_pass >= 0 && setups.size() >= 2) {
+                for (size_t s = 1; s < setups.size(); s++) {
+                    const uint32_t from = frame[setups[s]].gfx;
+                    const uint32_t to = frame[setups[s] + 1].gfx;
+                    if ((from >> 24) == 0x80 && to > from && to - from <= 0x4000u) {
+                        // The overlay pass sets no scissor of its own (logged), so it is drawn with the last one set: an empty one is set at its
+                        // start, in place of one of its first pipe syncs.
+                        for (uint32_t address = from; address < from + 40 && address < to; address += 8) {
+                            const uint32_t op = (uint32_t)MEM_W(0, (gpr)(int32_t)address) >> 24;
+                            if (op == 0xE7 || op == 0xE6 || op == 0xE8 || op == 0xE9) {
+                                MEM_W(0, (gpr)(int32_t)address) = (int32_t)0xED000000u;
+                                MEM_W(4, (gpr)(int32_t)address) = 0;
+                                break;
+                            }
+                        }
+                        for (uint32_t address = from; address < to; address += 8) {
+                            if (((uint32_t)MEM_W(0, (gpr)(int32_t)address) >> 24) == 0xED && address > from + 40) {
+                                MEM_W(0, (gpr)(int32_t)address) = (int32_t)0xED000000u;
+                                MEM_W(4, (gpr)(int32_t)address) = 0;
+                            }
+                        }
+                    }
+                }
             }
         }
         int dumped = 0;
@@ -506,6 +571,18 @@ namespace {
                         dx = (int32_t)((cx < middle ? 120.0f : -120.0f) * 4.0f);
                         kind_name = "score";
                     }
+                } else if (!bar && cx >= own_l + 30.0f && cx <= own_r - 30.0f && cy >= own_t + 8.0f && cy <= own_b - 8.0f) {
+                    // inside the camera's rectangle and away from its edges (the rocket's explosion): placed by the game in the rectangle's
+                    // pixels, at the view's middle with the aim, so it moves down with the aim and not out to a corner
+                    dy = hud_shift;
+                    kind_name = "world sprite";
+                    static int world_logged = 0;
+                    if (world_logged < 40) {
+                        char line[140];
+                        std::snprintf(line, sizeof(line), "[net view] world sprite %08X: %08X %08X (centre %g,%g)", address, w0, w1, cx, cy);
+                        conker::netsession::log(line);
+                        world_logged++;
+                    }
                 } else if (in_rect(own_l, own_t, own_r, own_b)) {
                     dx = (int32_t)(((cx < (own_l + own_r) * 0.5f) ? (left - own_l) : (right - own_r)) * 4.0f);
                     dy = (int32_t)(((cy < (own_t + own_b) * 0.5f) ? (top - own_t) : (bottom - own_b)) * 4.0f);
@@ -539,6 +616,32 @@ namespace {
                         MEM_W(4, (gpr)(int32_t)address) = (int32_t)((w1 & 0xFF000000u) | ((uint32_t)std::max(a1, 0) << 12) | (uint32_t)std::max(b1, 0));
                         rects_moved++;
                     }
+                }
+            }
+            if (rocket_look && hud_layout && !menu_open && !nested && op == 0x64 && (w0 & 0x00FFFFFFu) == 0x000002u && hud_shift != 0 &&
+                    inside(local_world_passes, address) && address + 16 < range.to) {
+                // The game's screen-space sprites (func_15130A9C: the rocket's explosion, sparkles, bees) are emitted as RT64's extended texture
+                // rectangle (widescreen.cpp): this word, then the corners (x, y, x, y: 10.2 fixed point, 16 bits each), then the texture words. The
+                // game places them in its camera's own rectangle, so with the full view they are moved down with the world, as the aim is.
+                const uint32_t c0 = (uint32_t)MEM_W(8, (gpr)(int32_t)address), c1 = (uint32_t)MEM_W(12, (gpr)(int32_t)address);
+                const int32_t uly = (int32_t)(int16_t)(c0 & 0xFFFFu), lry = (int32_t)(int16_t)(c1 & 0xFFFFu);
+                const int32_t nuly = uly + hud_shift, nlry = lry + hud_shift;
+                if (nuly >= -0x8000 && nuly <= 0x7FFF && nlry >= -0x8000 && nlry <= 0x7FFF) {
+                    MEM_W(8, (gpr)(int32_t)address) = (int32_t)((c0 & 0xFFFF0000u) | ((uint32_t)nuly & 0xFFFFu));
+                    MEM_W(12, (gpr)(int32_t)address) = (int32_t)((c1 & 0xFFFF0000u) | ((uint32_t)nlry & 0xFFFFu));
+                }
+            }
+            if (rocket_look && (op == 0xE4 || op == 0xE5) &&
+                    !(op == 0xF6 && w0 == (0xF6000000u | (scissor1[local] & 0xFFFFFFu)) && w1 == (scissor0[local] & 0xFFFFFFu))) {
+                // a rectangle half as wide and as high as this machine's camera, at least: the overlay (the game's own rectangles
+                // for it are of the camera's size; HUD icons, bars and sprites are far smaller). Collapsed to a point.
+                const float o_l = get_float(rdram, own, field_left), o_r = get_float(rdram, own, field_right);
+                const float o_t = get_float(rdram, own, field_top), o_b = get_float(rdram, own, field_bottom);
+                const int32_t r_yl = (int32_t)(w0 & 0xFFFu), r_yh = (int32_t)(w1 & 0xFFFu);
+                const int32_t r_xl = (int32_t)((w0 >> 12) & 0xFFFu), r_xh = (int32_t)((w1 >> 12) & 0xFFFu);
+                const float r_w = (float)std::abs(r_xl - r_xh) * 0.25f, r_h = (float)std::abs(r_yl - r_yh) * 0.25f;
+                if (r_w >= 0.5f * (o_r - o_l) && r_h >= 0.5f * (o_b - o_t)) {
+                    MEM_W(0, (gpr)(int32_t)address) = (int32_t)((w0 & ~0xFFFFFFu) | (uint32_t)(((uint32_t)r_xh & 0xFFFu) << 12) | ((uint32_t)r_yh & 0xFFFu));
                 }
             }
             if (log_it && logged < 160 && (op == 0xDC || op == 0xED || op == 0xDA || op == 0xDE || op == 0xE0)) {

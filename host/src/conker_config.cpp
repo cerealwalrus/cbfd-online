@@ -169,6 +169,7 @@ void conker::init_config() {
     conker::rumble::add_options(recompui::config::create_general_tab(general_options));
     conker::look_aim::add_camera_options(recompui::config::create_config_tab("Camera", camera_tab_id, false));
     conker::look_aim::add_mouse_gyro_options(recompui::config::create_config_tab("Mouse & Gyro", mouse_gyro_tab_id, false));
+    conker::netchat::add_options(recompui::config::create_config_tab("Online", "online", false));
 
     recomp::config::Config& graphics_config = recompui::config::create_graphics_tab();
     add_graphics_options(graphics_config);
