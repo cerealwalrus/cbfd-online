@@ -406,14 +406,17 @@ namespace {
             << "tasklist /FI \"PID eq " << GetCurrentProcessId() << "\" /NH /FO CSV 2>nul | find \",\"\"" << GetCurrentProcessId() << "\"\",\" >nul\r\n"
             << "if errorlevel 1 goto gone\r\n"
             << "set /a TRIES+=1\r\n"
-            << "if %TRIES% GEQ 60 goto fail\r\n"
-            << "timeout /t 1 /nobreak >nul\r\n"
+            << "if %TRIES% GEQ 120 echo the game did not close in time >> \"%LOG%\"\r\n"
+            << "if %TRIES% GEQ 120 goto fail\r\n"
+            << "ping -n 2 127.0.0.1 >nul\r\n"
             << "goto wait\r\n"
             << ":gone\r\n"
+            << "echo the game closed after %TRIES% waits >> \"%LOG%\"\r\n"
             << "rmdir /s /q \"%WORK%\\stage\" >nul 2>&1\r\n"
             << "mkdir \"%WORK%\\stage\"\r\n"
             << "tar -xf \"" << z << "\" -C \"%WORK%\\stage\" >> \"%LOG%\" 2>&1\r\n"
             << "if errorlevel 1 goto fail\r\n"
+            << "echo unpacked >> \"%LOG%\"\r\n"
             << "set \"SRC=%WORK%\\stage\"\r\n"
             << "dir /a-d /b \"%WORK%\\stage\" >nul 2>&1 && goto copy\r\n"
             << "set N=0\r\n"
@@ -421,7 +424,9 @@ namespace {
             << "if \"%N%\"==\"1\" set \"SRC=%ONE%\"\r\n"
             << ":copy\r\n"
             << "robocopy \"%SRC%\" \"" << f << "\" /E /R:10 /W:1 /XF *.z64 *.n64 *.v64 *.rom update.bat >> \"%LOG%\" 2>&1\r\n"
+            << "echo robocopy answered %ERRORLEVEL% >> \"%LOG%\"\r\n"
             << "if %ERRORLEVEL% GEQ 8 goto fail\r\n"
+            << "echo copied from %SRC% >> \"%LOG%\"\r\n"
             << "echo done >> \"%LOG%\"\r\n"
             << "cd /d \"" << f << "\"\r\n"
             << "start \"\" \"" << e << "\"\r\n"
@@ -439,7 +444,7 @@ namespace {
         STARTUPINFOW startup{};
         startup.cb = sizeof(startup);
         PROCESS_INFORMATION info{};
-        if (!CreateProcessW(nullptr, &command[0], nullptr, nullptr, FALSE, CREATE_NO_WINDOW | DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP, nullptr, work.c_str(), &startup, &info)) {
+        if (!CreateProcessW(nullptr, &command[0], nullptr, nullptr, FALSE, CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP, nullptr, work.c_str(), &startup, &info)) {
             return "could not start the update script";
         }
         CloseHandle(info.hThread);
