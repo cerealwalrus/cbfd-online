@@ -96,7 +96,7 @@ namespace {
     constexpr auto host_waits_for_player = std::chrono::seconds(5);
     constexpr auto client_waits_for_host = std::chrono::seconds(10);
 
-    enum Msg : uint8_t { Hello = 1, Welcome = 2, Start = 3, Input = 4, Frame = 5, Check = 6, ResyncRequest = 7, Snapshot = 8, FrameRngMsg = 9, DiagRequest = 10, DiagData = 11, LobbyInfo = 12, Refused = 13, Chat = 14 };
+    enum Msg : uint8_t { Hello = 1, Welcome = 2, Start = 3, Input = 4, Frame = 5, Check = 6, ResyncRequest = 7, Snapshot = 8, FrameRngMsg = 9, DiagRequest = 10, DiagData = 11, LobbyInfo = 12, Refused = 13, Chat = 14, Ping = 15, Pong = 16 };
 
     struct PlayerInput {
         uint8_t plugged = 0;
@@ -282,6 +282,14 @@ namespace {
         std::atomic<bool> alive{ false };
         std::atomic<bool> retired{ false };   // the lobby let go of it: its reader leaves the session's state alone
         std::thread reader;
+
+        // round trips measured with Ping/Pong (milliseconds), see ping_tick
+        std::mutex rtt_mutex;
+        uint32_t ping_seq = 0;
+        uint32_t pings_sent = 0, pongs_got = 0;
+        double rtt_last = 0, rtt_sum = 0, rtt_min = 1e9, rtt_max = 0, rtt_sq = 0;   // since the last report
+        double rtt_all_max = 0;
+        uint32_t rtt_count = 0;
 
         bool send_message(const std::vector<uint8_t>& bytes) {
             std::lock_guard lock{ send_mutex };
@@ -861,10 +869,96 @@ namespace {
         cv.notify_all();
     }
 
+    // Ping/Pong: every machine pings the ones it is connected to once a second; a Ping is answered at once with a Pong that
+    // carries the same numbers back. It goes over the same TCP stream as the game's data, so it shows what the inputs go through.
+    int64_t ping_now_us() {
+        return std::chrono::duration_cast<std::chrono::microseconds>(clock::now().time_since_epoch()).count();
+    }
+
+    // true when the message was a Ping or Pong (and has been dealt with)
+    bool ping_message(Peer* peer, uint8_t type, const std::vector<uint8_t>& payload) {
+        if (type != Ping && type != Pong) {
+            return false;
+        }
+        Reader r{ payload.data(), payload.size() };
+        const uint32_t seq = r.get<uint32_t>();
+        const int64_t sent = r.get<int64_t>();
+        if (r.bad) {
+            return true;
+        }
+        if (type == Ping) {
+            Writer w(Pong);
+            w.put(seq).put(sent);
+            peer->send_message(w.finish());
+        }
+        else {
+            const double ms = (double)(ping_now_us() - sent) / 1000.0;
+            std::lock_guard lock{ peer->rtt_mutex };
+            peer->pongs_got++;
+            peer->rtt_last = ms;
+            peer->rtt_sum += ms;
+            peer->rtt_sq += ms * ms;
+            peer->rtt_min = std::min(peer->rtt_min, ms);
+            peer->rtt_max = std::max(peer->rtt_max, ms);
+            peer->rtt_all_max = std::max(peer->rtt_all_max, ms);
+            peer->rtt_count++;
+        }
+        return true;
+    }
+
+    // Called by the watchdog thread every second: sends the pings, and every 10 s logs what came back.
+    void ping_tick(int second) {
+        std::vector<Peer*> to;
+        {
+            std::lock_guard lock{ mtx };
+            if (!enabled || !started || failed) {
+                return;
+            }
+            for (auto& peer : peers) {
+                if (peer->alive && !peer->retired) {
+                    to.push_back(peer.get());
+                }
+            }
+        }
+        for (Peer* peer : to) {
+            uint32_t seq;
+            {
+                std::lock_guard lock{ peer->rtt_mutex };
+                seq = ++peer->ping_seq;
+                peer->pings_sent++;
+            }
+            Writer w(Ping);
+            w.put(seq).put((int64_t)ping_now_us());
+            peer->send_message(w.finish());
+            if (second % 10 != 0) {
+                continue;
+            }
+            std::lock_guard lock{ peer->rtt_mutex };
+            const uint32_t n = peer->rtt_count;
+            const char* who = is_host ? "player" : "the host";
+            const int number = is_host ? peer->slot + 1 : 0;
+            if (n == 0) {
+                log_line("[ping] %s %d: no answer yet (%u pings sent, %u answered)", who, number, peer->pings_sent, peer->pongs_got);
+            }
+            else {
+                const double mean = peer->rtt_sum / n;
+                const double var = std::max(0.0, peer->rtt_sq / n - mean * mean);
+                log_line("[ping] %s %d: round trip last %.1f ms, avg %.1f, min %.1f, max %.1f, jitter %.1f (last 10 s, %u answers); %u pings sent, %u answered in all, worst ever %.1f ms",
+                    who, number, peer->rtt_last, mean, peer->rtt_min, peer->rtt_max, std::sqrt(var), n, peer->pings_sent, peer->pongs_got, peer->rtt_all_max);
+            }
+            peer->rtt_sum = peer->rtt_sq = peer->rtt_max = 0;
+            peer->rtt_min = 1e9;
+            peer->rtt_count = 0;
+        }
+    }
+
     void host_reader(Peer* peer) {
         uint8_t type;
         std::vector<uint8_t> payload;
         while (peer->alive && read_message(peer->sock, type, payload)) {
+            if (ping_message(peer, type, payload)) {
+                continue;
+            }
             Reader r{ payload.data(), payload.size() };
             std::lock_guard lock{ mtx };
             if (type == Input) {
@@ -1070,6 +1164,9 @@ namespace {
         uint8_t type;
         std::vector<uint8_t> payload;
         while (peer->alive && read_message(peer->sock, type, payload)) {
+            if (ping_message(peer, type, payload)) {
+                continue;
+            }
             Reader r{ payload.data(), payload.size() };
             std::lock_guard lock{ mtx };
             switch (type) {
@@ -2025,8 +2122,10 @@ namespace {
     void watch_main() {
         uint32_t reported_frame = 0xFFFFFFFFu;
         int reports = 0;
+        int second = 0;
         for (;;) {
             std::this_thread::sleep_for(std::chrono::seconds(1));
+            ping_tick(++second);
             const uint32_t frame = watch_frame.load();
             const int64_t last = watch_last_ms.load();
             if (last == 0) {
