@@ -265,6 +265,9 @@ namespace {
     void refresh_lobby(const conker::netsession::LobbyStatus& st) {
         std::string signature = std::to_string(st.phase) + "|" + std::to_string(st.mask) + "|" + std::to_string(st.expected) + "|" +
             std::to_string(st.delay) + "|" + std::to_string(st.slot) + "|" + std::to_string(st.can_start) + "|" + st.message + "|" + st.names[0] + "|" + st.names[1] + "|" + st.names[2] + "|" + st.names[3] + "|" + st.log_path;
+        for (float p : st.ping_ms) {
+            signature += "|" + std::to_string(p < 0 ? -1 : (int)(p + 0.5f));
+        }
         if (signature == last_signature) {
             return;
         }
@@ -292,6 +295,9 @@ namespace {
                 line += i == 0 ? " (host)" : "";
                 line += i == st.slot ? " (you)" : "";
                 line += ((st.mask >> i) & 1) ? "  -  here" : "  -  waiting for a player...";
+                if (((st.mask >> i) & 1) && i != st.slot && st.ping_ms[i] >= 0) {
+                    line += "  -  ping " + std::to_string((int)(st.ping_ms[i] + 0.5f)) + " ms";
+                }
             }
             player_labels[i]->set_text(line);
             player_labels[i]->set_display(line.empty() ? recompui::Display::None : recompui::Display::Block);

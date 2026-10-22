@@ -289,6 +289,8 @@ namespace {
         uint32_t pings_sent = 0, pongs_got = 0;
         double rtt_last = 0, rtt_sum = 0, rtt_min = 1e9, rtt_max = 0, rtt_sq = 0;   // since the last report
         double rtt_all_max = 0;
+        std::array<double, 10> rtt_recent{};   // the last ten answers, for the launcher
+        uint32_t rtt_recent_n = 0;
         uint32_t rtt_count = 0;
 
         bool send_message(const std::vector<uint8_t>& bytes) {
@@ -896,6 +898,7 @@ namespace {
             std::lock_guard lock{ peer->rtt_mutex };
             peer->pongs_got++;
             peer->rtt_last = ms;
+            peer->rtt_recent[peer->rtt_recent_n++ % peer->rtt_recent.size()] = ms;
             peer->rtt_sum += ms;
             peer->rtt_sq += ms * ms;
             peer->rtt_min = std::min(peer->rtt_min, ms);
@@ -911,7 +914,7 @@ namespace {
         std::vector<Peer*> to;
         {
             std::lock_guard lock{ mtx };
-            if (!enabled || !started || failed) {
+            if (!enabled || failed) {
                 return;
             }
             for (auto& peer : peers) {
@@ -950,6 +953,34 @@ namespace {
             peer->rtt_min = 1e9;
             peer->rtt_count = 0;
         }
+    }
+
+    // The pings go from a thread of their own, from the first connection on (so the lobby can show them too).
+    void ensure_ping_thread() {
+        static std::atomic<bool> running{ false };
+        if (running.exchange(true)) {
+            return;
+        }
+        std::thread([]() {
+            for (int second = 1;; second++) {
+                std::this_thread::sleep_for(std::chrono::seconds(1));
+                ping_tick(second);
+            }
+        }).detach();
+    }
+
+    // The average of the last ten round trips to a peer, in ms, or -1 when none has come back yet.
+    double peer_ping_ms(Peer* peer) {
+        std::lock_guard lock{ peer->rtt_mutex };
+        const uint32_t n = std::min<uint32_t>(peer->rtt_recent_n, (uint32_t)peer->rtt_recent.size());
+        if (n == 0) {
+            return -1.0;
+        }
+        double sum = 0;
+        for (uint32_t k = 0; k < n; k++) {
+            sum += peer->rtt_recent[k];
+        }
+        return sum / n;
     }
 
     void host_reader(Peer* peer) {
@@ -1141,6 +1172,7 @@ namespace {
                 log_line("[net] player %d is called \"%s\"", slot + 1, name.c_str());
             }
             peers.push_back(std::move(peer));
+            ensure_ping_thread();
             raw->reader = std::thread(host_reader, raw);
             raw->reader.detach();
             send_lobby_info();
@@ -1529,6 +1561,7 @@ namespace {
         players_expected = expected;
         delay = d;
         peers.push_back(std::move(peer));
+        ensure_ping_thread();
         raw->reader = std::thread(client_reader, raw);
         raw->reader.detach();
         log_line("[net] joined as player %d of %d, delay %u", my_slot + 1, players_expected, delay);
@@ -1801,6 +1834,15 @@ conker::netsession::LobbyStatus conker::netsession::lobby_status() {
     }
     st.can_start = is_host && lobby_phase == 2 && !started && here >= players_expected;
     st.launch = !is_host && game_launch;
+    st.ping_ms.fill(-1.0f);
+    for (auto& peer : peers) {
+        if (peer->alive && !peer->retired) {
+            const int who = is_host ? peer->slot : 0;   // a client sees the host's
+            if (who >= 0 && who < max_players) {
+                st.ping_ms[who] = (float)peer_ping_ms(peer.get());
+            }
+        }
+    }
     return st;
 }
 
@@ -2122,10 +2164,8 @@ namespace {
     void watch_main() {
         uint32_t reported_frame = 0xFFFFFFFFu;
         int reports = 0;
-        int second = 0;
         for (;;) {
             std::this_thread::sleep_for(std::chrono::seconds(1));
-            ping_tick(++second);
             const uint32_t frame = watch_frame.load();
             const int64_t last = watch_last_ms.load();
             if (last == 0) {

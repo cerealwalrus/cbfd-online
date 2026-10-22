@@ -311,6 +311,7 @@ namespace conker {
             bool can_start = false;  // host: everybody is here
             bool launch = false;     // client: the host pressed Start
             std::string message;
+            std::array<float, 4> ping_ms{ -1.0f, -1.0f, -1.0f, -1.0f };   // round trip to each player (a client: to the host), ms; -1: not known yet
         };
         // Text chat during a game (net_chat.cpp is its screen).
         bool chat_available();
