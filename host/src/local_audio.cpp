@@ -62,6 +62,9 @@ namespace {
     constexpr uint32_t from_character = 0x100101E0;        // func_10010154, an object with a look camera (its handle at +0x8E)
     constexpr uint32_t from_character_loop = 0x1001040C;   // func_10010344, the same (its handle at +0x8C)
     constexpr uint32_t from_list = 0x10011970;             // func_10011624, the moving sounds' list
+    constexpr uint32_t from_no_place = 0x10010F78;         // func_10010F30, a sound with no place (its caller's return address at 0x24 of its frame)
+    constexpr uint32_t no_place_character = 0x10010690;    // func_10010630 calls func_10010F30 for an object with a look camera
+    constexpr uint32_t current_object = 0x800D154C;        // gCurrentObject: the object the game is running
 
     // The volume and pan func_10010BE8 is to give the sound player for func_10010E78's call from the frame at `sp`.
     struct Pending {
@@ -96,7 +99,8 @@ namespace {
 
     // Sounds started on another player's character: followed every frame while the character's handle field still has them.
     struct Followed {
-        uint32_t object = 0;
+        uint32_t object = 0;     // where the game keeps the sound's handle
+        uint32_t owner = 0;      // the character the sound is heard from (see owner_of)
         uint32_t field = 0;      // 0x8E or 0x8C
         uint32_t volume = 0;     // the game's volume for it
         int32_t near_distance = 500;
@@ -179,6 +183,19 @@ namespace {
             return -1;
         }
         return (int)MEM_BU(look_player, (gpr)(int32_t)record);
+    }
+
+    // The character a sound on `object` is heard from. The game plays some sounds of whoever is acting on the first player's
+    // character (gObjects[0]: a single player's habit, the split screen's sounds being everybody's), such as the weapon pickups:
+    // a sound on the first player's character while the game is running another player's character is that player's.
+    uint32_t owner_of(uint8_t* rdram, uint32_t object) {
+        if (character_player(rdram, object) == 0) {
+            const uint32_t current = word(rdram, current_object);
+            if (current != object && character_player(rdram, current) > 0) {
+                return current;
+            }
+        }
+        return object;
     }
 
     // Listener k alone in the game's table while `call` runs; the table is as it was afterwards.
@@ -403,6 +420,9 @@ namespace {
             else if (ra == from_play_at_point) {
                 outer = word(rdram, sp + 0x50 + 0x24);   // func_10010E78
             }
+            else if (ra == from_character || ra == from_character_loop) {
+                outer = word(rdram, sp + 0x50 + 0x3C);   // func_10010154, func_10010344
+            }
             count_start(rdram, "a sound started", ra, outer, (uint32_t)ctx->r5 & 0xFFFFu, game_volume, game_pan, (uint32_t)ctx->r6 & 0xFFFFu,
                         (uint32_t)ctx->r7 & 0xFFu, caller_s0, character_player(rdram, caller_s0));
         }
@@ -428,13 +448,36 @@ namespace {
             }
             return;
         }
-        if (ra != from_character && ra != from_character_loop && ra != from_play_on_object) {
+        const uint32_t outer = ra == from_no_place ? word(rdram, sp + 0x50 + 0x24) : 0;
+        if (ra == from_no_place && (outer == 0x1000F0BC || outer == 0x1000F0F0 || outer == 0x1000F128 || outer == 0x1000F15C || outer == 0x1000F194)) {
+            // func_1000EFB4, the list's callback for a bullet that has ended (it hit something): its impact and a ricochet, with no
+            // place, at the nearest listener's volume (the ricochet at 16000) and pan. The entry is func_1000EFB4's first argument
+            // (0x20 of its frame, 0x28 above func_10010F30's); func_10011624 has just worked out its volumes for it (hook 6).
+            const uint32_t entry = word(rdram, sp + 0x50 + 0x28 + 0x20);
+            if (local_listener(rdram) >= 0 && list_entry.entry == entry && entry != 0) {
+                const uint32_t game_volume = (uint32_t)ctx->r6 & 0xFFFFu;
+                uint32_t volume = 0;
+                if (list_entry.nearest_volume != 0) {
+                    const uint64_t scaled = (uint64_t)game_volume * list_entry.local_volume / list_entry.nearest_volume;
+                    volume = scaled > 0xFFFFu ? 0xFFFFu : (uint32_t)scaled;
+                }
+                ctx->r6 = (gpr)(int32_t)volume;
+                if (list_entry.has_pan) {
+                    ctx->r7 = (gpr)(int32_t)(list_entry.local_pan & 0x7Fu);
+                }
+                set_source(from_no_place, (int16_t)half(rdram, entry + 2), (int16_t)half(rdram, entry + 4), (int16_t)half(rdram, entry + 6), word(rdram, entry + 0x10));
+            }
+            return;
+        }
+        const bool no_place = ra == from_no_place && outer == no_place_character;
+        if (ra != from_character && ra != from_character_loop && ra != from_play_on_object && !no_place) {
             return;
         }
         const int k = local_listener(rdram);
-        const int player = character_player(rdram, caller_s0);
+        const uint32_t owner = owner_of(rdram, caller_s0);
+        const int player = character_player(rdram, owner);
         if (k < 0 || player < 0 || player == conker::netsession::local_slot()) {
-            return;   // this machine's own player's character: in the middle, at full volume, as the game plays it
+            return;   // this machine's own player's: in the middle, at full volume, as the game plays it
         }
         const uint32_t caller_sp = sp + 0x50;
         int32_t near_distance = 500, far_distance = 4501;
@@ -446,17 +489,23 @@ namespace {
             near_distance = (int16_t)half(rdram, caller_sp + 0x66);
             far_distance = (int16_t)half(rdram, caller_sp + 0x6A);
         }
+        else if (no_place) {
+            // func_10010630's frame, 0x28 above func_10010F30's: (sound, object, volume, near, far)
+            near_distance = (int16_t)half(rdram, caller_sp + 0x28 + 0x4E);
+            far_distance = (int16_t)half(rdram, caller_sp + 0x28 + 0x52);
+        }
         const uint32_t game_volume = (uint32_t)ctx->r6 & 0xFFFFu;
         uint32_t volume = 0, pan = 0x40;
-        set_source(ra, (int)float_at(rdram, caller_s0 + 0x14), (int)float_at(rdram, caller_s0 + 0x18), (int)float_at(rdram, caller_s0 + 0x1C), 0);
-        character_sound(rdram, ctx, k, caller_s0, game_volume, near_distance, far_distance, &volume, &pan);
+        set_source(ra, (int)float_at(rdram, owner + 0x14), (int)float_at(rdram, owner + 0x18), (int)float_at(rdram, owner + 0x1C), owner != caller_s0 ? 1u : 0u);
+        character_sound(rdram, ctx, k, owner, game_volume, near_distance, far_distance, &volume, &pan);
         ctx->r6 = (gpr)(int32_t)volume;
         ctx->r7 = (gpr)(int32_t)pan;
-        if (ra != from_play_on_object) {
-            // followed from the next frame on, through the handle the caller puts in the character's field
+        if (ra == from_character || ra == from_character_loop) {
+            // followed from the next frame on, through the handle the caller puts in the object's field
+            const uint32_t field = ra == from_character ? 0x8Eu : 0x8Cu;
             int free_index = -1;
             for (int i = 0; i < 16; i++) {
-                if (followed[i].object == caller_s0 && followed[i].field == (ra == from_character ? 0x8Eu : 0x8Cu)) {
+                if (followed[i].object == caller_s0 && followed[i].field == field) {
                     free_index = i;
                     break;
                 }
@@ -467,7 +516,8 @@ namespace {
             if (free_index >= 0) {
                 Followed& f = followed[free_index];
                 f.object = caller_s0;
-                f.field = ra == from_character ? 0x8Eu : 0x8Cu;
+                f.owner = owner;
+                f.field = field;
                 f.volume = game_volume;
                 f.near_distance = near_distance;
                 f.far_distance = far_distance;
@@ -475,8 +525,8 @@ namespace {
                 f.first_pan = pan;
             }
         }
-        const int x = (int)float_at(rdram, caller_s0 + 0x14), y = (int)float_at(rdram, caller_s0 + 0x18), z = (int)float_at(rdram, caller_s0 + 0x1C);
-        log_change(3, ra == from_play_on_object ? "a sound on another player (func_10010FFC)" : "a sound on another player", game_volume, 0x40, volume, pan, x, y, z);
+        const int x = (int)float_at(rdram, owner + 0x14), y = (int)float_at(rdram, owner + 0x18), z = (int)float_at(rdram, owner + 0x1C);
+        log_change(3, owner != caller_s0 ? "a sound of another player's on the first player's character" : "a sound on another player", game_volume, 0x40, volume, pan, x, y, z);
     }
 
     // Every frame (func_10011BB8): the followed sounds of other players' characters, as the characters move.
@@ -487,7 +537,7 @@ namespace {
                 continue;
             }
             const uint32_t handle = ram_pointer(f.object) ? half(rdram, f.object + f.field) : 0;
-            const int player = character_player(rdram, f.object);
+            const int player = character_player(rdram, f.owner);
             if (k < 0 || !slot_has(rdram, handle) || player < 0 || player == conker::netsession::local_slot()) {
                 f.object = 0;
                 continue;
@@ -497,7 +547,7 @@ namespace {
                 remember_sent(handle, f.first_volume, f.first_pan);   // its first frame: what it was started with
             }
             uint32_t volume = 0, pan = 0x40;
-            character_sound(rdram, ctx, k, f.object, f.volume, f.near_distance, f.far_distance, &volume, &pan);
+            character_sound(rdram, ctx, k, f.owner, f.volume, f.near_distance, f.far_distance, &volume, &pan);
             send_if_changed(rdram, ctx, handle, volume, pan);
         }
     }
