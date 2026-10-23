@@ -828,7 +828,8 @@ before_vram = 0x1000F4C8
 text = "{ extern void conker_net_sound_hook(uint8_t*, recomp_context*, int); conker_net_sound_hook(rdram, ctx, 3); }"
 
 # Online: each machine hears the game from its own player's camera (host/src/local_audio.cpp). The game still decides from its
-# own volume whether a sound starts; only the volume and pan the sound player gets are this machine's.
+# own volumes whether a sound starts or stops; only the volume and pan the sound player gets are this machine's. (Sounds on
+# characters, func_10010154 / func_10010344 / func_10010FFC, are given theirs in func_10010BE8, by its return address.)
 [[patches.hook]]
 func = "func_1000F91C"
 before_vram = 0x1000F960
@@ -850,9 +851,39 @@ before_vram = 0x10010F24
 text = "{ extern void conker_local_audio(uint8_t*, recomp_context*, int); conker_local_audio(rdram, ctx, 5); }"
 
 [[patches.hook]]
-func = "func_10010FFC"
-before_vram = 0x10011070
-text = "{ extern void conker_local_audio(uint8_t*, recomp_context*, int); conker_local_audio(rdram, ctx, 3); }"
+func = "func_10011624"
+before_vram = 0x10011810
+text = "{ extern void conker_local_audio(uint8_t*, recomp_context*, int); conker_local_audio(rdram, ctx, 6); }"
+
+[[patches.hook]]
+func = "func_10011624"
+before_vram = 0x100118A8
+text = "{ extern void conker_local_audio(uint8_t*, recomp_context*, int); conker_local_audio(rdram, ctx, 7); }"
+
+[[patches.hook]]
+func = "func_10011624"
+before_vram = 0x10011970
+text = "{ extern void conker_local_audio(uint8_t*, recomp_context*, int); conker_local_audio(rdram, ctx, 8); }"
+
+[[patches.hook]]
+func = "func_10011624"
+before_vram = 0x100119A0
+text = "{ extern void conker_local_audio(uint8_t*, recomp_context*, int); conker_local_audio(rdram, ctx, 9); }"
+
+[[patches.hook]]
+func = "func_10011624"
+before_vram = 0x100119C0
+text = "{ extern void conker_local_audio(uint8_t*, recomp_context*, int); conker_local_audio(rdram, ctx, 10); }"
+
+[[patches.hook]]
+func = "func_10011624"
+before_vram = 0x100119EC
+text = "{ extern void conker_local_audio(uint8_t*, recomp_context*, int); conker_local_audio(rdram, ctx, 11); }"
+
+[[patches.hook]]
+func = "func_10011BB8"
+before_vram = 0x10011BB8
+text = "{ extern void conker_local_audio(uint8_t*, recomp_context*, int); conker_local_audio(rdram, ctx, 12); }"
 
 [[patches.hook]]
 func = "func_10010BE8"

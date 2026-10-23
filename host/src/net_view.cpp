@@ -397,6 +397,67 @@ namespace {
                 conker::netsession::log(line);
             }
         }
+        {
+            // (a test: the first frames of each camera's rocket launcher look, as the game made them: every command of that camera's
+            // passes but its world's, and the scissor the last pass before each left set, to find the green overlay of the second camera)
+            // (its 2nd, 30th and 120th frames, the first time a camera has it)
+            static int rocket_dumps[4] = {};
+            static int rocket_frames[4] = {};
+            bool dump_now[4] = {};
+            for (int ovp = 0; ovp < 4; ovp++) {
+                if (((rocket_mask >> ovp) & 1u) == 0) {
+                    rocket_frames[ovp] = 0;
+                    continue;
+                }
+                rocket_frames[ovp]++;
+                dump_now[ovp] = rocket_dumps[ovp] < 3 && (rocket_frames[ovp] == 2 || rocket_frames[ovp] == 30 || rocket_frames[ovp] == 120);
+            }
+            for (int ovp = 0; ovp < 4; ovp++) if (dump_now[ovp]) {
+                rocket_dumps[ovp]++;
+                uint32_t scissor_w0 = 0, scissor_w1 = 0;
+                int lines = 0;
+                for (size_t i = 0; i < frame.size() && lines < 1200; i++) {
+                    const uint32_t from = frame[i].gfx;
+                    const uint32_t to = i + 1 < frame.size() ? frame[i + 1].gfx : end;
+                    if ((from >> 24) != 0x80 || to <= from || to - from > 0x8000u) {
+                        continue;
+                    }
+                    const bool dump_it = frame[i].camera == ovp && to - from <= 0x1000u;
+                    if (dump_it) {
+                        char line[200];
+                        std::snprintf(line, sizeof(line), "[net view] rocket dump %d/3, camera %d%s: pass %zu %08X..%08X (kind %d), the scissor before it %08X %08X",
+                            rocket_dumps[ovp], ovp, ovp == local ? " (this machine's)" : "", i, from, to, frame[i].kind, scissor_w0, scissor_w1);
+                        conker::netsession::log(line);
+                        lines++;
+                    }
+                    for (uint32_t address = from; address < to; address += 8) {
+                        const uint32_t w0 = (uint32_t)MEM_W(0, (gpr)(int32_t)address), w1 = (uint32_t)MEM_W(4, (gpr)(int32_t)address);
+                        if ((w0 >> 24) == 0xED) {
+                            scissor_w0 = w0;
+                            scissor_w1 = w1;
+                        }
+                        if (dump_it && lines < 1200) {
+                            char line[120];
+                            std::snprintf(line, sizeof(line), "[net view]   %08X: %08X %08X", address, w0, w1);
+                            conker::netsession::log(line);
+                            lines++;
+                            if ((w0 >> 24) == 0xDE && (w1 >> 24) == 0x80 && (w1 & 0x7FFFFFu) < 0x7F0000u) {
+                                // one level of the lists it calls
+                                for (uint32_t inner = w1, n = 0; n < 48 && lines < 1200; inner += 8, n++) {
+                                    const uint32_t i0 = (uint32_t)MEM_W(0, (gpr)(int32_t)inner), i1 = (uint32_t)MEM_W(4, (gpr)(int32_t)inner);
+                                    std::snprintf(line, sizeof(line), "[net view]     > %08X: %08X %08X", inner, i0, i1);
+                                    conker::netsession::log(line);
+                                    lines++;
+                                    if ((i0 >> 24) == 0xDF) {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
         for (int ovp = 0; ovp < 4; ovp++) if (((rocket_mask >> ovp) & 1u) != 0) {
             // With the rocket launcher's look the frame has one more pass of this machine's camera before its HUD pass (a long one, its
             // setup and the green filter, then the usual short setup pass): the long one is the overlay, drawn for the split screen's half and
