@@ -774,6 +774,19 @@ namespace {
             return;
         }
         const uint32_t handle = (uint32_t)ctx->r4 & 0xFFFFu, what = (uint32_t)ctx->r5 & 0xFFFFu;
+        {
+            // (a test: the game's changes of a playing sound's volume, from where, and to what)
+            static int logged_sets = 0;
+            const uint32_t from = (uint32_t)ctx->r31;
+            const bool converted = (from >= 0x10011624u && from < 0x10011BB8u) || (from >= 0x1000F91Cu && from < 0x1000FA64u);   // the list's, func_1000F91C/F9D4's
+            if (what == 8 && !converted && logged_sets < 3000 && local_listener(rdram) >= 0) {
+                logged_sets++;
+                char line[160];
+                std::snprintf(line, sizeof(line), "[snd] f=%u volume of %04X set to %u from %08X", (unsigned)conker::netsession::frame(), (unsigned)handle,
+                              (unsigned)((uint32_t)ctx->r6 & 0xFFFFu), (unsigned)(uint32_t)ctx->r31);
+                conker::netsession::log(line);
+            }
+        }
         if ((what != 8 && what != 4) || handle == 0) {
             return;
         }
@@ -863,12 +876,15 @@ extern "C" void conker_local_audio(uint8_t* rdram, recomp_context* ctx, int whic
             // and pan (0x10($sp)); the sound player's own starts are logged elsewhere
             static std::atomic<int> notes{ 0 };
             const uint32_t from = (uint32_t)ctx->r31;
-            if (from >= 0x1001415Cu && from < 0x1001415Cu + 0xEE8u && conker::netsession::active() && notes.load() < 1500) {
+            // (0.9.24: the music player's notes are the music only. Now the sound player's voices: their volume, pan and effects send,
+            // to see whether a sound started at volume 0 still reaches the speakers)
+            const bool sound_player = from >= 0x10015944u && from < 0x10015944u + 0x154Cu;
+            if (sound_player && conker::netsession::active() && notes.load() < 3000) {
                 notes.fetch_add(1);
-                char line[180];
-                std::snprintf(line, sizeof(line), "[snd] f=%u a voice started from %08X: volume %d pan %u, wave %08X", (unsigned)conker::netsession::frame(),
-                              (unsigned)from, (int)(int16_t)((uint32_t)ctx->r7 & 0xFFFFu), (unsigned)(word(rdram, (uint32_t)ctx->r29 + 0x10) & 0xFFu),
-                              (unsigned)(uint32_t)ctx->r5);
+                char line[200];
+                std::snprintf(line, sizeof(line), "[snd] f=%u a sound's voice started: volume %d pan %u, effects %u, wave %08X", (unsigned)conker::netsession::frame(),
+                              (int)(int16_t)((uint32_t)ctx->r7 & 0xFFFFu), (unsigned)(word(rdram, (uint32_t)ctx->r29 + 0x10) & 0xFFu),
+                              (unsigned)(word(rdram, (uint32_t)ctx->r29 + 0x14) & 0xFFu), (unsigned)(uint32_t)ctx->r5);
                 conker::netsession::log(line);
             }
             return;
