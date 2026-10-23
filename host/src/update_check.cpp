@@ -133,37 +133,83 @@ namespace {
         }
     }
 
-    std::string fetch_latest_release_json() {
+    // One answer from GitHub: the HTTP status (0: none), the body (up to 256 KB) and where a redirect points.
+    struct Answer {
+        int status = 0;
         std::string body;
-        const std::string path = "/repos/" + repo_name() + "/releases/latest";
+        std::string location;
+        std::string error;   // why there was no answer
+    };
+
+    // What an answer was, for update_check.txt (not the body: GitHub's refusal names the address it came from).
+    std::string describe(const Answer& answer) {
+        if (answer.status == 0) {
+            return "no answer" + (answer.error.empty() ? std::string() : " (" + answer.error + ")");
+        }
+        std::string text = "answered " + std::to_string(answer.status);
+        if (answer.body.find("rate limit") != std::string::npos) {
+            text += " (GitHub's limit of requests from this internet address is used up for now)";
+        }
+        if (!answer.location.empty()) {
+            text += ", on to " + answer.location;
+        }
+        return text;
+    }
+
 #ifdef _WIN32
+    std::string ascii(const wchar_t* text) {
+        std::string out;
+        for (; *text != 0; text++) {
+            out += *text < 128 ? (char)*text : '?';
+        }
+        return out;
+    }
+
+    // A GET over HTTPS. With follow false a redirect isn't followed: its status and Location are the answer.
+    Answer https_get(const wchar_t* host, const std::string& path, const wchar_t* headers, bool follow) {
+        Answer answer;
         const std::wstring wide_path(path.begin(), path.end());
         HINTERNET session = WinHttpOpen(L"ConkerRecomp-update-check", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
         if (session == nullptr) {
-            return body;
+            answer.error = "WinHTTP could not start, " + std::to_string((unsigned)GetLastError());
+            return answer;
         }
         WinHttpSetTimeouts(session, 5000, 5000, 5000, 8000);
-        HINTERNET connection = WinHttpConnect(session, L"api.github.com", INTERNET_DEFAULT_HTTPS_PORT, 0);
+        HINTERNET connection = WinHttpConnect(session, host, INTERNET_DEFAULT_HTTPS_PORT, 0);
         HINTERNET request = connection != nullptr ? WinHttpOpenRequest(connection, L"GET", wide_path.c_str(), nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE) : nullptr;
-        if (request != nullptr) {
-            const wchar_t* headers = L"Accept: application/vnd.github+json";
-            if (WinHttpSendRequest(request, headers, (DWORD)-1L, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) && WinHttpReceiveResponse(request, nullptr)) {
+        if (request == nullptr) {
+            answer.error = "could not make the request, " + std::to_string((unsigned)GetLastError());
+        }
+        else {
+            if (!follow) {
+                DWORD feature = WINHTTP_DISABLE_REDIRECTS;
+                WinHttpSetOption(request, WINHTTP_OPTION_DISABLE_FEATURE, &feature, sizeof(feature));
+            }
+            if (WinHttpSendRequest(request, headers != nullptr ? headers : WINHTTP_NO_ADDITIONAL_HEADERS, headers != nullptr ? (DWORD)-1L : 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) &&
+                WinHttpReceiveResponse(request, nullptr)) {
                 DWORD status = 0, size = sizeof(status);
                 WinHttpQueryHeaders(request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX, &status, &size, WINHTTP_NO_HEADER_INDEX);
-                if (status == 200) {
-                    for (;;) {
-                        DWORD available = 0;
-                        if (!WinHttpQueryDataAvailable(request, &available) || available == 0 || body.size() > 262144) {
-                            break;
-                        }
-                        std::string chunk(available, '\0');
-                        DWORD read = 0;
-                        if (!WinHttpReadData(request, &chunk[0], available, &read) || read == 0) {
-                            break;
-                        }
-                        body.append(chunk, 0, read);
-                    }
+                answer.status = (int)status;
+                wchar_t location[2048] = {};
+                DWORD location_size = sizeof(location);
+                if (WinHttpQueryHeaders(request, WINHTTP_QUERY_LOCATION, WINHTTP_HEADER_NAME_BY_INDEX, location, &location_size, WINHTTP_NO_HEADER_INDEX)) {
+                    answer.location = ascii(location);
                 }
+                for (;;) {
+                    DWORD available = 0;
+                    if (!WinHttpQueryDataAvailable(request, &available) || available == 0 || answer.body.size() > 262144) {
+                        break;
+                    }
+                    std::string chunk(available, '\0');
+                    DWORD read = 0;
+                    if (!WinHttpReadData(request, &chunk[0], available, &read) || read == 0) {
+                        break;
+                    }
+                    answer.body.append(chunk, 0, read);
+                }
+            }
+            else {
+                answer.error = "could not reach GitHub, " + std::to_string((unsigned)GetLastError());
             }
             WinHttpCloseHandle(request);
         }
@@ -171,19 +217,115 @@ namespace {
             WinHttpCloseHandle(connection);
         }
         WinHttpCloseHandle(session);
+        return answer;
+    }
+
+    Answer api_latest(const std::string& repo) {
+        return https_get(L"api.github.com", "/repos/" + repo + "/releases/latest", L"Accept: application/vnd.github+json", true);
+    }
+
+    Answer page_without_redirect(const std::string& path) {
+        return https_get(L"github.com", path, nullptr, false);
+    }
 #else
-        const std::string command = "curl -sf -m 8 -H 'Accept: application/vnd.github+json' -H 'User-Agent: ConkerRecomp-update-check' 'https://api.github.com" + path + "' 2>/dev/null";
+    std::string run(const std::string& command) {
+        std::string out;
         FILE* pipe = popen(command.c_str(), "r");
         if (pipe != nullptr) {
             char buffer[4096];
             size_t n;
-            while ((n = std::fread(buffer, 1, sizeof(buffer), pipe)) > 0 && body.size() < 262144) {
-                body.append(buffer, n);
+            while ((n = std::fread(buffer, 1, sizeof(buffer), pipe)) > 0 && out.size() < 262144) {
+                out.append(buffer, n);
             }
             pclose(pipe);
         }
+        return out;
+    }
+
+    Answer api_latest(const std::string& repo) {
+        Answer answer;
+        // (the status is written after the body, on a line of its own)
+        const std::string out = run("curl -s -m 8 -w '\\n%{http_code}' -H 'Accept: application/vnd.github+json' -H 'User-Agent: ConkerRecomp-update-check' 'https://api.github.com/repos/" +
+                                    repo + "/releases/latest' 2>/dev/null");
+        const size_t line = out.rfind('\n');
+        if (line != std::string::npos) {
+            answer.status = std::atoi(out.c_str() + line + 1);
+            answer.body = out.substr(0, line);
+        }
+        return answer;
+    }
+
+    Answer page_without_redirect(const std::string& path) {
+        Answer answer;
+        const std::string out = run("curl -s -m 8 -o /dev/null -w '%{http_code} %{redirect_url}' -H 'User-Agent: ConkerRecomp-update-check' 'https://github.com" + path + "' 2>/dev/null");
+        answer.status = std::atoi(out.c_str());
+        const size_t space = out.find(' ');
+        if (space != std::string::npos) {
+            answer.location = out.substr(space + 1);
+        }
+        return answer;
+    }
 #endif
-        return body;
+
+    bool is_redirect(int status) {
+        return status == 301 || status == 302 || status == 303 || status == 307 || status == 308;
+    }
+
+    // update_check.txt, beside the game: what the last check asked GitHub and what it found.
+    void write_check_log(const std::string& text) {
+        std::filesystem::path folder;
+#ifdef _WIN32
+        wchar_t exe_path[MAX_PATH * 2] = {};
+        GetModuleFileNameW(nullptr, exe_path, MAX_PATH * 2);
+        folder = std::filesystem::path(exe_path).parent_path();
+#else
+        std::error_code ec;
+        folder = std::filesystem::current_path(ec);
+#endif
+        std::ofstream file(folder / "update_check.txt", std::ios::binary | std::ios::trunc);
+        if (file) {
+            file << text;
+        }
+    }
+
+    // The newest release, asked of GitHub's API; when the API won't answer (it allows 60 requests an hour from an internet
+    // address, shared by everybody behind it), from the release page: github.com/<repo>/releases/latest sends a browser on to
+    // .../releases/tag/<tag>, and the release's zip is CBFD-Online-<version>.zip (package_release.cmd's name), which is checked
+    // to be there. The API's answer also gives the zip's checksum; the page's doesn't.
+    void find_latest_release(std::string* tag, std::string* url, std::string* digest) {
+        const std::string repo = repo_name();
+        std::string log = std::string("Update check of ") + CONKER_ONLINE_VERSION + " for " + repo + "\n";
+        const Answer api = api_latest(repo);
+        log += "GitHub's API: " + describe(api) + "\n";
+        if (api.status == 200) {
+            *tag = find_tag(api.body);
+            find_asset(api.body, url, digest);
+        }
+        if (tag->empty()) {
+            const Answer page = page_without_redirect("/" + repo + "/releases/latest");
+            log += "The release page: " + describe(page) + "\n";
+            const size_t at = page.location.find("/releases/tag/");
+            if (is_redirect(page.status) && at != std::string::npos) {
+                std::string found = page.location.substr(at + 14);
+                const size_t end = found.find_first_of("?#/");
+                if (end != std::string::npos) {
+                    found.resize(end);
+                }
+                const size_t digit = found.find_first_of("0123456789");
+                if (!found.empty() && found.size() < 40 && found.find('%') == std::string::npos && digit != std::string::npos) {
+                    *tag = found;
+                    const std::string path = "/" + repo + "/releases/download/" + found + "/CBFD-Online-" + found.substr(digit) + ".zip";
+                    const Answer zip = page_without_redirect(path);
+                    log += "Its zip, " + path + ": " + describe(zip) + "\n";
+                    if (is_redirect(zip.status) || zip.status == 200) {
+                        *url = "https://github.com" + path;
+                    }
+                }
+            }
+        }
+        log += "Latest release: " + (tag->empty() ? std::string("not found") : *tag) + (url->empty() ? std::string(", no zip to install") : ", zip " + *url) +
+               (digest->empty() ? std::string() : ", checksum " + *digest) + "\n";
+        write_check_log(log);
     }
 }
 
@@ -196,10 +338,8 @@ void conker::updates::check_in_background() {
         return;
     }
     std::thread([]() {
-        const std::string json = fetch_latest_release_json();
-        const std::string tag = find_tag(json);
-        std::string url, digest;
-        find_asset(json, &url, &digest);
+        std::string tag, url, digest;
+        find_latest_release(&tag, &url, &digest);
         {
             std::lock_guard lock{ result_mutex };
             latest_tag = tag;
