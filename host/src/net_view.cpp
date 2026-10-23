@@ -397,89 +397,11 @@ namespace {
                 conker::netsession::log(line);
             }
         }
-        {
-            // (a test: the first frames of each camera's rocket launcher look, as the game made them: every command of that camera's
-            // passes but its world's, and the scissor the last pass before each left set, to find the green overlay of the second camera)
-            // (its 2nd, 30th and 120th frames, the first time a camera has it)
-            static int rocket_dumps[4] = {};
-            static int rocket_frames[4] = {};
-            bool dump_now[4] = {};
-            for (int ovp = 0; ovp < 4; ovp++) {
-                if (((rocket_mask >> ovp) & 1u) == 0) {
-                    rocket_frames[ovp] = 0;
-                    continue;
-                }
-                rocket_frames[ovp]++;
-                dump_now[ovp] = rocket_dumps[ovp] < 3 && (rocket_frames[ovp] == 2 || rocket_frames[ovp] == 30 || rocket_frames[ovp] == 120);
-            }
-            for (int ovp = 0; ovp < 4; ovp++) if (dump_now[ovp]) {
-                rocket_dumps[ovp]++;
-                {
-                    std::string list = "[net view] rocket frame's passes (pass:camera/kind/bytes):";
-                    for (size_t i = 0; i < frame.size(); i++) {
-                        const uint32_t to = i + 1 < frame.size() ? frame[i + 1].gfx : end;
-                        char item[48];
-                        std::snprintf(item, sizeof(item), " %zu:%d/%d/%u", i, frame[i].camera, frame[i].kind, to > frame[i].gfx ? to - frame[i].gfx : 0u);
-                        list += item;
-                    }
-                    conker::netsession::log(list.c_str());
-                }
-                uint32_t scissor_w0 = 0, scissor_w1 = 0;
-                int lines = 0;
-                // (and every pass from the one before the bars' pass, camera 255's last, on: the setup and HUD passes, whoever's)
-                size_t tail = frame.size();
-                for (size_t i = 0; i < frame.size(); i++) {
-                    if (frame[i].camera == 255 && i + 1 < frame.size()) {
-                        tail = i > 0 ? i - 1 : 0;
-                    }
-                }
-                for (size_t i = 0; i < frame.size() && lines < 1500; i++) {
-                    const uint32_t from = frame[i].gfx;
-                    const uint32_t to = i + 1 < frame.size() ? frame[i + 1].gfx : end;
-                    if ((from >> 24) != 0x80 || to <= from || to - from > 0x8000u) {
-                        continue;
-                    }
-                    const bool dump_it = (frame[i].camera == ovp || i >= tail) && to - from <= 0x1000u;
-                    if (dump_it) {
-                        char line[200];
-                        std::snprintf(line, sizeof(line), "[net view] rocket dump %d/3, camera %d%s: pass %zu %08X..%08X (kind %d), the scissor before it %08X %08X",
-                            rocket_dumps[ovp], ovp, ovp == local ? " (this machine's)" : "", i, from, to, frame[i].kind, scissor_w0, scissor_w1);
-                        conker::netsession::log(line);
-                        lines++;
-                    }
-                    for (uint32_t address = from; address < to; address += 8) {
-                        const uint32_t w0 = (uint32_t)MEM_W(0, (gpr)(int32_t)address), w1 = (uint32_t)MEM_W(4, (gpr)(int32_t)address);
-                        if ((w0 >> 24) == 0xED) {
-                            scissor_w0 = w0;
-                            scissor_w1 = w1;
-                        }
-                        if (dump_it && lines < 1500) {
-                            char line[120];
-                            std::snprintf(line, sizeof(line), "[net view]   %08X: %08X %08X", address, w0, w1);
-                            conker::netsession::log(line);
-                            lines++;
-                            if ((w0 >> 24) == 0xDE && (w1 >> 24) == 0x80 && (w1 & 0x7FFFFFu) < 0x7F0000u) {
-                                // one level of the lists it calls
-                                for (uint32_t inner = w1, n = 0; n < 48 && lines < 1500; inner += 8, n++) {
-                                    const uint32_t i0 = (uint32_t)MEM_W(0, (gpr)(int32_t)inner), i1 = (uint32_t)MEM_W(4, (gpr)(int32_t)inner);
-                                    std::snprintf(line, sizeof(line), "[net view]     > %08X: %08X %08X", inner, i0, i1);
-                                    conker::netsession::log(line);
-                                    lines++;
-                                    if ((i0 >> 24) == 0xDF) {
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
         for (int ovp = 0; ovp < 4; ovp++) if (rocket_mask != 0) {
             // With the rocket launcher's look the frame has one more pass before a HUD pass (a long one, its setup and the green filter,
             // then the usual short setup pass): the long one is the overlay, drawn for the split screen's half and not for the full view. Its
             // scissors are made empty, so nothing of it is seen. The game draws it in the first camera's chain, whoever has the launcher:
-            // the second player's overlay comes before the first camera's setup and HUD passes (0.9.17's log), so every camera's chain
+            // the second player's overlay comes before the first camera's setup and HUD passes (0.9.17's log; fixed in 0.9.18), so every camera's chain
             // is looked at while anybody has the launcher.
             int hud_pass = -1;
             for (size_t i = 0; i < frame.size(); i++) {

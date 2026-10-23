@@ -295,36 +295,71 @@ namespace {
         }
     }
 
-    // (a test: who starts sounds, and with what: the first three starts from each place, and how many in all)
+    // (a test: who starts which sounds, and how loud they come out on this machine. Each place, caller and sound: its first two
+    // starts and every 25th, with the volume and pan the sound player gets and where the sound is, when that is known.)
     struct Census {
-        uint32_t ra = 0;
+        uint32_t ra = 0, outer = 0, sound = 0;
         unsigned count = 0;
     };
-    Census census[48];
+    Census census[192];
+    bool source_known = false;
+    uint32_t source_ra = 0;    // the start it is for (func_10010BE8's return address)
+    int source_x = 0, source_y = 0, source_z = 0;
+    uint32_t source_flags = 0;
 
-    void count_start(uint8_t* rdram, const char* what, uint32_t ra, uint32_t outer, uint32_t sound, uint32_t volume, uint32_t pan, uint32_t object,
-                     int player, const char* done) {
+    void set_source(uint32_t ra, int x, int y, int z, uint32_t flags) {
+        source_known = true;
+        source_ra = ra;
+        source_x = x;
+        source_y = y;
+        source_z = z;
+        source_flags = flags;
+    }
+
+    int local_listener(uint8_t* rdram);
+
+    void count_start(uint8_t* rdram, const char* what, uint32_t ra, uint32_t outer, uint32_t sound, uint32_t game_volume, uint32_t game_pan,
+                     uint32_t volume, uint32_t pan, uint32_t object, int player) {
         Census* c = nullptr;
         for (Census& entry : census) {
-            if (entry.ra == ra || entry.ra == 0) {
+            if ((entry.ra == ra && entry.outer == outer && entry.sound == sound) || entry.ra == 0) {
                 c = &entry;
                 break;
             }
         }
+        const bool known = source_known && source_ra == ra;
+        source_known = false;
         if (c == nullptr) {
             return;
         }
         c->ra = ra;
+        c->outer = outer;
+        c->sound = sound;
         c->count++;
-        if (c->count <= 3 || c->count == 50 || c->count == 500) {
+        if (c->count <= 2 || c->count % 25 == 0) {
             // (and the object the game is running, gCurrentObject: a sound with no place may still be a character's doing)
             const uint32_t current = word(rdram, 0x800D154C);
             const int current_player = character_player(rdram, current);
-            char line[320];
-            std::snprintf(line, sizeof(line), "[audio] %s from %08X (its caller %08X): sound %u, volume %u pan %u, object %08X%s, the game running object %08X%s, %s (%u so far)",
-                          what, (unsigned)ra, (unsigned)outer, (unsigned)sound, (unsigned)volume, (unsigned)(pan & 0x7F), (unsigned)object,
-                          player >= 0 ? (std::string(" (player ") + std::to_string(player + 1) + "'s character)").c_str() : "", (unsigned)current,
-                          current_player >= 0 ? (std::string(" (player ") + std::to_string(current_player + 1) + "'s character)").c_str() : "", done, c->count);
+            const int k = local_listener(rdram);
+            int lx = 0, ly = 0, lz = 0;
+            if (k >= 0) {
+                const uint32_t entry = listeners + (uint32_t)k * listener_size;
+                lx = (int)word(rdram, entry + 0xC);
+                ly = (int)word(rdram, entry + 0x10);
+                lz = (int)word(rdram, entry + 0x14);
+            }
+            char where[96];
+            if (known) {
+                std::snprintf(where, sizeof(where), "at %d %d %d (flags %X)", source_x, source_y, source_z, (unsigned)source_flags);
+            } else {
+                std::snprintf(where, sizeof(where), "with no place");
+            }
+            char line[420];
+            std::snprintf(line, sizeof(line), "[audio] %s from %08X (its caller %08X): sound %u %s, the game's volume %u pan %u, played at %u pan %u%s; object %08X%s, the game running %08X%s; this machine's listener at %d %d %d (%u so far)",
+                          what, (unsigned)ra, (unsigned)outer, (unsigned)sound, where, (unsigned)game_volume, (unsigned)(game_pan & 0x7F), (unsigned)volume,
+                          (unsigned)(pan & 0x7F), (volume != game_volume || (pan & 0x7F) != (game_pan & 0x7F)) ? " (this machine's)" : "", (unsigned)object,
+                          player >= 0 ? (std::string(" (player ") + std::to_string(player + 1) + "'s)").c_str() : "", (unsigned)current,
+                          current_player >= 0 ? (std::string(" (player ") + std::to_string(current_player + 1) + "'s)").c_str() : "", lx, ly, lz, c->count);
             conker::netsession::log(line);
         }
     }
@@ -368,9 +403,8 @@ namespace {
             else if (ra == from_play_at_point) {
                 outer = word(rdram, sp + 0x50 + 0x24);   // func_10010E78
             }
-            const bool changed = ((uint32_t)ctx->r6 & 0xFFFFu) != game_volume || ((uint32_t)ctx->r7 & 0xFFu) != game_pan;
-            count_start(rdram, "a sound started", ra, outer, (uint32_t)ctx->r5 & 0xFFFFu, game_volume, game_pan, caller_s0, character_player(rdram, caller_s0),
-                        changed ? "this machine's volume and pan given" : "as the game plays it");
+            count_start(rdram, "a sound started", ra, outer, (uint32_t)ctx->r5 & 0xFFFFu, game_volume, game_pan, (uint32_t)ctx->r6 & 0xFFFFu,
+                        (uint32_t)ctx->r7 & 0xFFu, caller_s0, character_player(rdram, caller_s0));
         }
     }
 
@@ -414,6 +448,7 @@ namespace {
         }
         const uint32_t game_volume = (uint32_t)ctx->r6 & 0xFFFFu;
         uint32_t volume = 0, pan = 0x40;
+        set_source(ra, (int)float_at(rdram, caller_s0 + 0x14), (int)float_at(rdram, caller_s0 + 0x18), (int)float_at(rdram, caller_s0 + 0x1C), 0);
         character_sound(rdram, ctx, k, caller_s0, game_volume, near_distance, far_distance, &volume, &pan);
         ctx->r6 = (gpr)(int32_t)volume;
         ctx->r7 = (gpr)(int32_t)pan;
@@ -494,8 +529,9 @@ namespace {
                 done = "this machine's volume and pan given";
             }
         }
+        (void)done;
         if (conker::netsession::active()) {
-            count_start(rdram, "a streamed sound started", ra, 0, (uint32_t)ctx->r4 & 0xFFFFu, game_volume, game_pan, object, player, done);
+            count_start(rdram, "a streamed sound started", ra, 0, (uint32_t)ctx->r4 & 0xFFFFu, game_volume, game_pan, (uint32_t)ctx->r5, (uint32_t)ctx->r6, object, player);
         }
     }
 }
@@ -583,6 +619,9 @@ extern "C" void conker_local_audio(uint8_t* rdram, recomp_context* ctx, int whic
     }
     if (which == 7) {
         const uint32_t entry = (uint32_t)ctx->r16;
+        // (flags: the entry's; 0x80000000 when this machine's volume and pan were not worked out for it)
+        set_source(from_list, (int16_t)half(rdram, entry + 2), (int16_t)half(rdram, entry + 4), (int16_t)half(rdram, entry + 6),
+                   ((uint32_t)ctx->r17 & 0x7FFFFFFFu) | ((k < 0 || list_entry.entry != entry || list_entry.entry == 0) ? 0x80000000u : 0u));
         if (k < 0 || list_entry.entry != entry || list_entry.entry == 0) {
             list_entry.ready = false;
             return;
@@ -628,6 +667,7 @@ extern "C" void conker_local_audio(uint8_t* rdram, recomp_context* ctx, int whic
         uint32_t volume = 0, pan = 0x40;
         evaluate_point(rdram, ctx, k, listener_arg, x, y, z, word(rdram, sp + 0x14), word(rdram, sp + 0x18), &volume, &pan);
         if (which == 2) {
+            set_source(from_play_at_point, (int16_t)x, (int16_t)y, (int16_t)z, 0);
             // the game decides from its own volume whether to start the sound (and func_10010BE8, below 100); started, it has this one
             const uint32_t base_volume = (uint32_t)MEM_HU(0x3A, (gpr)(int32_t)sp);
             pending.set = true;
