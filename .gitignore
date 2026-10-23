@@ -29,3 +29,5 @@ __pycache__/
 /.venv/
 /tools/macos/
 host/CBFD-Online-*.zip
+# package_release.cmd output
+/release/
