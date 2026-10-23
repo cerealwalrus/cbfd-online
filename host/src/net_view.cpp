@@ -414,15 +414,32 @@ namespace {
             }
             for (int ovp = 0; ovp < 4; ovp++) if (dump_now[ovp]) {
                 rocket_dumps[ovp]++;
+                {
+                    std::string list = "[net view] rocket frame's passes (pass:camera/kind/bytes):";
+                    for (size_t i = 0; i < frame.size(); i++) {
+                        const uint32_t to = i + 1 < frame.size() ? frame[i + 1].gfx : end;
+                        char item[48];
+                        std::snprintf(item, sizeof(item), " %zu:%d/%d/%u", i, frame[i].camera, frame[i].kind, to > frame[i].gfx ? to - frame[i].gfx : 0u);
+                        list += item;
+                    }
+                    conker::netsession::log(list.c_str());
+                }
                 uint32_t scissor_w0 = 0, scissor_w1 = 0;
                 int lines = 0;
-                for (size_t i = 0; i < frame.size() && lines < 1200; i++) {
+                // (and every pass from the one before the bars' pass, camera 255's last, on: the setup and HUD passes, whoever's)
+                size_t tail = frame.size();
+                for (size_t i = 0; i < frame.size(); i++) {
+                    if (frame[i].camera == 255 && i + 1 < frame.size()) {
+                        tail = i > 0 ? i - 1 : 0;
+                    }
+                }
+                for (size_t i = 0; i < frame.size() && lines < 1500; i++) {
                     const uint32_t from = frame[i].gfx;
                     const uint32_t to = i + 1 < frame.size() ? frame[i + 1].gfx : end;
                     if ((from >> 24) != 0x80 || to <= from || to - from > 0x8000u) {
                         continue;
                     }
-                    const bool dump_it = frame[i].camera == ovp && to - from <= 0x1000u;
+                    const bool dump_it = (frame[i].camera == ovp || i >= tail) && to - from <= 0x1000u;
                     if (dump_it) {
                         char line[200];
                         std::snprintf(line, sizeof(line), "[net view] rocket dump %d/3, camera %d%s: pass %zu %08X..%08X (kind %d), the scissor before it %08X %08X",
@@ -436,14 +453,14 @@ namespace {
                             scissor_w0 = w0;
                             scissor_w1 = w1;
                         }
-                        if (dump_it && lines < 1200) {
+                        if (dump_it && lines < 1500) {
                             char line[120];
                             std::snprintf(line, sizeof(line), "[net view]   %08X: %08X %08X", address, w0, w1);
                             conker::netsession::log(line);
                             lines++;
                             if ((w0 >> 24) == 0xDE && (w1 >> 24) == 0x80 && (w1 & 0x7FFFFFu) < 0x7F0000u) {
                                 // one level of the lists it calls
-                                for (uint32_t inner = w1, n = 0; n < 48 && lines < 1200; inner += 8, n++) {
+                                for (uint32_t inner = w1, n = 0; n < 48 && lines < 1500; inner += 8, n++) {
                                     const uint32_t i0 = (uint32_t)MEM_W(0, (gpr)(int32_t)inner), i1 = (uint32_t)MEM_W(4, (gpr)(int32_t)inner);
                                     std::snprintf(line, sizeof(line), "[net view]     > %08X: %08X %08X", inner, i0, i1);
                                     conker::netsession::log(line);
@@ -458,10 +475,12 @@ namespace {
                 }
             }
         }
-        for (int ovp = 0; ovp < 4; ovp++) if (((rocket_mask >> ovp) & 1u) != 0) {
-            // With the rocket launcher's look the frame has one more pass of this machine's camera before its HUD pass (a long one, its
-            // setup and the green filter, then the usual short setup pass): the long one is the overlay, drawn for the split screen's half and
-            // not for the full view. Its scissors are made empty, so nothing of it is seen.
+        for (int ovp = 0; ovp < 4; ovp++) if (rocket_mask != 0) {
+            // With the rocket launcher's look the frame has one more pass before a HUD pass (a long one, its setup and the green filter,
+            // then the usual short setup pass): the long one is the overlay, drawn for the split screen's half and not for the full view. Its
+            // scissors are made empty, so nothing of it is seen. The game draws it in the first camera's chain, whoever has the launcher:
+            // the second player's overlay comes before the first camera's setup and HUD passes (0.9.17's log), so every camera's chain
+            // is looked at while anybody has the launcher.
             int hud_pass = -1;
             for (size_t i = 0; i < frame.size(); i++) {
                 if (frame[i].kind == 2 && frame[i].camera == ovp) {
@@ -473,12 +492,14 @@ namespace {
                 setups.push_back(i);
             }
             {
-                static unsigned logged_masks = 0;
-                if (ovp == local && logged_masks < 20) {
-                    logged_masks++;
-                    char line[160];
-                    std::snprintf(line, sizeof(line), "[net view] rocket look of camera %d: HUD pass %d, %zu setup passes before it (%s)", ovp, hud_pass, setups.size(),
-                        hud_pass >= 0 && setups.size() >= 2 ? "the extra one hidden" : "nothing hidden: not the expected passes");
+                // (logged when what is found changes, for each camera)
+                static int logged_state[4] = { -2, -2, -2, -2 };
+                const int state = hud_pass < 0 ? -1 : (int)setups.size();
+                if (state != logged_state[ovp]) {
+                    logged_state[ovp] = state;
+                    char line[200];
+                    std::snprintf(line, sizeof(line), "[net view] rocket launcher out (players %X), camera %d%s: HUD pass %d, %zu setup passes before it (%s)", rocket_mask, ovp,
+                        ovp == local ? " (this machine's)" : "", hud_pass, setups.size(), hud_pass >= 0 && setups.size() >= 2 ? "the extra one hidden" : "nothing to hide");
                     conker::netsession::log(line);
                 }
             }

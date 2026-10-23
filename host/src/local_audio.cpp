@@ -25,6 +25,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 
 #include <SDL.h>
 
@@ -294,6 +295,40 @@ namespace {
         }
     }
 
+    // (a test: who starts sounds, and with what: the first three starts from each place, and how many in all)
+    struct Census {
+        uint32_t ra = 0;
+        unsigned count = 0;
+    };
+    Census census[48];
+
+    void count_start(uint8_t* rdram, const char* what, uint32_t ra, uint32_t outer, uint32_t sound, uint32_t volume, uint32_t pan, uint32_t object,
+                     int player, const char* done) {
+        Census* c = nullptr;
+        for (Census& entry : census) {
+            if (entry.ra == ra || entry.ra == 0) {
+                c = &entry;
+                break;
+            }
+        }
+        if (c == nullptr) {
+            return;
+        }
+        c->ra = ra;
+        c->count++;
+        if (c->count <= 3 || c->count == 50 || c->count == 500) {
+            // (and the object the game is running, gCurrentObject: a sound with no place may still be a character's doing)
+            const uint32_t current = word(rdram, 0x800D154C);
+            const int current_player = character_player(rdram, current);
+            char line[320];
+            std::snprintf(line, sizeof(line), "[audio] %s from %08X (its caller %08X): sound %u, volume %u pan %u, object %08X%s, the game running object %08X%s, %s (%u so far)",
+                          what, (unsigned)ra, (unsigned)outer, (unsigned)sound, (unsigned)volume, (unsigned)(pan & 0x7F), (unsigned)object,
+                          player >= 0 ? (std::string(" (player ") + std::to_string(player + 1) + "'s character)").c_str() : "", (unsigned)current,
+                          current_player >= 0 ? (std::string(" (player ") + std::to_string(current_player + 1) + "'s character)").c_str() : "", done, c->count);
+            conker::netsession::log(line);
+        }
+    }
+
     float float_at(uint8_t* rdram, uint32_t address) {
         const uint32_t bits = word(rdram, address);
         float value;
@@ -316,7 +351,30 @@ namespace {
     }
 
     // func_10010BE8 is about to start a sound ($a2 the volume, $a3 the pan; its caller's $s0 saved at 0x24($sp)).
+    void on_start_inner(uint8_t* rdram, recomp_context* ctx);
+
     void on_start(uint8_t* rdram, recomp_context* ctx) {
+        const uint32_t sp = (uint32_t)ctx->r29;
+        const uint32_t ra = word(rdram, sp + 0x2C);
+        const uint32_t game_volume = (uint32_t)ctx->r6 & 0xFFFFu, game_pan = (uint32_t)ctx->r7 & 0xFFu;
+        on_start_inner(rdram, ctx);
+        if (conker::netsession::active()) {
+            const uint32_t caller_s0 = word(rdram, sp + 0x24);
+            // (the caller's caller: its return address in the caller's frame, where the callers that are wrappers keep it)
+            uint32_t outer = 0;
+            if (ra == 0x10010F78) {
+                outer = word(rdram, sp + 0x50 + 0x24);   // func_10010F30
+            }
+            else if (ra == from_play_at_point) {
+                outer = word(rdram, sp + 0x50 + 0x24);   // func_10010E78
+            }
+            const bool changed = ((uint32_t)ctx->r6 & 0xFFFFu) != game_volume || ((uint32_t)ctx->r7 & 0xFFu) != game_pan;
+            count_start(rdram, "a sound started", ra, outer, (uint32_t)ctx->r5 & 0xFFFFu, game_volume, game_pan, caller_s0, character_player(rdram, caller_s0),
+                        changed ? "this machine's volume and pan given" : "as the game plays it");
+        }
+    }
+
+    void on_start_inner(uint8_t* rdram, recomp_context* ctx) {
         const uint32_t sp = (uint32_t)ctx->r29;
         const uint32_t ra = word(rdram, sp + 0x2C);
         const uint32_t caller_s0 = word(rdram, sp + 0x24);
@@ -410,6 +468,38 @@ namespace {
     }
 }
 
+namespace {
+    // func_1001263C (the streamed sounds' player, D_800E0E08's: one sound at a time, its volume and pan read only by the audio
+    // code) begins: (sound, volume, pan). From func_10012718 (a sound on an object: in the middle at full volume for a character,
+    // else from the nearest listener), this machine's volume and pan are given instead.
+    void on_stream_start(uint8_t* rdram, recomp_context* ctx) {
+        const uint32_t sp = (uint32_t)ctx->r29;   // func_1001263C hasn't made its frame yet: its caller's
+        const uint32_t ra = (uint32_t)ctx->r31;
+        const uint32_t game_volume = (uint32_t)ctx->r5, game_pan = (uint32_t)ctx->r6;
+        const char* done = "as the game plays it";
+        uint32_t object = 0;
+        int player = -1;
+        if (ra == 0x10012760u || ra == 0x100127BCu) {
+            object = word(rdram, sp + 0x44);
+            player = character_player(rdram, object);
+            const int k = local_listener(rdram);
+            const bool own = ra == 0x10012760u && player == conker::netsession::local_slot();
+            if (k >= 0 && ram_pointer(object) && !own && (ra == 0x100127BCu || player >= 0)) {
+                const int x = (int)float_at(rdram, object + 0x14), y = (int)float_at(rdram, object + 0x18), z = (int)float_at(rdram, object + 0x1C);
+                uint32_t volume = 0, pan = 0x40;
+                evaluate_list(rdram, ctx, k, (uint32_t)x, (uint32_t)y, (uint32_t)z, word(rdram, sp + 0x48), half(rdram, sp + 0x52),
+                              (uint32_t)(int32_t)(int16_t)half(rdram, sp + 0x4E), true, &volume, &pan);
+                ctx->r5 = (gpr)(int32_t)volume;
+                ctx->r6 = (gpr)(int32_t)(pan & 0x7Fu);
+                done = "this machine's volume and pan given";
+            }
+        }
+        if (conker::netsession::active()) {
+            count_start(rdram, "a streamed sound started", ra, 0, (uint32_t)ctx->r4 & 0xFFFFu, game_volume, game_pan, object, player, done);
+        }
+    }
+}
+
 // The hooks (conker.toml):
 //   0: func_1000F91C, 1: func_1000F9D4, 2: func_10010E78, just after their call to func_1000F6B8 (its arguments are still in the
 //      caller's frame: the listener argument and x, y, z at 0x0-0xC($sp), the pan's address at 0x10, near and far at 0x14, 0x18);
@@ -420,7 +510,8 @@ namespace {
 //   8: func_10011624, func_10010BE8 has returned the started sound's handle ($v0);
 //   9, 10: func_10011624, about to send a playing sound's volume ($t3, which the call's delay slot moves to $a2) or pan ($t5);
 //   11: func_10011624, done with a playing sound's changes (handle $s2);
-//   12: func_10011BB8 (every frame) begins.
+//   12: func_10011BB8 (every frame) begins;
+//   13: func_1001263C (start a streamed sound) begins.
 extern "C" void conker_local_audio(uint8_t* rdram, recomp_context* ctx, int which) {
     const uint32_t sp = (uint32_t)ctx->r29;
     switch (which) {
@@ -432,6 +523,9 @@ extern "C" void conker_local_audio(uint8_t* rdram, recomp_context* ctx, int whic
             return;
         case 12:
             follow_characters(rdram, ctx);
+            return;
+        case 13:
+            on_stream_start(rdram, ctx);
             return;
         case 8: {
             const uint32_t handle = (uint32_t)ctx->r2 & 0xFFFFu;

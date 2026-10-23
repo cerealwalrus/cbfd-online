@@ -886,6 +886,11 @@ before_vram = 0x10011BB8
 text = "{ extern void conker_local_audio(uint8_t*, recomp_context*, int); conker_local_audio(rdram, ctx, 12); }"
 
 [[patches.hook]]
+func = "func_1001263C"
+before_vram = 0x1001263C
+text = "{ extern void conker_local_audio(uint8_t*, recomp_context*, int); conker_local_audio(rdram, ctx, 13); }"
+
+[[patches.hook]]
 func = "func_10010BE8"
 before_vram = 0x10010E54
 text = "{ extern void conker_local_audio(uint8_t*, recomp_context*, int); conker_local_audio(rdram, ctx, 4); }"
