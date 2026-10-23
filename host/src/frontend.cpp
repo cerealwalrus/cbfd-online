@@ -262,7 +262,7 @@ namespace {
 #endif
         const int width = conker::frontend::window_width > 0 ? conker::frontend::window_width : 1600;
         const int height = conker::frontend::window_height > 0 ? conker::frontend::window_height : 900;
-        window = SDL_CreateWindow(conker::program_name, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+        window = SDL_CreateWindow(conker::window_title, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
             width, height, flags);
         if (window == nullptr) {
             std::fprintf(stderr, "[frontend] SDL_CreateWindow failed: %s\n", SDL_GetError());
@@ -327,8 +327,8 @@ namespace {
         std::printf("[frontend] ROM version in play: %s (%zu kept)\n", name.empty() ? "none" : name.c_str(),
             conker::roms::version_count());
         std::lock_guard lock(title_mutex);
-        pending_title = name.empty() ? std::string(conker::program_name)
-                                     : std::string(conker::program_name) + " (" + name + ")";
+        // (the ROM version in play is on the Version option, not in the title)
+        pending_title = conker::window_title;
     }
 
     // The Version option: switches to the next version kept.

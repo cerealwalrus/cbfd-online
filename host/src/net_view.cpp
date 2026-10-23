@@ -33,6 +33,8 @@
 
 #include "recomp.h"
 
+#include "ultramodern/config.hpp"
+
 #include "conker.hpp"
 
 namespace {
@@ -78,6 +80,18 @@ namespace {
     constexpr uint32_t matrix_slots = 128;
     constexpr uint32_t viewport_start = 0x00F40000;   // copies of viewports (16 bytes), the same way
     constexpr uint32_t viewport_slots = 256;
+    // (a fill of this machine's camera's rectangle, a tint over its view, is drawn as RT64's extended fill reaching past the 4:3 frame's
+    // sides: from a little list of ours the fill's command calls, a ring of 64 of 32 bytes)
+    constexpr uint32_t tint_start = 0x00F44000;
+    constexpr uint32_t tint_slot = 0x20;
+    constexpr uint32_t tint_slots = 64;
+    uint32_t tint_next = 0;
+    // (HUD Placement: Expand: the fills of this machine's HUD at the screen's sides, as RT64's extended fill with an origin, from
+    // little lists of ours the fill's command calls, a ring of 128 of 32 bytes)
+    constexpr uint32_t edge_fill_start = 0x00F45000;
+    constexpr uint32_t edge_fill_slot = 0x20;
+    constexpr uint32_t edge_fill_slots = 128;
+    uint32_t edge_fill_next = 0;
     constexpr uint32_t list_start = 0x00F50000;       // copies of the lists the HUD calls (a ring of 32 slots of 1024 commands)
     constexpr uint32_t list_slot = 0x2000;
     constexpr uint32_t list_slots = 32;
@@ -358,12 +372,28 @@ namespace {
                 }
             }
         }
+        // (a look kind seen for the first time: this frame's passes are logged, to find the green overlay of a look that isn't the
+        // rocket launcher's kind 0x16, such as the teddies' zoom)
+        bool dump_look = false;
         {
             static int logged_kind = -1;
+            static std::set<int> kinds_dumped;
             if (local_kind != logged_kind) {
                 logged_kind = local_kind;
                 char line[120];
                 std::snprintf(line, sizeof(line), "[net view] this machine's look kind is now %02X", local_kind);
+                conker::netsession::log(line);
+                if (local_kind != 0 && kinds_dumped.size() < 12 && kinds_dumped.insert(local_kind).second) {
+                    dump_look = true;
+                }
+            }
+        }
+        if (dump_look) {
+            for (size_t i = 0; i < frame.size(); i++) {
+                const uint32_t to = i + 1 < frame.size() ? frame[i + 1].gfx : 0;
+                char line[160];
+                std::snprintf(line, sizeof(line), "[net view] look %02X: pass %zu at %08X (%u bytes): camera %d kind %d%s", local_kind, i, frame[i].gfx,
+                    to > frame[i].gfx ? to - frame[i].gfx : 0u, frame[i].camera, frame[i].kind, frame[i].camera == local ? " (this machine's)" : "");
                 conker::netsession::log(line);
             }
         }
@@ -380,6 +410,16 @@ namespace {
             std::vector<int> setups;
             for (int i = hud_pass - 1; i >= 0 && frame[i].kind == 0 && frame[i].camera == ovp; i--) {
                 setups.push_back(i);
+            }
+            {
+                static unsigned logged_masks = 0;
+                if (ovp == local && logged_masks < 20) {
+                    logged_masks++;
+                    char line[160];
+                    std::snprintf(line, sizeof(line), "[net view] rocket look of camera %d: HUD pass %d, %zu setup passes before it (%s)", ovp, hud_pass, setups.size(),
+                        hud_pass >= 0 && setups.size() >= 2 ? "the extra one hidden" : "nothing hidden: not the expected passes");
+                    conker::netsession::log(line);
+                }
             }
             if (hud_pass >= 0 && setups.size() >= 2) {
                 for (size_t s = 1; s < setups.size(); s++) {
@@ -494,13 +534,39 @@ namespace {
             }
             return false;
         };
+        // HUD Placement (the graphics settings): with Expand, this machine's HUD at the screen's sides (the radar, the weapon, the health
+        // bars and the other corners' pieces) is drawn with RT64's extended rectangles, with an origin at the left or right edge, so RT64
+        // places it from the window's edge (with Original that edge is the 4:3 frame's, where the view puts it now). Their coordinates for
+        // the right edge are counted from the frame's right side (RT64 adds the colour image's width, D_800BE620's).
+        const bool expand_hud = ultramodern::renderer::get_graphics_config().hr_option == ultramodern::renderer::HUDRatioMode::Full;
+        int32_t frame_width = (int32_t)MEM_W(0, (gpr)(int32_t)0x800BE620);
+        if (frame_width < 200 || frame_width > 640) {
+            frame_width = 292;
+        }
+        uint32_t extended_on_in = 0xFFFFFFFFu;   // the range RT64's extended GBI was enabled in (at a sync before the first rectangle)
+        uint32_t skip_to = 0;                    // the words of an extended rectangle written over the game's, not looked at again
+        int edge_rects = 0;
         for (const Range& range : ranges)
         for (uint32_t address = range.from; address < range.to; address += 8) {
+            if (address < skip_to) {
+                continue;
+            }
             const bool nested = range.nested;
             const uint32_t w0 = (uint32_t)MEM_W(0, (gpr)(int32_t)address);
             const uint32_t w1 = (uint32_t)MEM_W(4, (gpr)(int32_t)address);
             const uint32_t op = w0 >> 24;
             const uint32_t chain_op = nested ? 0u : op;
+            if (log_it && !nested && inside(bar_segments, address)) {
+                // (every command of what the game draws for no camera, the health bars, radars and weapons, in the frames logged: on the
+                // host the radars were missing from it at the same frames the other machine had them)
+                static int bar_lines = 0;
+                if (bar_lines < 1500) {
+                    bar_lines++;
+                    char line[100];
+                    std::snprintf(line, sizeof(line), "[net view] shared %08X: %08X %08X", address, w0, w1);
+                    conker::netsession::log(line);
+                }
+            }
             if (dump_hud && dumped < 2500 && (nested || inside(any_hud_segments, address))) {
                 char line[80];
                 std::snprintf(line, sizeof(line), "[net view] cmd %08X: %08X %08X", address, w0, w1);
@@ -540,8 +606,27 @@ namespace {
             } else if ((mask & 4u) != 0 && chain_op == 0xF6) {
                 // a fill of a camera's own rectangle (a tint over its view): this machine's camera's, over the full view
                 if (w0 == (0xF6000000u | (scissor1[local] & 0xFFFFFFu)) && w1 == (scissor0[local] & 0xFFFFFFu)) {
-                    MEM_W(0, (gpr)(int32_t)address) = (int32_t)(0xF6000000u | (scissor_word1(right, bottom) & 0xFFFFFFu));
-                    MEM_W(4, (gpr)(int32_t)address) = (int32_t)(scissor_word0(left, top) & 0xFFFFFFu);
+                    static const bool tint_4_3 = SDL_getenv("CONKER_NET_TINT43") != nullptr;
+                    if (tint_4_3) {
+                        MEM_W(0, (gpr)(int32_t)address) = (int32_t)(0xF6000000u | (scissor_word1(right, bottom) & 0xFFFFFFu));
+                        MEM_W(4, (gpr)(int32_t)address) = (int32_t)(scissor_word0(left, top) & 0xFFFFFFu);
+                    }
+                    else {
+                        // the full view's height, and past both sides (the scissor stops it at the window's): the fade after the
+                        // death wipe stopped at the 4:3 frame's sides, two lines with the view bright beside them
+                        const uint32_t tint = 0x80000000u | (tint_start + (tint_next++ % tint_slots) * tint_slot);
+                        const int32_t ulx = ((int32_t)left - 1024) * 4, uly = (int32_t)top * 4, lrx = ((int32_t)right + 1024) * 4, lry = (int32_t)bottom * 4;
+                        MEM_W(0, (gpr)(int32_t)tint) = (int32_t)(0xE0000000u | 0x525464u);               // RT64's hook: enable its extended GBI
+                        MEM_W(4, (gpr)(int32_t)tint) = (int32_t)((0x1u << 28) | 0x64u);
+                        MEM_W(8, (gpr)(int32_t)tint) = (int32_t)((0x64u << 24) | 0x000003u);             // G_EX_FILLRECT_V1, no origin
+                        MEM_W(12, (gpr)(int32_t)tint) = (int32_t)(0x800u | (0x800u << 12));
+                        MEM_W(16, (gpr)(int32_t)tint) = (int32_t)(((uint32_t)ulx << 16) | ((uint32_t)uly & 0xFFFFu));
+                        MEM_W(20, (gpr)(int32_t)tint) = (int32_t)(((uint32_t)lrx << 16) | ((uint32_t)lry & 0xFFFFu));
+                        MEM_W(24, (gpr)(int32_t)tint) = (int32_t)0xDF000000u;                            // end of the list
+                        MEM_W(28, (gpr)(int32_t)tint) = 0;
+                        MEM_W(0, (gpr)(int32_t)address) = (int32_t)0xDE000000u;                          // the fill: a call to it
+                        MEM_W(4, (gpr)(int32_t)address) = (int32_t)(tint & 0x00FFFFFFu);
+                    }
                     fills++;
                 }
             } else if ((mask & 8u) != 0 && chain_op == 0xDA && (w0 & 0x04u) != 0 && (scale_x != 1.0f || scale_y != 1.0f) && w1 >= own && w1 < own + camera_size) {
@@ -670,7 +755,65 @@ namespace {
                     rects_hidden++;
                 } else if (dx != 0 || dy != 0) {
                     const int32_t a0 = xl + dx, a1 = xh + dx, b0 = yl + dy, b1 = yh + dy;
-                    if (a1 >= 0 && b1 >= 0 && a0 <= 0xFFF && b0 <= 0xFFF) {
+                    // Expand: the side it goes to (1 left, 2 right)
+                    int edge = 0;
+                    if (expand_hud && !menu_open) {
+                        if (std::strcmp(kind_name, "radar or weapon") == 0) {
+                            edge = 2;
+                        } else if (std::strcmp(kind_name, "own") == 0) {
+                            edge = cx < (own_l + own_r) * 0.5f ? 1 : 2;
+                        }
+                    }
+                    bool extended = false;
+                    if (edge != 0) {
+                        // RT64's extended GBI on, at a sync before it in this list (RT64 needs no syncs), if not already in this list
+                        if (extended_on_in != range.from) {
+                            for (uint32_t back = address; back > range.from && address - back < 64u * 8u;) {
+                                back -= 8;
+                                const uint32_t b0w = (uint32_t)MEM_W(0, (gpr)(int32_t)back), b1w = (uint32_t)MEM_W(4, (gpr)(int32_t)back);
+                                if ((b0w == 0xE7000000u || b0w == 0xE6000000u || b0w == 0xE8000000u) && b1w == 0) {
+                                    MEM_W(0, (gpr)(int32_t)back) = (int32_t)(0xE0000000u | 0x525464u);
+                                    MEM_W(4, (gpr)(int32_t)back) = (int32_t)((0x1u << 28) | 0x64u);
+                                    extended_on_in = range.from;
+                                    break;
+                                }
+                            }
+                        }
+                        const uint32_t origin = edge == 2 ? 0x400u : 0x000u;   // G_EX_ORIGIN_RIGHT / _LEFT
+                        const int32_t off = edge == 2 ? frame_width * 4 : 0;
+                        const int32_t ulx = std::max(a1, 0) - off, uly = std::max(b1, 0), lrx = std::min(a0, 0xFFF) - off, lry = std::min(b0, 0xFFF);
+                        if (extended_on_in == range.from && (op == 0xE4 || op == 0xE5) && address + 16 < range.to &&
+                                ((uint32_t)MEM_W(8, (gpr)(int32_t)address) >> 24) == 0xE1 && ((uint32_t)MEM_W(16, (gpr)(int32_t)address) >> 24) == 0xF1) {
+                            // G_EX_TEXRECT_V1 in the three words of the game's G_TEXRECT and its two G_RDPHALFs
+                            const uint32_t st = (uint32_t)MEM_W(12, (gpr)(int32_t)address), steps = (uint32_t)MEM_W(20, (gpr)(int32_t)address);
+                            const uint32_t tile = (w1 >> 24) & 0x7u;
+                            MEM_W(0, (gpr)(int32_t)address) = (int32_t)((0x64u << 24) | 0x000002u);
+                            MEM_W(4, (gpr)(int32_t)address) = (int32_t)(tile | (origin << 3) | (origin << 15) | (op == 0xE5 ? 0x80u : 0u));
+                            MEM_W(8, (gpr)(int32_t)address) = (int32_t)(((uint32_t)ulx << 16) | ((uint32_t)uly & 0xFFFFu));
+                            MEM_W(12, (gpr)(int32_t)address) = (int32_t)(((uint32_t)lrx << 16) | ((uint32_t)lry & 0xFFFFu));
+                            MEM_W(16, (gpr)(int32_t)address) = (int32_t)st;
+                            MEM_W(20, (gpr)(int32_t)address) = (int32_t)steps;
+                            skip_to = address + 24;
+                            extended = true;
+                        } else if (extended_on_in == range.from && op == 0xF6) {
+                            // G_EX_FILLRECT_V1, from a list of ours the fill's word calls
+                            const uint32_t fill = 0x80000000u | (edge_fill_start + (edge_fill_next++ % edge_fill_slots) * edge_fill_slot);
+                            MEM_W(0, (gpr)(int32_t)fill) = (int32_t)((0x64u << 24) | 0x000003u);
+                            MEM_W(4, (gpr)(int32_t)fill) = (int32_t)(origin | (origin << 12));
+                            MEM_W(8, (gpr)(int32_t)fill) = (int32_t)(((uint32_t)ulx << 16) | ((uint32_t)uly & 0xFFFFu));
+                            MEM_W(12, (gpr)(int32_t)fill) = (int32_t)(((uint32_t)lrx << 16) | ((uint32_t)lry & 0xFFFFu));
+                            MEM_W(16, (gpr)(int32_t)fill) = (int32_t)0xDF000000u;
+                            MEM_W(20, (gpr)(int32_t)fill) = 0;
+                            MEM_W(0, (gpr)(int32_t)address) = (int32_t)0xDE000000u;
+                            MEM_W(4, (gpr)(int32_t)address) = (int32_t)(fill & 0x00FFFFFFu);
+                            extended = true;
+                        }
+                        if (extended) {
+                            rects_moved++;
+                            edge_rects++;
+                        }
+                    }
+                    if (!extended && a1 >= 0 && b1 >= 0 && a0 <= 0xFFF && b0 <= 0xFFF) {
                         MEM_W(0, (gpr)(int32_t)address) = (int32_t)((w0 & 0xFF000000u) | ((uint32_t)std::min(a0, 0xFFF) << 12) | (uint32_t)std::min(b0, 0xFFF));
                         MEM_W(4, (gpr)(int32_t)address) = (int32_t)((w1 & 0xFF000000u) | ((uint32_t)std::max(a1, 0) << 12) | (uint32_t)std::max(b1, 0));
                         rects_moved++;
@@ -696,7 +839,11 @@ namespace {
                     sprite_lines++;
                 }
             }
-            if ((rocket_look || sprite_look || remote_sniper) && hud_layout && !menu_open && !nested && op == 0x64 && (w0 & 0x00FFFFFFu) == 0x000002u && (hud_shift != 0 || hud_shift_x != 0) &&
+            // (every one of them, whatever this machine's look: another player's rocket, its missile and its explosion, are placed by the game
+            // in this camera's rectangle as well, and were left at the split screen's place; CONKER_NET_SPRITES=look moves them only in the
+            // looks above, as 0.9.7 did)
+            static const bool sprites_only_in_looks = [] { const char* v = std::getenv("CONKER_NET_SPRITES"); return v != nullptr && std::strcmp(v, "look") == 0; }();
+            if ((rocket_look || sprite_look || remote_sniper || !sprites_only_in_looks) && hud_layout && !menu_open && !nested && op == 0x64 && (w0 & 0x00FFFFFFu) == 0x000002u && (hud_shift != 0 || hud_shift_x != 0) &&
                     inside(local_world_passes, address) && address + 16 < range.to) {
                 // The game's screen-space sprites (func_15130A9C: the rocket's explosion, sparkles, bees) are emitted as RT64's extended texture
                 // rectangle (widescreen.cpp): this word, then the corners (x, y, x, y: 10.2 fixed point, 16 bits each), then the texture words. The
@@ -731,12 +878,33 @@ namespace {
             }
         }
         if (log_it) {
-            char line[200];
-            std::snprintf(line, sizeof(line), "[net view] frame list %08X..%08X: %d viewports redirected, %d scissors shown, %d hidden, %d projection matrices (shape %g), %d fills, HUD shift %d, %d HUD rectangles moved, %d hidden, %zu passes",
-                start, end, redirected, shown, hidden, matrices, shape, fills, hud_shift, rects_moved, rects_hidden, frame.size());
+            char line[320];
+            std::snprintf(line, sizeof(line), "[net view] frame list %08X..%08X: %d viewports redirected, %d scissors shown, %d hidden, %d projection matrices (shape %g), %d fills, HUD shift %d, %d HUD rectangles moved (%d of them to a screen edge), %d hidden, %zu passes",
+                start, end, redirected, shown, hidden, matrices, shape, fills, hud_shift, rects_moved, edge_rects, rects_hidden, frame.size());
             conker::netsession::log(line);
         }
     }
+}
+
+bool conker::netview::full_view_bounds(uint8_t* rdram, int camera, float& left, float& top, float& right, float& bottom) {
+    if (!view_is_full()) {
+        return false;
+    }
+    const int players = players_now(rdram);
+    const int local = conker::netsession::local_slot();
+    if (players <= 1 || players > max_cameras || local < 0 || local >= players || camera != local) {
+        return false;
+    }
+    const uint32_t base = (uint32_t)MEM_W(0, cameras_pointer);
+    if ((base >> 24) != 0x80 || (base & 0x7FFFFFu) + (players + 1) * camera_size > 0x800000u) {
+        return false;
+    }
+    const uint32_t full = base + (uint32_t)players * camera_size;
+    left = get_float(rdram, full, field_left);
+    top = get_float(rdram, full, field_top);
+    right = get_float(rdram, full, field_right);
+    bottom = get_float(rdram, full, field_bottom);
+    return right - left > 100.0f && bottom - top > 100.0f;
 }
 
 // Nothing of the game's memory is changed for the view, so a snapshot can be taken or loaded at any time.

@@ -30,7 +30,7 @@ index 716d48b..2b15ac1 100644
  if (WIN32)
      add_compile_definitions(NOMINMAX)
 diff --git a/librecomp/include/librecomp/game.hpp b/librecomp/include/librecomp/game.hpp
-index a4cf7e8..a3af6d3 100644
+index a4cf7e8..ca65dd2 100644
 --- a/librecomp/include/librecomp/game.hpp
 +++ b/librecomp/include/librecomp/game.hpp
 @@ -38,6 +38,10 @@ namespace recomp {
@@ -54,6 +54,21 @@ index a4cf7e8..a3af6d3 100644
      void do_rom_read(uint8_t* rdram, gpr ram_address, uint32_t physical_addr, size_t num_bytes);
      void do_rom_pio(uint8_t* rdram, gpr ram_address, uint32_t physical_addr);
      const Version& get_project_version();
+@@ -133,6 +140,14 @@ namespace recomp {
+ 
+     void start_game(const std::u8string& game_id, const std::string& game_mode_id);
+     std::u8string current_game_id();
++
++    // An online session's save data (the host's, so that every player's game starts from the same: the setup options of each
++    // multiplayer mode are in it). Set before the game starts, the game reads this instead of the save file, and the save file
++    // isn't written while it's in use; cleared, the save file is read again. session_save_image() is what this machine would
++    // play with: the game's save data if it runs, else the save file's for game_id (empty if there is none).
++    void set_session_save(const std::vector<char>& image);
++    void clear_session_save();
++    std::vector<char> session_save_image(const std::u8string& game_id);
+     std::string current_mod_game_id();
+ }
+ 
 diff --git a/librecomp/include/librecomp/overlays.hpp b/librecomp/include/librecomp/overlays.hpp
 index 35703bd..3169003 100644
 --- a/librecomp/include/librecomp/overlays.hpp
@@ -191,10 +206,61 @@ index 8c8e5d1..274c56a 100644
      // Search for the first section that's included in the loaded rom range
      // Sections were sorted by `init_overlays` so we can use the bounds functions
 diff --git a/librecomp/src/pi.cpp b/librecomp/src/pi.cpp
-index 43509ba..39b4a99 100644
+index 43509ba..3c53ab4 100644
 --- a/librecomp/src/pi.cpp
 +++ b/librecomp/src/pi.cpp
-@@ -266,7 +266,9 @@ void ultramodern::join_saving_thread() {
+@@ -1,4 +1,8 @@
+ #include <memory>
++#include <atomic>
++#include <algorithm>
++#include <vector>
++#include <iterator>
+ #include <fstream>
+ #include <array>
+ #include <cstring>
+@@ -135,6 +139,13 @@ void update_save_file() {
+ 
+ extern std::atomic_bool exited;
+ 
++namespace {
++    std::mutex session_save_mutex;
++    std::vector<char> session_save;        // set before the game starts: put in the save buffer when it is read
++    bool session_save_pending = false;
++    std::atomic<bool> session_save_active{ false };
++}
++
+ void saving_thread_func(RDRAM_ARG1) {
+     while (!exited) {
+         bool save_buffer_updated = false;
+@@ -151,8 +162,9 @@ void saving_thread_func(RDRAM_ARG1) {
+             num_actions++;
+         }
+ 
+-        // If an action came through that affected the save file, save the updated contents.
+-        if (save_buffer_updated) {
++        // If an action came through that affected the save file, save the updated contents (not while an online session's
++        // save data is in use: it is the host's, and this machine's own file stays as it was).
++        if (save_buffer_updated && !session_save_active.load()) {
+             update_save_file();
+         }
+ 
+@@ -246,6 +258,15 @@ void ultramodern::init_saving(RDRAM_ARG1) {
+     save_context.save_buffer.resize(get_save_size(recomp::get_save_type()));
+ 
+     read_save_file();
++    {
++        std::lock_guard session_lock{ session_save_mutex };
++        if (session_save_pending) {
++            std::lock_guard lock{ save_context.save_buffer_mutex };
++            std::fill(save_context.save_buffer.begin(), save_context.save_buffer.end(), 0);
++            std::memcpy(save_context.save_buffer.data(), session_save.data(), std::min(session_save.size(), save_context.save_buffer.size()));
++            session_save_active = true;
++        }
++    }
+ 
+     save_context.saving_thread = std::thread{saving_thread_func, PASS_RDRAM};
+ }
+@@ -266,7 +287,9 @@ void ultramodern::join_saving_thread() {
      }
  }
  
@@ -205,7 +271,7 @@ index 43509ba..39b4a99 100644
      // TODO asynchronous transfer
      // TODO implement unaligned DMA correctly
      if (direction == 0) {
-@@ -275,7 +277,7 @@ void do_dma(RDRAM_ARG PTR(OSMesgQueue) mq, gpr rdram_address, uint32_t physical_
+@@ -275,7 +298,7 @@ void do_dma(RDRAM_ARG PTR(OSMesgQueue) mq, gpr rdram_address, uint32_t physical_
              recomp::do_rom_read(rdram, rdram_address, physical_addr, size);
  
              // Send a message to the mq to indicate that the transfer completed
@@ -214,7 +280,7 @@ index 43509ba..39b4a99 100644
          } else if (physical_addr >= recomp::sram_base) {
              if (!recomp::sram_allowed()) {
                  ultramodern::error_handling::message_box("Attempted to use SRAM saving with other save type");
-@@ -285,7 +287,7 @@ void do_dma(RDRAM_ARG PTR(OSMesgQueue) mq, gpr rdram_address, uint32_t physical_
+@@ -285,7 +308,7 @@ void do_dma(RDRAM_ARG PTR(OSMesgQueue) mq, gpr rdram_address, uint32_t physical_
              save_read(rdram, rdram_address, physical_addr - recomp::sram_base, size);
  
              // Send a message to the mq to indicate that the transfer completed
@@ -223,7 +289,7 @@ index 43509ba..39b4a99 100644
          } else {
              fprintf(stderr, "[WARN] PI DMA read from unknown region, phys address 0x%08X\n", physical_addr);
          }
-@@ -302,7 +304,7 @@ void do_dma(RDRAM_ARG PTR(OSMesgQueue) mq, gpr rdram_address, uint32_t physical_
+@@ -302,7 +325,7 @@ void do_dma(RDRAM_ARG PTR(OSMesgQueue) mq, gpr rdram_address, uint32_t physical_
              save_write(rdram, rdram_address, physical_addr - recomp::sram_base, size);
  
              // Send a message to the mq to indicate that the transfer completed
@@ -232,7 +298,7 @@ index 43509ba..39b4a99 100644
          } else {
              fprintf(stderr, "[WARN] PI DMA write to unknown region, phys address 0x%08X\n", physical_addr);
          }
-@@ -321,7 +323,17 @@ extern "C" void osPiStartDma_recomp(RDRAM_ARG recomp_context* ctx) {
+@@ -321,7 +344,17 @@ extern "C" void osPiStartDma_recomp(RDRAM_ARG recomp_context* ctx) {
  
      debug_printf("[pi] DMA from 0x%08X into 0x%08X of size 0x%08X\n", devAddr, dramAddr, size);
  
@@ -251,7 +317,7 @@ index 43509ba..39b4a99 100644
  
      ctx->r2 = 0;
  }
-@@ -338,7 +350,7 @@ extern "C" void osEPiStartDma_recomp(RDRAM_ARG recomp_context* ctx) {
+@@ -338,7 +371,7 @@ extern "C" void osEPiStartDma_recomp(RDRAM_ARG recomp_context* ctx) {
  
      debug_printf("[pi] DMA from 0x%08X into 0x%08X of size 0x%08X\n", devAddr, dramAddr, size);
  
@@ -260,6 +326,48 @@ index 43509ba..39b4a99 100644
  
      ctx->r2 = 0;
  }
+@@ -397,3 +430,41 @@ extern "C" void osEPiRawStartDma_recomp(RDRAM_ARG recomp_context * ctx) {
+     );
+     ULTRAMODERN_QUICK_EXIT();
+ }
++
++void recomp::set_session_save(const std::vector<char>& image) {
++    std::lock_guard session_lock{ session_save_mutex };
++    session_save = image;
++    session_save_pending = true;
++    if (!save_context.save_buffer.empty()) {
++        // the game runs already: its save data is replaced now
++        std::lock_guard lock{ save_context.save_buffer_mutex };
++        std::fill(save_context.save_buffer.begin(), save_context.save_buffer.end(), 0);
++        std::memcpy(save_context.save_buffer.data(), session_save.data(), std::min(session_save.size(), save_context.save_buffer.size()));
++        session_save_active = true;
++    }
++}
++
++void recomp::clear_session_save() {
++    std::lock_guard session_lock{ session_save_mutex };
++    const bool was_active = session_save_active.exchange(false);
++    session_save_pending = false;
++    session_save.clear();
++    if (was_active && !save_context.save_buffer.empty()) {
++        std::lock_guard lock{ save_context.save_buffer_mutex };
++        read_save_file();
++    }
++}
++
++std::vector<char> recomp::session_save_image(const std::u8string& game_id) {
++    if (!save_context.save_buffer.empty()) {
++        std::lock_guard lock{ save_context.save_buffer_mutex };
++        return std::vector<char>(save_context.save_buffer.begin(), save_context.save_buffer.end());
++    }
++    std::vector<char> image;
++    const std::filesystem::path path = config_path / save_folder / (game_id + u8".bin");
++    std::ifstream file = recomp::open_input_file_with_backup(path, std::ios_base::binary);
++    if (file.good()) {
++        image.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
++    }
++    return image;
++}
 diff --git a/librecomp/src/recomp.cpp b/librecomp/src/recomp.cpp
 index 850689d..e061d59 100644
 --- a/librecomp/src/recomp.cpp

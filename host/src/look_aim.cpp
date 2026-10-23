@@ -40,6 +40,7 @@
 #include "recomp.h"
 
 #include "conker.hpp"
+#include "det_math.hpp"
 
 #if defined(CONKER_RT64)
 #include "librecomp/game.hpp"
@@ -503,8 +504,10 @@ extern "C" void conker_look_view(uint8_t* rdram, recomp_context* ctx) {
     const float aim_yaw = swap_view_yaw_set[player] ? swap_view_yaw[player] : read_float(rdram, camera, current_yaw);
     swap_view_yaw_set[player] = false;
     const float yaw = (270.0f - aim_yaw) * degrees_to_radians;
-    write_float(rdram, camera, 0x2E0, ex + std::cos(yaw) * across);
-    write_float(rdram, camera, 0x2E8, ez + std::sin(yaw) * across);
+    // (online every machine does this for every player's camera, so it has to come out the same on all of them: det_math.hpp)
+    const bool online = conker::netsession::active();
+    write_float(rdram, camera, 0x2E0, ex + (online ? conker::det::cos(yaw) : std::cos(yaw)) * across);
+    write_float(rdram, camera, 0x2E8, ez + (online ? conker::det::sin(yaw) : std::sin(yaw)) * across);
 #endif
 }
 
@@ -921,7 +924,7 @@ extern "C" void conker_look_targets(uint8_t* rdram, recomp_context* ctx) {
         if (dx != 0 || dy != 0) {
             // The way pressed from the view's forward, in facing units: 65536 to a turn, growing to the left, as the
             // view's yaw does (45 degrees right of the view is less 8192).
-            const int32_t offset = (int32_t)std::lround(std::atan2(-(double)dx, (double)dy) * 32768.0 / 3.14159265358979);
+            const int32_t offset = (int32_t)std::lround(conker::det::atan2_d(-(double)dx, (double)dy) * 32768.0 / 3.14159265358979);
             const gpr aim = (gpr)(int32_t)MEM_W(0x3D4, ctx->r16);
             const gpr conker = (gpr)(int32_t)MEM_W(0x3D0, ctx->r16);
             // His facing's units to the aiming angle's: the view's yaw is his facing less the angle times this.
@@ -944,7 +947,7 @@ extern "C" void conker_look_targets(uint8_t* rdram, recomp_context* ctx) {
         const int dy = player >= 0 && player < 4 ? walk_dy[player].load() : 0;
         const gpr conker = (gpr)(int32_t)MEM_W(0x3D0, ctx->r16);
         if ((dx != 0 || dy != 0) && ((uint32_t)conker & 0xFF000000u) == 0x80000000u) {
-            const int32_t offset = (int32_t)std::lround(std::atan2(-(double)dx, (double)dy) * 32768.0 / 3.14159265358979);
+            const int32_t offset = (int32_t)std::lround(conker::det::atan2_d(-(double)dx, (double)dy) * 32768.0 / 3.14159265358979);
             MEM_H(0x76, conker) = (int16_t)(uint16_t)((uint32_t)MEM_HU(0x7A, conker) + (uint32_t)offset);
         }
     }

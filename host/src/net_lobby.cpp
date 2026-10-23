@@ -324,7 +324,7 @@ namespace {
         }
         else if (st.host) {
             message = "Hosting on port " + port_text + ". Tell the others your IP address and this port";
-            message += st.can_start ? ". Everybody is here: press Start game." : " (your router has to forward it, TCP).";
+            message += st.can_start ? ". Everybody is here: press Start game." : " (your router has to forward it, UDP).";
         }
         else {
             message = "Joined. Waiting for the host to start the game.";
@@ -358,6 +358,7 @@ void conker::netlobby::update(const std::u8string& game_id) {
     if (launched) {
         return;
     }
+    conker::netsession::set_game_id(game_id);
     std::deque<Action> todo;
     {
         std::lock_guard lock{ action_mutex };

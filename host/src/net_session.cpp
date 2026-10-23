@@ -1,4 +1,4 @@
-// Netplay milestone 2: the online session (lockstep over TCP).
+// Netplay milestone 2: the online session (lockstep over UDP).
 //
 // Every machine runs the whole game; only the controllers travel. One machine hosts and is player 1 (port 1);
 // the others join and are players 2..4. Each game frame the host collects every player's input for that frame,
@@ -14,7 +14,7 @@
 // right. This file only notices and asks (on_desync below).
 //
 // Environment (until there's a lobby screen):
-//   CONKER_NET_HOST=<port>        host a game on that TCP port
+//   CONKER_NET_HOST=<port>        host a game on that UDP port
 //   CONKER_NET_PLAYERS=<2..4>     how many players the host waits for before the game starts (default 2)
 //   CONKER_NET_JOIN=<host>:<port> join a game
 //   CONKER_NET_DELAY=<frames>     input delay (default 3)
@@ -66,6 +66,7 @@
 #include "recomp.h"
 
 #include "conker.hpp"
+#include "net_transport.hpp"
 #include "version.hpp"
 
 #ifdef _WIN32
@@ -73,23 +74,12 @@
 #endif
 
 namespace {
-#ifdef _WIN32
-    using socklen_t = int;
-    using socket_t = SOCKET;
-    const socket_t invalid_socket = INVALID_SOCKET;
-    void close_socket(socket_t s) { closesocket(s); }
-    void shutdown_socket(socket_t s) { shutdown(s, SD_BOTH); }
-#else
-    using socket_t = int;
-    const socket_t invalid_socket = -1;
-    void close_socket(socket_t s) { close(s); }
-    void shutdown_socket(socket_t s) { shutdown(s, SHUT_RDWR); }
-#endif
+    using ConnPtr = std::shared_ptr<conker::transport::Conn>;
     using clock = std::chrono::steady_clock;
 
     constexpr int max_players = 4;
     constexpr uint32_t magic = 0x544E4243;  // "CBNT"
-    constexpr uint32_t protocol_version = 6;
+    constexpr uint32_t protocol_version = 10;
     constexpr uint32_t check_every = 30;
     constexpr uint32_t history = 1200;       // frames of inputs kept (for resyncs)
     constexpr uint32_t max_message = 64u << 20;
@@ -236,47 +226,29 @@ namespace {
         }
     };
 
-    bool send_all(socket_t s, const uint8_t* data, size_t size) {
-        while (size > 0) {
-            const int n = (int)send(s, reinterpret_cast<const char*>(data), (int)std::min<size_t>(size, 1u << 20), 0);
-            if (n <= 0) {
-                return false;
-            }
-            data += n;
-            size -= (size_t)n;
-        }
-        return true;
+    // (A message is one UDP-transport packet: [length][type][payload], length counting the type and the payload.)
+    bool send_all(const ConnPtr& c, const uint8_t* data, size_t size) {
+        return c != nullptr && c->send(data, size);
     }
 
-    bool recv_all(socket_t s, uint8_t* data, size_t size) {
-        while (size > 0) {
-            const int n = (int)recv(s, reinterpret_cast<char*>(data), (int)std::min<size_t>(size, 1u << 20), 0);
-            if (n <= 0) {
-                return false;
-            }
-            data += n;
-            size -= (size_t)n;
+    // Reads one message. False when the connection is gone, the wait (timeout_ms, -1 for ever) ran out, or what came isn't a message.
+    bool read_message(const ConnPtr& c, uint8_t& type, std::vector<uint8_t>& payload, int timeout_ms = -1) {
+        std::vector<uint8_t> body;
+        if (c == nullptr || !c->receive(body, timeout_ms) || body.size() < 5) {
+            return false;
         }
-        return true;
-    }
-
-    // Reads one message. False when the connection is gone or what came isn't a message.
-    bool read_message(socket_t s, uint8_t& type, std::vector<uint8_t>& payload) {
         uint32_t length = 0;
-        if (!recv_all(s, reinterpret_cast<uint8_t*>(&length), 4) || length < 1 || length > max_message) {
+        std::memcpy(&length, body.data(), 4);
+        if (length < 1 || length > max_message || length != body.size() - 4) {
             return false;
         }
-        std::vector<uint8_t> body(length);
-        if (!recv_all(s, body.data(), length)) {
-            return false;
-        }
-        type = body[0];
-        payload.assign(body.begin() + 1, body.end());
+        type = body[4];
+        payload.assign(body.begin() + 5, body.end());
         return true;
     }
 
     struct Peer {
-        socket_t sock = invalid_socket;
+        ConnPtr conn;
         int slot = -1;
         std::mutex send_mutex;
         std::atomic<bool> alive{ false };
@@ -295,12 +267,14 @@ namespace {
         uint64_t rtt_total_n = 0;
         uint32_t rtt_count = 0;
 
-        bool send_message(const std::vector<uint8_t>& bytes) {
+        // channel 1 is for the big messages (snapshots, memory copies for the diagnostics): they go in order among themselves but don't
+        // hold the game's messages up
+        bool send_message(const std::vector<uint8_t>& bytes, int channel = 0) {
             std::lock_guard lock{ send_mutex };
-            if (!alive || !send_all(sock, bytes.data(), bytes.size())) {
+            if (!alive || conn == nullptr || !conn->send(bytes.data(), bytes.size(), channel)) {
                 alive = false;
-                if (sock != invalid_socket) {
-                    shutdown_socket(sock);   // wakes the reader, which sees the player is gone
+                if (conn != nullptr) {
+                    conn->close();   // wakes the reader, which sees the player is gone
                 }
                 return false;
             }
@@ -308,8 +282,8 @@ namespace {
         }
         void drop() {
             alive = false;
-            if (sock != invalid_socket) {
-                shutdown_socket(sock);
+            if (conn != nullptr) {
+                conn->close();
             }
         }
     };
@@ -374,8 +348,9 @@ namespace {
     struct RawCopy { uint32_t frame = 0xFFFFFFFFu; std::vector<uint8_t> data; };
     RawCopy raw_ring[raw_ring_size];
     std::map<uint32_t, uint32_t> host_frame_obj;    // client: the host's pointer-free object hash at the start of frames
-    uint32_t obj_ring[raw_ring_size][3];            // {frame, objects hash, camera records hash}
+    uint32_t obj_ring[raw_ring_size][4];            // {frame, objects hash, camera records hash, sound slots hash}
     std::map<uint32_t, uint32_t> host_frame_cam;
+    std::map<uint32_t, uint32_t> host_frame_snd;   // the host's sound slots hash, by frame (only compared and logged)
     uint32_t cam_bad_run = 0;
     uint32_t last_change[12] = {};
     uint32_t last_change_buttons = 0;
@@ -404,7 +379,7 @@ namespace {
     bool late_synced = false;     // client: that snapshot is loaded
     std::map<uint32_t, std::array<std::pair<bool, PlayerInput>, max_players>> inbox;
     uint32_t next_broadcast = 0;
-    socket_t listener = invalid_socket;
+    std::shared_ptr<conker::transport::Server> listener;
 
     // Counters.
     uint64_t desyncs = 0;
@@ -522,7 +497,8 @@ namespace {
     }
 
     // The first `count` game objects (0x32C bytes each from 0x800CC2D0), without heap pointers and without the words
-    // seen to differ between the machines for no reason that matters (flag bits, a counter): offsets 0x0C, 0x6C, 0x134.
+    // seen to differ between the machines for no reason that matters (flag bits, a counter): offsets 0x0C, 0x6C, 0x134, 0x8C (the last one differed alone, RNG and positions still equal, in every object-hash
+    // resync of the 0.9.4 test, often for tens of frames before anything else did).
     uint32_t objects_hash(int first, int count) {
         uint64_t h = 0x9E3779B97F4A7C15ull;
         for (int i = first; i < first + count; i++) {
@@ -530,7 +506,7 @@ namespace {
             for (uint32_t off = 0; off < 0x328; off += 4) {
                 uint32_t v;
                 std::memcpy(&v, p + off, 4);
-                if ((v >= 0x80000000u && v < 0x80800000u) || off == 0x0C || off == 0x6C || off == 0x134) {
+                if ((v >= 0x80000000u && v < 0x80800000u) || off == 0x0C || off == 0x6C || off == 0x134 || off == 0x8C) {
                     v = 0;
                 }
                 h = (h ^ v) * 0x100000001B3ull;
@@ -667,7 +643,7 @@ namespace {
     void request_resync(uint32_t f);
     void diag_check_frame(uint32_t f);
     void begin_diag(uint32_t f, const char* why);
-    void on_diag_request(uint32_t f);
+    void on_diag_request(uint32_t f, Peer* asker);
     void on_diag_data(const std::vector<uint8_t>& payload);
 
     // Mutex held or not: who called the RNG in a frame (a 'd' before the address: while the frame was drawn).
@@ -898,11 +874,25 @@ namespace {
         return true;
     }
 
+    // The game the lobby starts (the save file is named for it), and this machine's save data as the game would read it: the
+    // host sends it to every player with Start, and theirs plays with it (librecomp's session save), so every machine's game starts
+    // from the same save, with the same setup options in every multiplayer mode (each machine used to keep its own: the radar was
+    // on for one player and off for the other, and the setup menu turned it the other way on each).
+    std::u8string session_game_id = u8"conker.n64.us.1.0";
+    constexpr size_t eeprom_size = 0x800;
+    std::vector<char> host_save_image() {
+        std::vector<char> image = recomp::session_save_image(session_game_id);
+        image.resize(eeprom_size, 0);
+        return image;
+    }
+
     // Mutex held. The first `delay` frames have nobody's input yet, so they are neutral for all.
     void host_begin_game() {
         lobby_locked = true;
         Writer s(Start);
-        s.put(delay).put((uint8_t)(dedicated ? 1 : 0));
+        const std::vector<char> save = host_save_image();
+        s.put(delay).put((uint8_t)(dedicated ? 1 : 0)).put((uint8_t)0).put((uint32_t)save.size()).put_bytes(save.data(), save.size());
+        log_line("[net] this machine's save data (%zu bytes) goes to every player: the same setup options for all", save.size());
         for (auto& peer : peers) {
             peer->send_message(s.finish());
         }
@@ -923,7 +913,7 @@ namespace {
     }
 
     // Ping/Pong: every machine pings the ones it is connected to once a second; a Ping is answered at once with a Pong that
-    // carries the same numbers back. It goes over the same TCP stream as the game's data, so it shows what the inputs go through.
+    // carries the same numbers back. It goes over the same connection as the game's data, so it shows what the inputs go through.
     int64_t ping_now_us() {
         return std::chrono::duration_cast<std::chrono::microseconds>(clock::now().time_since_epoch()).count();
     }
@@ -1017,6 +1007,9 @@ namespace {
                 const double var = std::max(0.0, peer->rtt_sq / n - mean * mean);
                 log_line("[ping] %s %d: round trip last %.1f ms, avg %.1f, min %.1f, max %.1f, jitter %.1f (last 10 s, %u answers); %u pings sent, %u answered in all, worst ever %.1f ms",
                     who, number, peer->rtt_last, mean, peer->rtt_min, peer->rtt_max, std::sqrt(var), n, peer->pings_sent, peer->pongs_got, peer->rtt_all_max);
+                if (peer->conn != nullptr) {
+                    log_line("[ping]   %s %d: %s", who, number, peer->conn->stats().c_str());
+                }
             }
             peer->rtt_sum = peer->rtt_sq = peer->rtt_max = 0;
             peer->rtt_min = 1e9;
@@ -1055,7 +1048,7 @@ namespace {
     void host_reader(Peer* peer) {
         uint8_t type;
         std::vector<uint8_t> payload;
-        while (peer->alive && read_message(peer->sock, type, payload)) {
+        while (peer->alive && read_message(peer->conn, type, payload)) {
             if (ping_message(peer, type, payload)) {
                 continue;
             }
@@ -1071,7 +1064,7 @@ namespace {
             else if (type == DiagRequest) {
                 const uint32_t frame = r.get<uint32_t>();
                 if (!r.bad) {
-                    on_diag_request(frame);
+                    on_diag_request(frame, peer);
                 }
             }
             else if (type == ResyncRequest) {
@@ -1108,30 +1101,28 @@ namespace {
         cv.notify_all();
     }
 
-    void refuse(socket_t s, uint8_t reason, const std::string& text = std::string()) {
+    void refuse(const ConnPtr& c, uint8_t reason, const std::string& text = std::string()) {
         Writer w(Refused);
         w.put(reason);
         if (!text.empty()) {
             w.put_string(text);
         }
-        send_all(s, w.finish().data(), w.bytes.size());
-        close_socket(s);
+        send_all(c, w.finish().data(), w.bytes.size());
+        c->close();   // (what was queued, this message, goes out first)
     }
 
     // Takes players in. With auto_start (the CONKER_NET_HOST way) the game begins once everyone is here; from the lobby
     // it begins when the host presses Start, and a player may leave and another join in the meantime.
-    void host_accept_loop(socket_t listening, uint32_t gen, bool auto_start) {
+    void host_accept_loop(std::shared_ptr<conker::transport::Server> listening, uint32_t gen, bool auto_start) {
         while (true) {
-            sockaddr_in addr{};
-            socklen_t len = sizeof(addr);
-            socket_t s = accept(listening, reinterpret_cast<sockaddr*>(&addr), &len);
+            ConnPtr s = listening->accept();
             if (gen != lobby_gen.load()) {
-                if (s != invalid_socket) {
-                    close_socket(s);
+                if (s != nullptr) {
+                    s->close();
                 }
                 return;
             }
-            if (s == invalid_socket) {
+            if (s == nullptr) {
                 std::lock_guard lock{ mtx };
                 if (!auto_start) {
                     lobby_phase = 3;
@@ -1141,35 +1132,19 @@ namespace {
                 cv.notify_all();
                 return;
             }
-            int one = 1;
-            setsockopt(s, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&one), sizeof(one));
             // a connection that says nothing must not hold the others up
-#ifdef _WIN32
-            const DWORD hello_wait = 5000;
-            setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&hello_wait), sizeof(hello_wait));
-#else
-            timeval hello_wait{ 5, 0 };
-            setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &hello_wait, sizeof(hello_wait));
-#endif
             uint8_t type;
             std::vector<uint8_t> payload;
-            if (!read_message(s, type, payload) || type != Hello) {
-                close_socket(s);
+            if (!read_message(s, type, payload, 5000) || type != Hello) {
+                s->close();
                 continue;
             }
-#ifdef _WIN32
-            const DWORD no_wait = 0;
-            setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&no_wait), sizeof(no_wait));
-#else
-            timeval no_wait{ 0, 0 };
-            setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &no_wait, sizeof(no_wait));
-#endif
             Reader r{ payload.data(), payload.size() };
             const uint32_t m = r.get<uint32_t>();
             const uint32_t v = r.get<uint32_t>();
             if (r.bad || m != magic) {
                 log_line("[net] a connection that isn't a player was closed");
-                close_socket(s);
+                s->close();
                 continue;
             }
             if (v != protocol_version) {
@@ -1194,7 +1169,7 @@ namespace {
             std::unique_lock lock{ mtx };
             if (gen != lobby_gen.load()) {
                 lock.unlock();
-                close_socket(s);
+                s->close();
                 return;
             }
             if (lobby_locked && !dedicated) {
@@ -1216,7 +1191,7 @@ namespace {
                 continue;
             }
             auto peer = std::make_unique<Peer>();
-            peer->sock = s;
+            peer->conn = s;
             peer->slot = slot;
             peer->alive = true;
             Writer w(Welcome);
@@ -1259,7 +1234,8 @@ namespace {
             send_lobby_info();
             if (started) {
                 Writer late(Start);
-                late.put(delay).put((uint8_t)1).put((uint8_t)1);
+                const std::vector<char> save = host_save_image();
+                late.put(delay).put((uint8_t)1).put((uint8_t)1).put((uint32_t)save.size()).put_bytes(save.data(), save.size());
                 raw->send_message(late.finish());
                 log_line("[net] player %d joins the running game, a snapshot will bring it up to date", slot + 1);
             }
@@ -1282,7 +1258,7 @@ namespace {
     void client_reader(Peer* peer) {
         uint8_t type;
         std::vector<uint8_t> payload;
-        while (peer->alive && read_message(peer->sock, type, payload)) {
+        while (peer->alive && read_message(peer->conn, type, payload)) {
             if (ping_message(peer, type, payload)) {
                 continue;
             }
@@ -1297,6 +1273,16 @@ namespace {
                     if (r.at < r.size && r.get<uint8_t>() != 0) {
                         late_join = true;      // the game is running already: a snapshot of it comes first
                         late_synced = false;
+                    }
+                    if (r.at + 4 <= r.size) {
+                        // the host's save data: this machine's game plays with it (its own save file is left as it is)
+                        const uint32_t n = r.get<uint32_t>();
+                        if (!r.bad && n > 0 && n <= 0x20000 && r.at + n <= r.size) {
+                            std::vector<char> image(reinterpret_cast<const char*>(r.data + r.at), reinterpret_cast<const char*>(r.data + r.at + n));
+                            r.at += n;
+                            recomp::set_session_save(image);
+                            log_line("[net] the host's save data came (%u bytes): this game plays with it, so the setup options are the host's", (unsigned)n);
+                        }
                     }
                     started = true;
                     game_launch = true;
@@ -1376,7 +1362,12 @@ namespace {
                     const uint64_t v = r.get<uint64_t>();
                     const uint32_t oh = r.get<uint32_t>();
                     const uint32_t ch = r.get<uint32_t>();
+                    const uint32_t sh = r.get<uint32_t>();
                     if (!r.bad) {
+                        host_frame_snd[f] = sh;
+                        if (host_frame_snd.size() > 128) {
+                            host_frame_snd.erase(host_frame_snd.begin());
+                        }
                         host_frame_cam[f] = ch;
                         if (host_frame_cam.size() > 128) {
                             host_frame_cam.erase(host_frame_cam.begin());
@@ -1569,59 +1560,36 @@ namespace {
             return false;
         };
         const auto cancelled = [&]() { return gen != 0 && gen != lobby_gen.load(); };
-        addrinfo hints{};
-        hints.ai_family = AF_UNSPEC;
-        hints.ai_socktype = SOCK_STREAM;
-        addrinfo* result = nullptr;
-        if (getaddrinfo(host.c_str(), port.c_str(), &hints, &result) != 0) {
-            return fail("Couldn't find \"" + host + "\". Check the address.");
-        }
-        socket_t s = invalid_socket;
-        const auto deadline = clock::now() + std::chrono::seconds(timeout_seconds);
-        while (clock::now() < deadline && s == invalid_socket && !cancelled()) {
-            for (addrinfo* a = result; a != nullptr; a = a->ai_next) {
-                socket_t c = socket(a->ai_family, a->ai_socktype, a->ai_protocol);
-                if (c == invalid_socket) {
-                    continue;
-                }
-                if (connect(c, a->ai_addr, (int)a->ai_addrlen) == 0) {
-                    s = c;
-                    break;
-                }
-                close_socket(c);
-            }
-            if (s == invalid_socket) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(500));
-            }
-        }
-        freeaddrinfo(result);
-        if (s == invalid_socket) {
-            if (cancelled()) {
+        int failure = 0;
+        ConnPtr s = conker::transport::connect(host, (uint16_t)std::atoi(port.c_str()), timeout_seconds * 1000, cancelled, &failure);
+        if (s == nullptr) {
+            if (failure == 3) {
                 return false;
             }
-            return fail("Couldn't reach " + host + ":" + port + ". Is the host's lobby open, and is the port forwarded on its router?");
+            if (failure == 1) {
+                return fail("Couldn't find \"" + host + "\". Check the address.");
+            }
+            return fail("Couldn't reach " + host + ":" + port + ". Is the host's lobby open, and is the UDP port " + port + " forwarded on its router (and allowed in its firewall)?");
         }
         if (cancelled()) {
-            close_socket(s);
+            s->close();
             return false;
         }
-        int one = 1;
-        setsockopt(s, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&one), sizeof(one));
         Writer hello(Hello);
         hello.put(magic).put(protocol_version).put_string(my_name).put_string(CONKER_ONLINE_VERSION);
         if (!send_all(s, hello.finish().data(), hello.bytes.size())) {
-            close_socket(s);
+            s->close();
             return fail("The host closed the connection.");
         }
         uint8_t type;
         std::vector<uint8_t> payload;
-        if (!read_message(s, type, payload)) {
-            close_socket(s);
+        if (!read_message(s, type, payload, 15000)) {
+            s->close();
             return fail("The host didn't answer. It may be running a different version of the game.");
         }
         if (type == Refused) {
             const uint8_t reason = payload.empty() ? 0 : payload[0];
-            close_socket(s);
+            s->close();
             if (reason == 4) {
                 Reader heard{ payload.data() + 1, payload.size() - 1 };
                 const std::string host_build = heard.get_string();
@@ -1632,7 +1600,7 @@ namespace {
                 : reason == 3 ? "The game has already started." : "The host refused the connection.");
         }
         if (type != Welcome) {
-            close_socket(s);
+            s->close();
             return fail("The host didn't answer as expected. It may be running a different version of the game.");
         }
         Reader r{ payload.data(), payload.size() };
@@ -1640,17 +1608,17 @@ namespace {
         const int expected = r.get<uint8_t>();
         const uint32_t d = r.get<uint32_t>();
         if (r.bad || slot < 0 || slot >= max_players) {   // (0 is allowed: on a dedicated server the first player takes it)
-            close_socket(s);
+            s->close();
             return fail("The host sent something this version doesn't understand.");
         }
         auto peer = std::make_unique<Peer>();
-        peer->sock = s;
+        peer->conn = s;
         peer->slot = 0;
         peer->alive = true;
         Peer* raw = peer.get();
         std::lock_guard lock{ mtx };
         if (cancelled()) {
-            close_socket(s);
+            s->close();
             return false;
         }
         my_slot = slot;
@@ -1667,38 +1635,18 @@ namespace {
     // --- Bringing the session up ---
 
     bool net_startup() {
-#ifdef _WIN32
-        WSADATA data;
-        return WSAStartup(MAKEWORD(2, 2), &data) == 0;
-#else
-        return true;
-#endif
+        return conker::transport::startup();
     }
 
-    // Listens on the port. The accept loop is started by the caller (it needs the socket).
+    // Listens on the (UDP) port. The accept loop is started by the caller (it needs the listener).
     bool start_host(uint16_t port, std::string* error) {
-        listener = socket(AF_INET, SOCK_STREAM, 0);
-        if (listener == invalid_socket) {
+        std::string why;
+        listener = conker::transport::Server::listen(port, &why);
+        if (listener == nullptr) {
+            log_line("[net] couldn't listen on UDP port %u: %s", (unsigned)port, why.c_str());
             if (error != nullptr) {
-                *error = "Couldn't open a network socket.";
+                *error = why;
             }
-            return false;
-        }
-        int one = 1;
-#ifndef _WIN32
-        setsockopt(listener, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&one), sizeof(one));
-#endif
-        sockaddr_in addr{};
-        addr.sin_family = AF_INET;
-        addr.sin_addr.s_addr = htonl(INADDR_ANY);
-        addr.sin_port = htons(port);
-        if (bind(listener, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0 || listen(listener, 8) != 0) {
-            log_line("[net] couldn't listen on port %u", (unsigned)port);
-            if (error != nullptr) {
-                *error = "Couldn't listen on port " + std::to_string((unsigned)port) + ". Another copy of the game may be using it; try another port.";
-            }
-            close_socket(listener);
-            listener = invalid_socket;
             return false;
         }
         connected[0] = !dedicated;   // (a dedicated server has no player: the first to join takes slot 0)
@@ -1793,11 +1741,17 @@ bool conker::netsession::init(uint8_t* rdram, bool (*local_sampler)(uint16_t*, f
 
 // --- The lobby: the session is set up before the game starts ---
 
+void conker::netsession::set_game_id(const std::u8string& game_id) {
+    std::lock_guard lock{ mtx };
+    session_game_id = game_id;
+}
+
 void conker::netsession::lobby_leave() {
     std::lock_guard lock{ mtx };
     if (enabled) {
         return;   // a game is running
     }
+    recomp::clear_session_save();   // (a host's save data that came before the game started: this machine's own again)
     ++lobby_gen;
     for (auto& peer : peers) {
         peer->retired = true;
@@ -1805,10 +1759,9 @@ void conker::netsession::lobby_leave() {
         graveyard.push_back(std::move(peer));
     }
     peers.clear();
-    if (listener != invalid_socket) {
-        shutdown_socket(listener);
-        close_socket(listener);
-        listener = invalid_socket;
+    if (listener != nullptr) {
+        listener->stop();   // (the port is free again when this returns)
+        listener.reset();
     }
     connected = {};
     inbox.clear();
@@ -1852,7 +1805,7 @@ void conker::netsession::lobby_open(const LobbySettings& cfg) {
     }
     players_expected = std::clamp(cfg.players, 2, max_players);
     delay = (uint32_t)std::clamp(cfg.delay, 1, 30);
-    log_line("[net] lobby: %s, %d players, delay %u", cfg.host ? "hosting" : "joining", players_expected, delay);
+    log_line("[net] build %s, protocol %d, lobby: %s, %d players, delay %u", CONKER_ONLINE_VERSION, (int)protocol_version, cfg.host ? "hosting" : "joining", players_expected, delay);
     if (cfg.host) {
         my_slot = 0;
         std::string error;
@@ -2186,6 +2139,12 @@ extern "C" void conker_net_sound_hook(uint8_t* rdram, recomp_context* ctx, int w
             std::memcpy(rdram + ((voice + 0x38u) & 0x7FFFFFu), &zero, 4);
         }
     }
+    else if (which == 3) {
+        // func_1000F44C returns (its argument, the handle, saved at 0x18($sp)): started while the slot has this handle and a voice
+        const uint16_t handle = ram_h(rdram, (uint32_t)ctx->r29 + 0x1Au);
+        const uint32_t slot = sound_slots + (uint32_t)(handle & 0xFu) * 12u;
+        ctx->r2 = (ram_w(rdram, slot + 8u) != 0 && ram_h(rdram, slot) == handle) ? 1 : 0;
+    }
     else if (which == 1) {
         // func_100173C4 returns (its argument, saved at 0x20($sp), is the address of a slot's pointer): playing while the slot has a voice
         const uint32_t arg = ram_w(rdram, (uint32_t)ctx->r29 + 0x20u);
@@ -2193,6 +2152,42 @@ extern "C" void conker_net_sound_hook(uint8_t* rdram, recomp_context* ctx, int w
             ctx->r2 = ram_w(rdram, arg) != 0 ? 1 : 0;
         }
     }
+}
+
+// func_1001C224 (alEvtqPostEvent) is about to queue an event: online, one for the sound player about a voice that is on its list
+// of free voices is dropped (see conker.toml). The free list: D_8002BA28, each voice's first word the next one.
+extern "C" int conker_net_sound_gate(uint8_t* rdram, recomp_context* ctx) {
+    if (!sound_sync.load(std::memory_order_relaxed)) {
+        return 0;
+    }
+    const uint32_t player = ram_w(rdram, 0x8002BA2Cu);
+    if (!ram_pointer(player) || (uint32_t)ctx->r4 != player + 0x14u) {
+        return 0;
+    }
+    const uint32_t event = (uint32_t)ctx->r5;
+    if (!ram_pointer(event)) {
+        return 0;
+    }
+    const uint32_t voice = ram_w(rdram, event + 4u);
+    if (!ram_pointer(voice)) {
+        return 0;
+    }
+    uint32_t current = ram_w(rdram, 0x8002BA28u);
+    for (int n = 0; n < 512 && current != 0 && ram_pointer(current); n++) {
+        if (current == voice) {
+            static int logged = 0;
+            if (logged < 30) {
+                logged++;
+                char line[200];
+                std::snprintf(line, sizeof(line), "[sound] an event (type %04X) for voice %08X, which is free, was dropped: acted on, it would have freed the voice a second time",
+                    (unsigned)ram_h(rdram, event), (unsigned)voice);
+                conker::netsession::log(line);
+            }
+            return 1;
+        }
+        current = ram_w(rdram, current);
+    }
+    return 0;
 }
 
 // --- A watch on the game thread (for a freeze found in a long session: both machines stopped, with nothing in the log) ---
@@ -2243,7 +2238,7 @@ namespace {
         const bool got = GetThreadContext(watch_game_thread, &context) != 0;
         std::vector<uint64_t> stack;
         if (got) {
-            stack.resize(512);
+            stack.resize(4096);
             SIZE_T read = 0;
             if (!ReadProcessMemory(GetCurrentProcess(), (LPCVOID)context.Rsp, stack.data(), stack.size() * sizeof(uint64_t), &read)) {
                 stack.resize(read / sizeof(uint64_t));
@@ -2288,8 +2283,24 @@ namespace {
             log_line("%s", line);
         }
         int shown = 0;
+        int other = 0;
         for (uint64_t value : stack) {
-            if (value >= (uint64_t)(uintptr_t)image && value < (uint64_t)(uintptr_t)image + image_size && shown < 40) {
+            if (!(value >= (uint64_t)(uintptr_t)image && value < (uint64_t)(uintptr_t)image + image_size) && value > 0x10000 && other < 24) {
+                // a return address into another module (the system's wait functions, the audio library...)
+                MEMORY_BASIC_INFORMATION info;
+                if (VirtualQuery((LPCVOID)value, &info, sizeof(info)) != 0 && info.Type == MEM_IMAGE &&
+                    (info.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) != 0) {
+                    char module[260] = "";
+                    GetModuleFileNameA((HMODULE)info.AllocationBase, module, sizeof(module));
+                    const char* name = std::strrchr(module, '\\');
+                    other++;
+                    char line[400];
+                    std::snprintf(line, sizeof(line), "[net] watchdog:   other module %llX %s+%llX %s", (unsigned long long)value, name != nullptr ? name + 1 : module,
+                        (unsigned long long)(value - (uint64_t)(uintptr_t)info.AllocationBase), describe(value).c_str());
+                    log_line("%s", line);
+                }
+            }
+            if (value >= (uint64_t)(uintptr_t)image && value < (uint64_t)(uintptr_t)image + image_size && shown < 60) {
                 shown++;
                 char line[400];
                 std::snprintf(line, sizeof(line), "[net] watchdog:   on its stack %llX (offset %llX) %s", (unsigned long long)value,
@@ -2520,6 +2531,7 @@ void conker::netsession::on_port_read(int port) {
         static bool open = false, hold_off = false;
         static PlayerInput::Leave before_menu;
         static uint8_t before_fd98 = 0;
+        static uint8_t before_owner = 0;   // D_800E0A98, the player the game's menus listen to: the menu's hook sets it on this machine only
         static uint32_t at_open = 0;
         static bool warned = false;
         static const bool allow_pause = std::getenv("CONKER_NET_ALLOWPAUSE") != nullptr;
@@ -2531,6 +2543,16 @@ void conker::netsession::on_port_read(int port) {
             // menu's flags, whenever one changes
             static int last_pause = -1, last_req = -1, last_wait = -1;
             const int pause_flag = ram != nullptr ? rd8(0x800BEAC0u) : 0, pause_req = ram != nullptr ? rd8(0x800BEAC1u) : 0, wait = ram != nullptr ? rd8(0x8008FEF0u) : 0;
+            // the game's menu variables too (which button is picked, whose controller drives it, the quit state): whenever one of them
+            // changes, so a log shows what the end-of-match screen sets
+            static uint32_t last_menu_vars = 0xFFFFFFFFu;
+            const uint32_t menu_vars = ram != nullptr ? ((uint32_t)(rd8(0x800E0B94u) & 0xFF) | ((uint32_t)(rd8(0x8008FE2Cu) & 0xFF) << 8) | ((uint32_t)(rd8(0x800E0A98u) & 0xFF) << 16) |
+                ((uint32_t)(rd8(0x8008FD74u) & 0xFF) << 24)) : 0u;
+            if (ram != nullptr && menu_vars != last_menu_vars) {
+                last_menu_vars = menu_vars;
+                log_line("[menu] f=%u menu variables: quit-state(800E0B94)=%d picked(8008FE2C)=%d owner(800E0A98)=%d fd74=%d fd9c=%d arena=%d open=%d", frames_started, rd8(0x800E0B94u), rd8(0x8008FE2Cu), rd8(0x800E0A98u),
+                    rd8(0x8008FD74u), rd8(0x8008FD9Cu), rd8(0x800BE616u), (int)open);
+            }
             if (ram != nullptr && (pause_flag != last_pause || pause_req != last_req || wait != last_wait)) {
                 log_line("[menu] f=%u game pause=%d request=%d unpause-wait=%d menu-open=%d hold-off=%d start-held=%d", frames_started, pause_flag, pause_req, wait, (int)open, (int)hold_off, (int)start);
                 last_pause = pause_flag;
@@ -2548,7 +2570,9 @@ void conker::netsession::on_port_read(int port) {
             log_line("[menu] f=%u Start pressed: plugged %d, in match %d (arena flag %d, game pause %d), pause allowed %d", frames_started, (int)plugged, (int)in_match,
                 ram != nullptr ? rd8(0x800BE616u) : -1, ram != nullptr ? rd8(0x800BEAC0u) : -1, (int)allow_pause);
         }
-        if (!open && !allow_pause && plugged && in_match && start && !was_start) {
+        // (not once the match is over: 800E0B94 is 0 all through a match and 6/7/3 on the screens after it, which the game runs with
+        // player 1's controller; the pause menu opened over them took that controller away in the 0.9.4 test)
+        if (!open && !allow_pause && plugged && in_match && rd8(0x800E0B94u) == 0 && start && !was_start) {
             // a player slot nobody plays in: the menu reads its input from there
             int slot = -1;
             for (int s = 3; s >= 0; s--) {
@@ -2582,6 +2606,7 @@ void conker::netsession::on_port_read(int port) {
                 before_menu.fe2c = (uint8_t)rd8(0x8008FE2Cu);
                 before_menu.v7270 = (uint8_t)rd8(0x80087270u);
                 before_fd98 = (uint8_t)rd8(0x8008FD98u);
+                before_owner = (uint8_t)rd8(0x800E0A98u);
                 // as the game's own pause starts (game_20AE20.c, the Start press): the selection on CONT, a short wait before it
                 // listens, the stick as it is
                 wr8(0x8008FE2C, 0);
@@ -2648,6 +2673,10 @@ void conker::netsession::on_port_read(int port) {
                 log_line("[menu] f=%u closed (in match %d)", frames_started, (int)in_match);
                 conker::netmenu::set_open(false);
                 wr8(0x8008FE2C, 0);
+                // the menu's hook set the player the game's menus listen to (to the slot it reads), on this machine alone: back as
+                // it was, or this machine's game differs from the others' from here on (0.9.6 test: the host's stayed 3, the
+                // joiner's 0, through the next match)
+                wr8(0x800E0A98u, (int8_t)before_owner);
                 open = false;
                 hold_off = true;
             }
@@ -2708,10 +2737,45 @@ void conker::netsession::on_port_read(int port) {
             add(0x800D9C00u, 0x400u);
             obj_ring[f % raw_ring_size][2] = (uint32_t)(h ^ (h >> 32));
         }
+        {
+            // the game's sound slots (handle, next handle, sound, whether there is a voice) and the objects' sound handles (+0x8C,
+            // +0x8E): the game's logic acts on them, while the voices themselves are each machine's own
+            uint64_t h = 0x9E3779B97F4A7C15ull;
+            const auto mix = [&](uint32_t v) { h = (h ^ v) * 0x100000001B3ull; h ^= h >> 29; };
+            for (uint32_t k = 0; k < 16; k++) {
+                const uint32_t slot = 0x800425E0u + k * 12u;
+                uint32_t w0, w1, w2;
+                std::memcpy(&w0, ram + (slot & 0x7FFFFFu), 4);
+                std::memcpy(&w1, ram + ((slot + 4u) & 0x7FFFFFu), 4);
+                std::memcpy(&w2, ram + ((slot + 8u) & 0x7FFFFFu), 4);
+                mix(w0);
+                mix(w1);
+                mix(w2 != 0 ? 1u : 0u);
+            }
+            for (uint32_t i = 0; i < 6; i++) {
+                uint32_t v;
+                std::memcpy(&v, ram + ((0x800CC2D0u + i * 0x32Cu + 0x8Cu) & 0x7FFFFFu), 4);
+                mix(v);
+            }
+            obj_ring[f % raw_ring_size][3] = (uint32_t)(h ^ (h >> 32));
+            if (f % 600 == 0) {
+                std::string text;
+                for (uint32_t k = 0; k < 16; k++) {
+                    const uint32_t slot = 0x800425E0u + k * 12u;
+                    uint32_t w0, w2;
+                    std::memcpy(&w0, ram + (slot & 0x7FFFFFu), 4);
+                    std::memcpy(&w2, ram + ((slot + 8u) & 0x7FFFFFu), 4);
+                    char piece[24];
+                    std::snprintf(piece, sizeof(piece), " %08X%s", (unsigned)w0, w2 != 0 ? "+" : "");
+                    text += piece;
+                }
+                log_line("[sound] f=%u slots (handle, next; + has a voice):%s", f, text.c_str());
+            }
+        }
     }
     if (is_host) {
         Writer w(FrameRngMsg);
-        w.put(f).put(read_rng()).put(obj_ring[f % raw_ring_size][0] == f ? obj_ring[f % raw_ring_size][1] : 0u).put(obj_ring[f % raw_ring_size][0] == f ? obj_ring[f % raw_ring_size][2] : 0u);
+        w.put(f).put(read_rng()).put(obj_ring[f % raw_ring_size][0] == f ? obj_ring[f % raw_ring_size][1] : 0u).put(obj_ring[f % raw_ring_size][0] == f ? obj_ring[f % raw_ring_size][2] : 0u).put(obj_ring[f % raw_ring_size][0] == f ? obj_ring[f % raw_ring_size][3] : 0u);
         const auto& bytes = w.finish();
         for (auto& peer : peers) {
             if (peer->alive) {
@@ -2920,7 +2984,7 @@ void conker::netsession::on_port_read(int port) {
                     const auto it = inbox.find(next_broadcast);
                     for (int s = dedicated ? 0 : 1; s < max_players; s++) {
                         if (required_at(s, next_broadcast) && (it == inbox.end() || !it->second[s].first)) {
-                            log_line("[net] player %d stopped answering, dropped", s + 1);
+                            log_line("[net] f=%u player %d stopped answering for %lld s (waiting for its input for frame %u), dropped", frames_started, s + 1, (long long)std::chrono::duration_cast<std::chrono::seconds>(clock::now() - began).count(), next_broadcast);
                             connected[s] = false;
                             for (auto& peer : peers) {
                                 if (peer->slot == s) {
@@ -3204,10 +3268,10 @@ namespace {
                 for (Peer* peer : targets) {
                     if (joiners & (1u << peer->slot)) {
                         for (const auto& message : catch_up) {
-                            peer->send_message(message);
+                            peer->send_message(message, 2);
                         }
                     }
-                    peer->send_message(bytes);
+                    peer->send_message(bytes, 2);   // (2: the bulk channel, ahead of a diagnostic dump waiting there)
                 }
                 log_line("[net] snapshot of frame %u sent: %zu bytes, packed to %zu", at_frame, state.size(), packed.size());
             }).detach();
@@ -3308,9 +3372,27 @@ namespace {
             // The RNGs agree: do the objects (without their pointers)?
             const auto their_obj = host_frame_obj.find(f);
             const auto their_cam = host_frame_cam.find(f);
+            {
+                // the sound slots: only logged (once at the start of each run of frames where they differ)
+                static bool snd_bad = false;
+                const auto their_snd = host_frame_snd.find(f);
+                if (their_snd != host_frame_snd.end() && obj_ring[f % raw_ring_size][0] == f && their_snd->second != 0) {
+                    const bool bad = obj_ring[f % raw_ring_size][3] != their_snd->second;
+                    if (bad && !snd_bad) {
+                        log_line("[net] frame %u: the sound slots differ from the host's (RNG the same); not acted on", f);
+                    }
+                    snd_bad = bad;
+                }
+            }
             if (their_cam != host_frame_cam.end() && obj_ring[f % raw_ring_size][0] == f && their_cam->second != 0 &&
                 obj_ring[f % raw_ring_size][2] != their_cam->second) {
-                if (cam_bad_run++ == 0 && !diag_pending.active && diag_dumps < 10 && (last_diag_frame == 0 || f >= last_diag_frame + 200)) {
+                // (only logged now: in the 0.9.5 test this fired 10 times with the machines otherwise in step, and each memory dump it
+                // asked for is megabytes that held the game's own messages up; CONKER_NET_DIAG_CAMERA=1 asks for them again)
+                static const bool camera_dumps = std::getenv("CONKER_NET_DIAG_CAMERA") != nullptr;
+                if (cam_bad_run == 0 && !camera_dumps) {
+                    log_line("[net] frame %u: the camera records differ from the host's (RNG and objects the same); not acted on", f);
+                }
+                if (cam_bad_run++ == 0 && camera_dumps && !diag_pending.active && diag_dumps < 10 && (last_diag_frame == 0 || f >= last_diag_frame + 200)) {
                     diag_dumps++;
                     char why3[160];
                     std::snprintf(why3, sizeof(why3), "the camera records at the start of frame %u differ (RNG the same)", f);
@@ -3379,7 +3461,7 @@ namespace {
     }
 
     // Mutex held (host).
-    void on_diag_request(uint32_t f) {
+    void on_diag_request(uint32_t f, Peer* asker) {
         std::vector<RawCopy> copies;
         for (uint32_t g = f >= 6 ? f - 6 : 0; g <= f; g++) {
             const RawCopy& rc = raw_ring[g % raw_ring_size];
@@ -3387,7 +3469,7 @@ namespace {
                 copies.push_back(rc);
             }
         }
-        std::thread([f, copies = std::move(copies)]() {
+        std::thread([f, asker, copies = std::move(copies)]() {
             Writer w(DiagData);
             w.put(f).put((uint32_t)copies.size());
             for (const RawCopy& rc : copies) {
@@ -3399,13 +3481,14 @@ namespace {
             {
                 std::lock_guard lock{ mtx };
                 for (auto& peer : peers) {
-                    if (peer->alive) {
+                    // (only the machine that asked: the others have no use for several megabytes of someone else's diagnostics)
+                    if (peer->alive && peer.get() == asker) {
                         targets.push_back(peer.get());
                     }
                 }
             }
             for (Peer* peer : targets) {
-                peer->send_message(bytes);
+                peer->send_message(bytes, 1);
             }
         }).detach();
     }
@@ -3509,6 +3592,7 @@ namespace {
                         }
                         std::string text_list;
                         int count = 0, printed = 0;
+                        int first_object = -1;
                         for (uint32_t offset = 0; offset < range.length; offset += 4) {
                             const size_t w = ((range.start & 0x7FFFFFu) + offset) / 4;
                             if (a[w] == b[w]) {
@@ -3518,15 +3602,47 @@ namespace {
                                 continue;   // two heap pointers: they differ between machines and mean nothing
                             }
                             count++;
+                            if (range.start == 0x800CC2D0u && first_object < 0) {
+                                first_object = (int)(offset / 0x32Cu);
+                            }
                             if (printed < 60) {
                                 printed++;
-                                char item[48];
-                                std::snprintf(item, sizeof(item), " %08X:%08X/%08X", (unsigned)(range.start + offset), (unsigned)a[w], (unsigned)b[w]);
+                                char item[64];
+                                if (range.start == 0x800CC2D0u) {
+                                    std::snprintf(item, sizeof(item), " %08X(obj%u+%X):%08X/%08X", (unsigned)(range.start + offset), (unsigned)(offset / 0x32Cu),
+                                        (unsigned)(offset % 0x32Cu), (unsigned)a[w], (unsigned)b[w]);
+                                }
+                                else {
+                                    std::snprintf(item, sizeof(item), " %08X:%08X/%08X", (unsigned)(range.start + offset), (unsigned)a[w], (unsigned)b[w]);
+                                }
                                 text_list += item;
                             }
                         }
                         if (count != 0) {
                             log_line("[net] DIAG:   frame %u, %s (%d words differ):%s", frame, range.name, count, text_list.c_str());
+                        }
+                        if (first_object >= 0) {
+                            // the whole of the first object that differs, both machines' non-zero words (heap pointers too), to tell what kind of
+                            // object it is and what the differing word is
+                            static int object_dumps = 0;
+                            if (object_dumps < 6) {
+                                object_dumps++;
+                                std::string mine_text, host_text;
+                                for (uint32_t offset = 0; offset < 0x32Cu; offset += 4) {
+                                    const size_t w = ((range.start & 0x7FFFFFu) + (uint32_t)first_object * 0x32Cu + offset) / 4;
+                                    char item[32];
+                                    if (a[w] != 0) {
+                                        std::snprintf(item, sizeof(item), " %X:%X", (unsigned)offset, (unsigned)a[w]);
+                                        mine_text += item;
+                                    }
+                                    if (b[w] != 0) {
+                                        std::snprintf(item, sizeof(item), " %X:%X", (unsigned)offset, (unsigned)b[w]);
+                                        host_text += item;
+                                    }
+                                }
+                                log_line("[net] DIAG:   frame %u, object %d in full (offset:word), this machine:%s", frame, first_object, mine_text.c_str());
+                                log_line("[net] DIAG:   frame %u, object %d in full (offset:word), the host:%s", frame, first_object, host_text.c_str());
+                            }
                         }
                     }
                 }

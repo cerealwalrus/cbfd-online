@@ -59,6 +59,7 @@
 #include "recompinput/input_state.h"
 
 #include "conker.hpp"
+#include "det_math.hpp"
 
 // The game's floor height under a point (game_13BB20.c), called by floor_below.
 extern "C" void func_1510E8BC(uint8_t* rdram, recomp_context* ctx);
@@ -167,42 +168,10 @@ namespace {
     }
 
     // The orbit runs on every machine of an online game, for every player's camera, and has to give the same numbers on all
-    // of them, so it doesn't use the C library's trigonometry (the library picks a version by the processor): these are
-    // made of plain arithmetic, which is exact and the same everywhere. Accurate to about a hundred-thousandth of a radian.
-    constexpr double pi = 3.14159265358979323846;
-    double det_sin_d(double x) {
-        x = std::remainder(x, 2.0 * pi);
-        if (x > pi / 2) {
-            x = pi - x;
-        }
-        else if (x < -pi / 2) {
-            x = -pi - x;
-        }
-        const double z = x * x;
-        return x * (1.0 + z * (-1.0 / 6 + z * (1.0 / 120 + z * (-1.0 / 5040 + z * (1.0 / 362880 + z * (-1.0 / 39916800))))));
-    }
-    float det_sin(float x) {
-        return (float)det_sin_d((double)x);
-    }
-    float det_cos(float x) {
-        return (float)det_sin_d((double)x + pi / 2);
-    }
-    double det_atan_unit(double x) {   // |x| <= 1
-        const double z = x * x;
-        return x * (0.9998660 + z * (-0.3302995 + z * (0.1801410 + z * (-0.0851330 + z * 0.0208351))));
-    }
-    float det_atan2(float yf, float xf) {
-        const double y = yf, x = xf;
-        if (x == 0.0 && y == 0.0) {
-            return 0.0f;
-        }
-        const double ax = std::fabs(x), ay = std::fabs(y);
-        double a = ay > ax ? pi / 2 - det_atan_unit(ax / ay) : det_atan_unit(ay / ax);
-        if (x < 0.0) {
-            a = pi - a;
-        }
-        return (float)(y < 0.0 ? -a : a);
-    }
+    // of them: det_math.hpp.
+    inline float det_sin(float x) { return conker::det::sin(x); }
+    inline float det_cos(float x) { return conker::det::cos(x); }
+    inline float det_atan2(float y, float x) { return conker::det::atan2(y, x); }
 
     // The orbit's per frame time online: the game's frames, the same for everybody (not the clock).
     constexpr float online_frame_seconds = 1.0f / 30.0f;
