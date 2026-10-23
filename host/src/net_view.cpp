@@ -556,17 +556,6 @@ namespace {
             const uint32_t w1 = (uint32_t)MEM_W(4, (gpr)(int32_t)address);
             const uint32_t op = w0 >> 24;
             const uint32_t chain_op = nested ? 0u : op;
-            if (log_it && !nested && inside(bar_segments, address)) {
-                // (every command of what the game draws for no camera, the health bars, radars and weapons, in the frames logged: on the
-                // host the radars were missing from it at the same frames the other machine had them)
-                static int bar_lines = 0;
-                if (bar_lines < 1500) {
-                    bar_lines++;
-                    char line[100];
-                    std::snprintf(line, sizeof(line), "[net view] shared %08X: %08X %08X", address, w0, w1);
-                    conker::netsession::log(line);
-                }
-            }
             if (dump_hud && dumped < 2500 && (nested || inside(any_hud_segments, address))) {
                 char line[80];
                 std::snprintf(line, sizeof(line), "[net view] cmd %08X: %08X %08X", address, w0, w1);

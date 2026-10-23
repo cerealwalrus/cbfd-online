@@ -6,7 +6,7 @@ This package contains no game data. You need your own copy of the US ROM of
 Conker's Bad Fur Day (N64).
 
 Playing
-  1. Start ConkerRecomp (ConkerRecomp.exe on Windows, ConkerRecomp.app on macOS).
+  1. Start ConkerOnline.exe on Windows (ConkerRecomp.app on macOS, ConkerRecomp on Linux).
   2. The first time, the launcher asks for your ROM: pick your US .z64 ROM.
      It's checked, and remembered for later runs.
   3. Start Game.
@@ -38,5 +38,5 @@ Licenses: see LICENSES.txt. The program as a whole is under the GNU GPL version 
 Saves, settings and the stored ROM are kept in your user folder, not here, so a
 newer version can be unpacked anywhere.
 
-If the game crashes, Windows writes crash.log next to ConkerRecomp.exe; please
+If the game crashes, Windows writes crash.log next to ConkerOnline.exe; please
 attach it to an issue on the GitHub page.

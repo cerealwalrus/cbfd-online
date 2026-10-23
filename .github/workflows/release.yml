@@ -102,7 +102,7 @@ jobs:
           $out = "package\ConkerRecompiled"
           New-Item -ItemType Directory -Force $out | Out-Null
           $build = "host\build-win"
-          Copy-Item "$build\ConkerRecomp.exe", "$build\SDL2.dll", "$build\dxcompiler.dll", "$build\dxil.dll" $out
+          Copy-Item "$build\ConkerOnline.exe", "$build\ConkerRecomp.exe", "$build\SDL2.dll", "$build\dxcompiler.dll", "$build\dxil.dll" $out
           Copy-Item -Recurse "$build\assets" "$out\assets"
           Copy-Item .github\release\README.txt, LICENSE $out
           # The licenses (LICENSES.txt): the runtime's GPL version 3 covers the program as a whole.
