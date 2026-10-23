@@ -21,6 +21,7 @@
 //
 // CONKER_NET_LOCAL_AUDIO=0 turns it off (every machine hears what the split screen would).
 
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -452,6 +453,21 @@ namespace {
         }
         const bool known = source_known && source_ra == ra;
         source_known = false;
+        {
+            // (a test: every start in a match, in order, with the frame: to line the two machines' logs up)
+            static int lines = 0;
+            if (lines < 4000 && local_listener(rdram) >= 0) {
+                lines++;
+                const uint32_t li = (uint32_t)MEM_BU(0, (gpr)(int32_t)0x800C3E78);
+                const uint32_t lo = li < 25 ? 0x800CC2D0u + li * 0x32Cu : 0;
+                char line[220];
+                std::snprintf(line, sizeof(line), "[snd] f=%u %08X/%08X sound %u: %u -> %u pan %u; object %08X (player %d), loop at player %d%s",
+                              (unsigned)conker::netsession::frame(), (unsigned)ra, (unsigned)outer, (unsigned)sound, (unsigned)game_volume, (unsigned)volume,
+                              (unsigned)(pan & 0x7F), (unsigned)object, character_player(rdram, object) + 1, lo != 0 ? character_player(rdram, lo) + 1 : 0,
+                              known ? (" at " + std::to_string(source_x) + " " + std::to_string(source_y) + " " + std::to_string(source_z)).c_str() : "");
+                conker::netsession::log(line);
+            }
+        }
         if (c == nullptr) {
             return;
         }
@@ -600,6 +616,22 @@ namespace {
             return;
         }
         const bool no_place = ra == from_no_place && outer == no_place_character;
+        if (no_place) {
+            // (a test: who calls func_10010630 for these, and what it has in $s0 and $s1, saved in func_10010630's frame at 0x34 and 0x38)
+            static int logged = 0;
+            if (logged < 24 && local_listener(rdram) >= 0) {
+                logged++;
+                const uint32_t frame630 = sp + 0x50 + 0x28;
+                const uint32_t r = word(rdram, frame630 + 0x3C), s0v = word(rdram, frame630 + 0x34), s1v = word(rdram, frame630 + 0x38);
+                char line[260];
+                std::snprintf(line, sizeof(line), "[snd] f=%u func_10010630 for sound %u on %08X called from %08X, its $s0 %08X (player %d) $s1 %08X (player %d); players at %d %d %d and %d %d %d",
+                              (unsigned)conker::netsession::frame(), (unsigned)((uint32_t)ctx->r5 & 0xFFFFu), (unsigned)caller_s0, (unsigned)r, (unsigned)s0v,
+                              character_player(rdram, s0v) + 1, (unsigned)s1v, character_player(rdram, s1v) + 1,
+                              (int)float_at(rdram, 0x800CC2D0 + 0x14), (int)float_at(rdram, 0x800CC2D0 + 0x18), (int)float_at(rdram, 0x800CC2D0 + 0x1C),
+                              (int)float_at(rdram, 0x800CC5FC + 0x14), (int)float_at(rdram, 0x800CC5FC + 0x18), (int)float_at(rdram, 0x800CC5FC + 0x1C));
+                conker::netsession::log(line);
+            }
+        }
         if (ra != from_character && ra != from_character_loop && ra != from_play_on_object && !no_place) {
             return;
         }
@@ -809,6 +841,20 @@ extern "C" void conker_local_audio(uint8_t* rdram, recomp_context* ctx, int whic
         case 17:
             on_set_value(rdram, ctx);
             return;
+        case 18: {
+            // func_10017438 (the sound player's start) begins: from _n_handleEvent (the audio thread: a sound's next part), logged
+            if ((uint32_t)ctx->r31 == 0x10016DCCu && conker::netsession::active()) {
+                static std::atomic<int> chained{ 0 };
+                if (chained.fetch_add(1) < 400) {
+                    char line[160];
+                    std::snprintf(line, sizeof(line), "[snd] f=%u a sound's next part started by the sound player: sound %u, volume %u pan %u",
+                                  (unsigned)conker::netsession::frame(), (unsigned)((uint32_t)ctx->r5 & 0xFFFFu), (unsigned)((uint32_t)ctx->r6 & 0xFFFFu),
+                                  (unsigned)((uint32_t)ctx->r7 & 0xFFu));
+                    conker::netsession::log(line);
+                }
+            }
+            return;
+        }
         case 8: {
             const uint32_t handle = (uint32_t)ctx->r2 & 0xFFFFu;
             if (handle != 0 && list_entry.ready && list_entry.entry == (uint32_t)ctx->r16) {
