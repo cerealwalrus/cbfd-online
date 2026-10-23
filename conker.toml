@@ -811,6 +811,22 @@ func = "func_100173C4"
 before_vram = 0x10017428
 text = "{ extern void conker_net_sound_hook(uint8_t*, recomp_context*, int); conker_net_sound_hook(rdram, ctx, 1); }"
 
+# Online (host/src/net_session.cpp, the sound notes): a game slot keeps its voice until the host says it ended, so the game can
+# still hand the sound player an event (a stop, ...) for a voice the audio thread has already freed; acted on, that frees it twice
+# and loops the lists of voices (a sound then plays for ever: the chainsaw). func_1001C224 (alEvtqPostEvent) drops such an event.
+[[patches.hook]]
+func = "n_alEvtqPostEvent"
+before_vram = 0x1001C224
+text = "{ extern int conker_net_sound_gate(uint8_t*, recomp_context*); if (conker_net_sound_gate(rdram, ctx)) { return; } }"
+
+# Online: func_1000F44C ("has this handle's sound started?") answers from the voice's flags, which the audio thread sets at its
+# own pace on each machine; the game's logic acts on the answer (whether to play a sound, which draws a random number), so it
+# answers from the slot alone: started while the slot has the handle and a voice.
+[[patches.hook]]
+func = "func_1000F44C"
+before_vram = 0x1000F4C8
+text = "{ extern void conker_net_sound_hook(uint8_t*, recomp_context*, int); conker_net_sound_hook(rdram, ctx, 3); }"
+
 # Netplay test (host/src/netplay.cpp): the game's frame length (D_800BE9E4, from the retraces counted since the
 # last frame, i.e. from the host's real timing) is made a constant 2 while a netplay test or game runs.
 [[patches.hook]]

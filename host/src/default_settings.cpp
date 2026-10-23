@@ -27,7 +27,7 @@ namespace conker {
  "developer_mode": false,
  "ds_option": 0,
  "hpfb_option": "Off",
- "hr_option": "Clamp16x9",
+ "hr_option": "Original",
  "msaa_option": "MSAA2X",
  "overscan_borders": "Hidden",
  "res_option": "Auto",

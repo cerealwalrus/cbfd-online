@@ -95,7 +95,7 @@ echo ==^> Building the game
 call host\build_windows.cmd || exit /b 1
 
 echo.
-echo Done. Run the game: %ROOT%\host\build-win\ConkerRecomp.exe
+echo Done. Run the game: %ROOT%\host\build-win\ConkerOnline.exe
 echo The first time, pick Load ROM in the launcher and select your ROM
 echo (conker\baserom.us.z64 works).
 exit /b 0

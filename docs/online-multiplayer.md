@@ -11,7 +11,7 @@ A game is set up in the launcher's **Online** screen (the lobby), or with enviro
 Both players need the same build, and the ROM loaded (Start Game's Load ROM does that once).
 
 1. The host chooses **Online** in the launcher, sets Players (2 to 4), Input delay and Controller, and presses **Host**. The
-   lobby lists the players as they join. The host's router has to forward the port (TCP, 47000 by default) to the host's
+   lobby lists the players as they join. The host's router has to forward the port (UDP, 47000 by default) to the host's
    computer, and the others need the host's public IP address.
 2. Each other player chooses **Online**, types the host's address (`address` or `address:port`), and presses **Join**.
 3. When everybody is in, the host presses **Start game**; every machine starts the game, and the host and the players choose
@@ -26,7 +26,7 @@ turn on `CONKER_IGNORE_DIRECTINPUT` by itself (it has to be set before the progr
 
 The host is player 1 (slot 0), joiners are players 2 to 4. Every machine needs its own copy of the ROM and a build.
 
-Host (a TCP port, forwarded on the router for play over the internet):
+Host (a UDP port, forwarded on the router for play over the internet):
 
     set CONKER_NET_HOST=47000
     set CONKER_NET_PLAYERS=2
@@ -51,7 +51,7 @@ typing: a gamepad's Y does nothing. The key does what it's bound to in Controls 
 
 | Variable | Meaning |
 | --- | --- |
-| `CONKER_NET_HOST=<port>` | host a game on that TCP port |
+| `CONKER_NET_HOST=<port>` | host a game on that UDP port |
 | `CONKER_NET_PLAYERS=<2..4>` | how many players the host waits for (default 2) |
 | `CONKER_NET_JOIN=<host>:<port>` | join a game |
 | `CONKER_NET_DELAY=<frames>` | input delay (default 3, about 100 ms; raise it for a slower connection) |

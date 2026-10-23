@@ -450,6 +450,45 @@ namespace {
 }
 
 int main(int argc, char** argv) {
+#ifdef _WIN32
+    // ConkerOnline.exe is a windowed program (no console window of its own, CMakeLists.txt). Started from a command prompt
+    // (--dedicated, --headless, tests), what it prints goes to that prompt's console; started any other way it has none.
+    if (AttachConsole(ATTACH_PARENT_PROCESS)) {
+        FILE* stream = nullptr;
+        freopen_s(&stream, "CONOUT$", "w", stdout);
+        freopen_s(&stream, "CONOUT$", "w", stderr);
+    }
+    {
+        // The game used to be ConkerRecomp.exe; that name is now a small program that starts this one, for older versions'
+        // updater and old shortcuts (launcher/conker_recomp_launcher.cpp). Once this one runs, the updater is this
+        // version's (it starts ConkerOnline.exe), so the small one beside it is removed: only it (a few hundred KB, never a
+        // whole old game), and after a few tries, as it may still be closing (a running program can't be deleted).
+        wchar_t own[MAX_PATH * 2] = {};
+        const DWORD n = GetModuleFileNameW(nullptr, own, (DWORD)(sizeof(own) / sizeof(own[0])));
+        std::error_code ec;
+        const std::filesystem::path self(std::wstring(own, n));
+        const std::filesystem::path old_name = self.parent_path() / L"ConkerRecomp.exe";
+        // (not in a build folder, whose files a release is zipped from: the small one has to be in the release for older versions. A
+        // build folder is in the source tree, host\build-win: host\CMakeLists.txt and host\src\main.cpp above it. Not a file in the
+        // folder itself, which a release zipped from the whole folder would bring along)
+        const bool build_folder = std::filesystem::exists(self.parent_path().parent_path() / L"CMakeLists.txt", ec) &&
+            std::filesystem::exists(self.parent_path().parent_path() / L"src" / L"main.cpp", ec);
+        if (n != 0 && !build_folder && !std::filesystem::equivalent(self, old_name, ec) && std::filesystem::exists(old_name, ec)) {
+            const auto size = std::filesystem::file_size(old_name, ec);
+            if (!ec && size < 4u * 1024u * 1024u) {
+                std::thread([old_name]() {
+                    for (int attempt = 0; attempt < 20; attempt++) {
+                        std::error_code remove_error;
+                        if (std::filesystem::remove(old_name, remove_error) || !std::filesystem::exists(old_name, remove_error)) {
+                            return;
+                        }
+                        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+                    }
+                }).detach();
+            }
+        }
+    }
+#endif
     // Unbuffered, so diagnostics (e.g. RT64's microcode hashes) survive a crash.
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     install_crash_handler();

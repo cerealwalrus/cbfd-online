@@ -72,6 +72,8 @@ namespace conker {
 
 #if defined(CONKER_RT64)
     inline constexpr const char* program_name = "Conker's Bad Fur Day: Recompiled";
+    // The game window's title (the program's name above is also what the menus and settings know it by, so it stays).
+    inline constexpr const char* window_title = "Conker's Bad Fur Day: Online";
     // The data folder's name (%LOCALAPPDATA%\<id>). CONKER_TEST_PROFILE=1 gives test
     // runs their own ("ConkerRecompiledTest"), so they never touch the player's saves.
     std::u8string program_id();
@@ -290,6 +292,8 @@ namespace conker {
         // With the game's memory and a function that reads this machine's own controller (port 1's device).
         // True if a session is being set up.
         bool init(uint8_t* rdram, bool (*local_sampler)(uint16_t* buttons, float* x, float* y));
+        // The game the lobby would start (its save file is the one the host sends every player).
+        void set_game_id(const std::u8string& game_id);
 
         // The lobby (net_lobby.cpp, the launcher's Online screen): the session is set up before the game starts. The host
         // opens it and waits for the players, a client joins; when the host presses Start every machine starts the game and
@@ -431,6 +435,10 @@ namespace conker {
         void render_done(uint8_t* rdram, uint32_t data_ptr);
         // True while a frame is being drawn with this machine's view: no snapshot is taken or loaded then.
         bool busy();
+        // Online with the full-screen view, `camera` (an index into D_800BE628) is this machine's player's: the full-screen
+        // camera's bounds (the game's 292 x 216 frame), which what the game draws for `camera` is to fill (widescreen.cpp's
+        // circle wipe). False otherwise.
+        bool full_view_bounds(uint8_t* rdram, int camera, float& left, float& top, float& right, float& bottom);
         // From the object-drawing hook (interpolation.cpp): object (a game object's index) is being drawn for that camera.
     }
 

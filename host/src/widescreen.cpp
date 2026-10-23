@@ -11,6 +11,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 #include <SDL.h>
@@ -544,6 +546,52 @@ extern "C" void conker_iris_end(uint8_t* rdram, recomp_context* ctx) {
     int32_t bottom = camera_bound(rdram, iris_camera, camera_bottom);
     int32_t left = camera_bound(rdram, iris_camera, camera_left);
     int32_t right = camera_bound(rdram, iris_camera, camera_right);
+    // Online, this machine's player's camera is a split screen's half that the view (net_view.cpp) shows across the
+    // whole frame: the wipe is moved from the half to the full-screen camera's bounds, its circle's centre with them
+    // and its radius by the larger of the two stretches (so it is still round, and still opens past the corners),
+    // and every quarter is drawn as an extended texture rectangle of the new size.
+    bool to_full = false;
+    int32_t from_cx4 = cx4, from_cy4 = cy4, from_r4 = r4;
+    {
+        float fl = 0, ft = 0, fr = 0, fb = 0;
+        // (only a wipe of the view: its circle is at the camera's middle. The same function draws other circles, a corner's, such
+        // as the radar's may be: those are left as the game draws them, and the first few are logged)
+        // (the wipe is centred on the player, not exactly on the view: the host's was 9 pixels above the middle; the middle half of the
+        // camera keeps it, and a corner's circle, such as the radar's at 239,38, out)
+        const bool centred = std::abs(cx4 - (left + right) * 2) <= (right - left) && std::abs(cy4 - (top + bottom) * 2) <= (bottom - top);
+        if (!centred) {
+            static int logged = 0;
+            if (logged < 8 && conker::netsession::active() && conker::netview::full_view_bounds(rdram, iris_camera, fl, ft, fr, fb)) {
+                logged++;
+                char line[160];
+                std::snprintf(line, sizeof(line), "[net view] circle of camera %d not at its middle (centre %g,%g, radius %g; camera %d..%d x %d..%d): left as drawn",
+                    (int)iris_camera, cx4 / 4.0, cy4 / 4.0, r4 / 4.0, (int)left, (int)right, (int)top, (int)bottom);
+                conker::netsession::log(line);
+            }
+        }
+        if (centred && right - left > 8 && bottom - top > 8 && conker::netview::full_view_bounds(rdram, iris_camera, fl, ft, fr, fb)) {
+            const float sx = (fr - fl) / (float)(right - left), sy = (fb - ft) / (float)(bottom - top);
+            const float scale = std::max(sx, sy);
+            // in whole pixels, as the game's own are: the black bands (whole pixels) and the circle's quarters then meet with no gap
+            // (a fraction left a line of the view showing between the band above and the circle)
+            cx4 = 4 * (int32_t)std::lround((fl * 4.0f + (float)(cx4 - left * 4) * sx) / 4.0f);
+            cy4 = 4 * (int32_t)std::lround((ft * 4.0f + (float)(cy4 - top * 4) * sy) / 4.0f);
+            r4 = 4 * std::max<int32_t>(1, (int32_t)std::lround((float)r4 * scale / 4.0f));
+            left = (int32_t)fl;
+            top = (int32_t)ft;
+            right = (int32_t)fr;
+            bottom = (int32_t)fb;
+            to_full = true;
+            for (size_t i = 1; i < setup_count; i++) {
+                // a scissor of the half's own, among the setup already copied (after the enable): the full view's
+                if (cmds[i].op() == 0xED) {
+                    gpr at = (gpr)(int32_t)(0x80000000u | wide_dl) + 8 + (gpr)i * 8;
+                    put_command(rdram, at, 0xED000000u | ((uint32_t)(left * 4) << 12) | (uint32_t)(top * 4),
+                        ((uint32_t)(right * 4) << 12) | (uint32_t)(bottom * 4));
+                }
+            }
+        }
+    }
     int32_t cx = cx4 / 4, cy = cy4 / 4, r = r4 / 4;
     // A full-screen camera is clipped to 2..290; split-screen ones stop in the middle.
     int32_t wide_left = left <= 4 ? left - wide_reach : left;
@@ -561,6 +609,23 @@ extern "C" void conker_iris_end(uint8_t* rdram, recomp_context* ctx) {
     for (size_t q = 0; q < quarter_count; q++) {
         const Command* rect = &cmds[quarters + q * 3];
         bool left_quarter = q == 1 || q == 3;
+        if (to_full) {
+            // The quarter as the game drew it (its left or top edge perhaps clamped to 0), back to where the circle starts,
+            // then the same texture over the new circle: the start stays, the steps shrink as the radius grows.
+            const bool upper_quarter = q == 1 || q == 2;
+            const int32_t dsdx = (int16_t)(rect[2].w1 >> 16), dtdy = (int16_t)(rect[2].w1 & 0xFFFF);
+            const int32_t from_ulx = left_quarter ? from_cx4 - from_r4 : from_cx4, from_uly = upper_quarter ? from_cy4 - from_r4 : from_cy4;
+            const int32_t s = (int16_t)(rect[1].w1 >> 16) + (((from_ulx - ulx(q)) * dsdx) >> 7);
+            const int32_t t = (int16_t)(rect[1].w1 & 0xFFFF) + (((from_uly - uly(q)) * dtdy) >> 7);
+            const int32_t new_dsdx = (int32_t)std::lround((double)dsdx * from_r4 / r4), new_dtdy = (int32_t)std::lround((double)dtdy * from_r4 / r4);
+            const int32_t n_ulx = left_quarter ? cx4 - r4 : cx4, n_lrx = left_quarter ? cx4 : cx4 + r4;
+            const int32_t n_uly = upper_quarter ? cy4 - r4 : cy4, n_lry = upper_quarter ? cy4 : cy4 + r4;
+            const uint32_t tile = (rect[0].w1 >> 24) & 0x7;
+            put_command(rdram, dl, (rt64_extended_opcode << 24) | g_ex_texrect_v1, tile | (g_ex_origin_none << 3) | (g_ex_origin_none << 15));
+            put_command(rdram, dl, ((uint32_t)n_ulx << 16) | ((uint32_t)n_uly & 0xFFFFu), ((uint32_t)n_lrx << 16) | ((uint32_t)n_lry & 0xFFFFu));
+            put_command(rdram, dl, ((uint32_t)s << 16) | ((uint32_t)t & 0xFFFFu), ((uint32_t)new_dsdx << 16) | ((uint32_t)new_dtdy & 0xFFFFu));
+            continue;
+        }
         if (!left_quarter || cx4 - r4 >= 0) {
             put_command(rdram, dl, rect[0].w0, rect[0].w1);
             put_command(rdram, dl, rect[1].w0, rect[1].w1);

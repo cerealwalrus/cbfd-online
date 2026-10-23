@@ -429,14 +429,15 @@ namespace {
             << "echo copied from %SRC% >> \"%LOG%\"\r\n"
             << "echo done >> \"%LOG%\"\r\n"
             << "cd /d \"" << f << "\"\r\n"
-            << "start \"\" \"" << e << "\"\r\n"
+            // (the game is ConkerOnline.exe now: started if the update brought it, else the program that ran)
+            << "if exist \"" << f << "\\ConkerOnline.exe\" (start \"\" \"" << f << "\\ConkerOnline.exe\") else (start \"\" \"" << e << "\")\r\n"
             << "rmdir /s /q \"%WORK%\\stage\" >nul 2>&1\r\n"
             << "del \"" << z << "\" >nul 2>&1\r\n"
             << "exit /b 0\r\n"
             << ":fail\r\n"
             << "echo the update did not finish >> \"%LOG%\"\r\n"
             << "cd /d \"" << f << "\"\r\n"
-            << "start \"\" \"" << e << "\"\r\n"
+            << "if exist \"" << f << "\\ConkerOnline.exe\" (start \"\" \"" << f << "\\ConkerOnline.exe\") else (start \"\" \"" << e << "\")\r\n"
             << "start \"\" notepad \"%LOG%\"\r\n"
             << "exit /b 1\r\n";
         bat.close();

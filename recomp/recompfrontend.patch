@@ -429,3 +429,37 @@ index 2c5dc52..9b175f4 100644
      set_as_navigation_container(NavigationType::Horizontal);
  }
  
+diff --git a/recompui/src/config/ui_config_tab_graphics.cpp b/recompui/src/config/ui_config_tab_graphics.cpp
+--- a/recompui/src/config/ui_config_tab_graphics.cpp
++++ b/recompui/src/config/ui_config_tab_graphics.cpp
+@@ -91,7 +91,6 @@
+ 
+         static EnumOptionVector hud_ratio_mode_options = {
+             {ultramodern::renderer::HUDRatioMode::Original, "Original"},
+-            {ultramodern::renderer::HUDRatioMode::Clamp16x9, "Clamp16x9", "16:9"},
+             {ultramodern::renderer::HUDRatioMode::Full, "Expand"},
+         };
+ 
+@@ -168,6 +167,10 @@
+             new_config.res_option = get_graphics_enum_value<ultramodern::renderer::Resolution>(graphics::options::res_option);
+             new_config.wm_option = get_graphics_enum_value<ultramodern::renderer::WindowMode>(graphics::options::wm_option);
+             new_config.hr_option = get_graphics_enum_value<ultramodern::renderer::HUDRatioMode>(graphics::options::hr_option);
++            // (16:9 is no longer offered: a setting saved with it is Expand's)
++            if (new_config.hr_option == ultramodern::renderer::HUDRatioMode::Clamp16x9) {
++                new_config.hr_option = ultramodern::renderer::HUDRatioMode::Full;
++            }
+             new_config.api_option = get_graphics_enum_value<ultramodern::renderer::GraphicsApi>(graphics::options::api_option);
+             new_config.ar_option = get_graphics_enum_value<ultramodern::renderer::AspectRatio>(graphics::options::ar_option);
+             new_config.msaa_option = get_graphics_enum_value<ultramodern::renderer::Antialiasing>(graphics::options::msaa_option);
+@@ -336,9 +339,9 @@
+             config.add_enum_option(
+                 graphics::options::hr_option,
+                 "HUD Placement",
+-                "Adjusts the placement of HUD elements to fit the selected aspect ratio. <recomp-color primary>Expand</recomp-color> will use the aspect ratio of the game's output window.",
++                "Adjusts the placement of HUD elements. <recomp-color primary>Original</recomp-color> keeps them where the game puts them, inside the 4:3 frame. <recomp-color primary>Expand</recomp-color> moves the HUD at the screen's sides out to the edges of the game's window (online, each player's radar, weapon and health).",
+                 hud_ratio_mode_options,
+-                ultramodern::renderer::HUDRatioMode::Clamp16x9
++                ultramodern::renderer::HUDRatioMode::Original
+             );
+ 
+             config.add_enum_option(

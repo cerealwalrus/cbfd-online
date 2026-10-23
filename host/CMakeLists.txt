@@ -102,6 +102,17 @@ add_executable(ConkerRecomp
 )
 if (WIN32)
     target_sources(ConkerRecomp PRIVATE ConkerRecomp.rc)
+    # On Windows the game is ConkerOnline.exe, a windowed program (no console window behind it; main.cpp attaches to the
+    # console of a command prompt it's started from, for --dedicated and the like). ConkerRecomp.exe is now a small
+    # program that starts it (launcher/conker_recomp_launcher.cpp), for shortcuts and older versions' updater.
+    set_target_properties(ConkerRecomp PROPERTIES OUTPUT_NAME ConkerOnline WIN32_EXECUTABLE TRUE)
+    if (MSVC)
+        target_link_options(ConkerRecomp PRIVATE /ENTRY:mainCRTStartup)
+    endif()
+    add_executable(ConkerRecompLauncher WIN32 launcher/conker_recomp_launcher.cpp ConkerRecomp.rc)
+    set_target_properties(ConkerRecompLauncher PROPERTIES OUTPUT_NAME ConkerRecomp)
+    target_compile_definitions(ConkerRecompLauncher PRIVATE UNICODE _UNICODE)
+    add_dependencies(ConkerRecomp ConkerRecompLauncher)
 endif()
 if (MSVC)
     set_source_files_properties("${REPO_ROOT}/RecompiledFuncs/rsp/audio_ucode.cpp" PROPERTIES COMPILE_OPTIONS "/W0;/bigobj")
@@ -111,6 +122,26 @@ target_include_directories(ConkerRecomp PRIVATE
     "${REPO_ROOT}/RecompiledFuncs"
 )
 target_link_libraries(ConkerRecomp PRIVATE RecompiledFuncs librecomp ultramodern)
+target_link_libraries(ConkerRecomp PRIVATE enet)
+
+# ENet (MIT, host/third_party/enet): the reliable UDP the online play runs on (net_transport.cpp).
+add_library(enet STATIC
+    third_party/enet/callbacks.c third_party/enet/compress.c third_party/enet/host.c third_party/enet/list.c
+    third_party/enet/packet.c third_party/enet/peer.c third_party/enet/protocol.c)
+target_include_directories(enet PUBLIC third_party/enet/include)
+if (WIN32)
+    target_sources(enet PRIVATE third_party/enet/win32.c)
+    target_link_libraries(enet PUBLIC ws2_32 winmm)
+else()
+    target_sources(enet PRIVATE third_party/enet/unix.c)
+    target_compile_definitions(enet PRIVATE HAS_FCNTL HAS_POLL HAS_GETNAMEINFO HAS_GETADDRINFO HAS_GETHOSTBYNAME_R HAS_INET_PTON HAS_INET_NTOP HAS_MSGHDR_FLAGS HAS_SOCKLEN_T)
+endif()
+if (MSVC)
+    target_compile_options(enet PRIVATE /W0)
+else()
+    target_compile_options(enet PRIVATE -w)
+endif()
+
 
 if (CONKER_RT64)
     set(RT64_STATIC ON CACHE BOOL "" FORCE)
@@ -171,7 +202,7 @@ if (CONKER_RT64)
     add_custom_command(TARGET ConkerRecomp POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/assets" "$<TARGET_FILE_DIR:ConkerRecomp>/assets")
 
-    target_sources(ConkerRecomp PRIVATE src/frontend.cpp src/conker_config.cpp src/audio_output.cpp src/rumble.cpp src/fps_counter.cpp src/reticle.cpp src/pad_mappings.cpp src/texture_packs.cpp src/gliden64_packs.cpp src/notices.cpp src/local_achievements.cpp src/save_states.cpp src/netplay.cpp src/net_session.cpp src/net_view.cpp src/net_menu.cpp src/net_lobby.cpp src/menu_skin.cpp src/net_chat.cpp src/update_check.cpp src/default_settings.cpp src/dedicated_server.cpp)
+    target_sources(ConkerRecomp PRIVATE src/frontend.cpp src/conker_config.cpp src/audio_output.cpp src/rumble.cpp src/fps_counter.cpp src/reticle.cpp src/pad_mappings.cpp src/texture_packs.cpp src/gliden64_packs.cpp src/notices.cpp src/local_achievements.cpp src/save_states.cpp src/netplay.cpp src/net_session.cpp src/net_view.cpp src/net_menu.cpp src/net_lobby.cpp src/menu_skin.cpp src/net_chat.cpp src/update_check.cpp src/default_settings.cpp src/dedicated_server.cpp src/net_transport.cpp)
 
     # CONKER_RT64 selects the window build; the rest are what rt64 compiles its own headers with.
     target_compile_definitions(ConkerRecomp PRIVATE CONKER_RT64 HLSL_CPU)
