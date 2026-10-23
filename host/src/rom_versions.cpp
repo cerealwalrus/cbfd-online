@@ -204,6 +204,10 @@ void conker::roms::init(const std::filesystem::path& stored_rom) {
     refresh(false);
 }
 
+std::filesystem::path conker::roms::stored_rom_path() {
+    return stored_path;
+}
+
 bool conker::roms::update() {
     return refresh(true);
 }

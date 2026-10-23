@@ -28,6 +28,25 @@ namespace {
     std::atomic<int> input_x = 0;
     std::atomic<int> input_y = 0;
     std::atomic<int> input_slot = 3;
+    // the menu reads a slot a player uses (all four are in): its values are kept here while the menu has its own, and put back
+    std::atomic<bool> borrowed = false;
+    bool saved = false;
+    int16_t saved_buttons = 0;
+    int8_t saved_x = 0, saved_y = 0;
+    int saved_slot = 0;
+
+    void put_back(uint8_t* rdram) {
+        if (saved) {
+            saved = false;
+            MEM_H(0, (gpr)(int32_t)(0x800BE930u + 2u * (uint32_t)saved_slot)) = saved_buttons;
+            MEM_B(2, (gpr)(int32_t)(0x800BE918u + 6u * (uint32_t)saved_slot)) = saved_x;
+            MEM_B(3, (gpr)(int32_t)(0x800BE918u + 6u * (uint32_t)saved_slot)) = saved_y;
+        }
+    }
+}
+
+void conker::netmenu::set_borrowed(bool value) {
+    borrowed = value;
 }
 
 void conker::netmenu::set_open(bool open) {
@@ -54,6 +73,7 @@ extern "C" void conker_net_pause_hook(uint8_t* rdram, recomp_context* ctx, int w
     } else if (which == 2) {
         ctx->r2 = 1;
     } else if (which == 4) {
+        put_back(rdram);   // (the menu has read its input by now: the slot's own goes back)
         // before the jal: its delay slot makes $a1 (the y of RESTART's button, in the game's 320 x 240 screen) from $t9
         ctx->r25 = (gpr)(int64_t)(450 << 16);
     } else if (which == 5) {
@@ -70,6 +90,13 @@ extern "C" void conker_net_pause_hook(uint8_t* rdram, recomp_context* ctx, int w
         // the player slot the menu listens to, with this player's controller in it (D_800BE930: each slot's buttons, 2
         // bytes; D_800BE918: 6 bytes, the stick at +2 and +3)
         MEM_B(0, (gpr)(int32_t)0x800E0A98) = (int8_t)slot;
+        if (borrowed.load()) {
+            saved = true;
+            saved_slot = slot;
+            saved_buttons = MEM_H(0, (gpr)(int32_t)(0x800BE930u + 2u * (uint32_t)slot));
+            saved_x = MEM_B(2, (gpr)(int32_t)(0x800BE918u + 6u * (uint32_t)slot));
+            saved_y = MEM_B(3, (gpr)(int32_t)(0x800BE918u + 6u * (uint32_t)slot));
+        }
         MEM_H(0, (gpr)(int32_t)(0x800BE930u + 2u * (uint32_t)slot)) = (int16_t)(uint16_t)input_buttons.load();
         MEM_B(2, (gpr)(int32_t)(0x800BE918u + 6u * (uint32_t)slot)) = (int8_t)input_x.load();
         MEM_B(3, (gpr)(int32_t)(0x800BE918u + 6u * (uint32_t)slot)) = (int8_t)input_y.load();

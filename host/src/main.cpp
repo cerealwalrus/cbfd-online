@@ -10,6 +10,8 @@
 //                build can also load it from the launcher.
 //   --seconds N  start the game right away (no launcher) and quit after N seconds
 //   --headless   null renderer, no window, input or sound
+//   --dedicated  online server with no player: headless, hosts on --port N (47000) for --players N (2)
+//                with --delay N frames of input delay; clients join through the launcher
 //   --window WxH open the window at this size, e.g. 2520x1080 to try a 21:9 screen
 //                (the window mode, windowed or fullscreen, is still the setting's)
 
@@ -18,7 +20,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <algorithm>
 #include <filesystem>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -262,14 +266,59 @@ namespace {
         return nullptr;
     }
 
-    void queue_samples(int16_t*, size_t) {}
-    size_t get_frames_remaining() { return 0; }
-    void set_frequency(uint32_t) {}
+    // A dedicated server has no sound card, but the game's audio thread paces itself on how much is
+    // left in the output queue, and the server's notes of finished sounds drive every client. So it
+    // gets a virtual device that drains in real time, like a real one would.
+    bool virtual_audio = false;
+    std::mutex virtual_audio_mutex;
+    double virtual_queued = 0.0;   // frames waiting
+    uint32_t virtual_rate = 32000;
+    std::chrono::steady_clock::time_point virtual_last = std::chrono::steady_clock::now();
+
+    void virtual_audio_drain() {
+        const auto now = std::chrono::steady_clock::now();
+        const double seconds = std::chrono::duration<double>(now - virtual_last).count();
+        virtual_last = now;
+        virtual_queued = std::max(0.0, virtual_queued - seconds * virtual_rate);
+    }
+
+    void queue_samples(int16_t*, size_t sample_count) {
+        if (virtual_audio) {
+            std::lock_guard lock{ virtual_audio_mutex };
+            virtual_audio_drain();
+            virtual_queued += (double)sample_count / 2.0;
+        }
+    }
+    size_t get_frames_remaining() {
+        if (!virtual_audio) {
+            return 0;
+        }
+        std::lock_guard lock{ virtual_audio_mutex };
+        virtual_audio_drain();
+        const uint32_t queued = (uint32_t)virtual_queued;
+        return queued > 736 ? queued - 736 : 0;   // same one-buffer allowance as the real device
+    }
+    void set_frequency(uint32_t frequency) {
+        if (virtual_audio && frequency != 0) {
+            std::lock_guard lock{ virtual_audio_mutex };
+            virtual_audio_drain();
+            virtual_rate = frequency;
+        }
+    }
 
     bool headless = true;
 
     void poll_input() {}
-    bool get_input(int, uint16_t*, float*, float*) { return false; }
+    // Headless: there are no devices, but an online session (a dedicated server) still takes its frame's inputs here: the
+    // first read of a frame waits until the frame's inputs are agreed, and every port is then answered from them.
+    bool get_input(int port, uint16_t* buttons, float* x, float* y) {
+        conker::netsession::on_port_read(port);
+        bool plugged = false;
+        if (conker::netsession::input_for_game(port, &plugged, buttons, x, y)) {
+            return plugged;
+        }
+        return false;
+    }
     void set_rumble(int, bool) {}
 
     ultramodern::renderer::WindowHandle create_window(void*) {
@@ -296,6 +345,11 @@ ultramodern::input::connected_device_info_t conker::get_connected_device_info(in
         return conker::frontend::get_connected_device_info(controller_num);
     }
 #endif
+    bool present = false;
+    if (conker::netsession::device_present(controller_num, &present)) {
+        return present ? ultramodern::input::connected_device_info_t{ ultramodern::input::Device::Controller, ultramodern::input::Pak::None }
+                       : ultramodern::input::connected_device_info_t{ ultramodern::input::Device::None, ultramodern::input::Pak::None };
+    }
     if (controller_num == 0) {
         return { ultramodern::input::Device::Controller, ultramodern::input::Pak::None };
     }
@@ -401,6 +455,8 @@ int main(int argc, char** argv) {
     install_crash_handler();
     std::filesystem::path rom_path;
     int seconds = 0;
+    bool dedicated_server = false;
+    std::string server_port = "47000", server_players = "2", server_delay = "";
 #if defined(CONKER_RT64)
     headless = false;
 #endif
@@ -414,6 +470,21 @@ int main(int argc, char** argv) {
         else if (std::strcmp(argv[i], "--headless") == 0) {
             headless = true;
         }
+        else if (std::strcmp(argv[i], "--dedicated") == 0) {
+            // a server without a player: runs the game headless, hosts, and clients (slot 0 = leader) play
+            dedicated_server = true;
+            headless = true;
+            virtual_audio = true;
+        }
+        else if (std::strcmp(argv[i], "--port") == 0 && i + 1 < argc) {
+            server_port = argv[++i];
+        }
+        else if (std::strcmp(argv[i], "--players") == 0 && i + 1 < argc) {
+            server_players = argv[++i];
+        }
+        else if (std::strcmp(argv[i], "--delay") == 0 && i + 1 < argc) {
+            server_delay = argv[++i];
+        }
 #if defined(CONKER_RT64)
         else if (std::strcmp(argv[i], "--window") == 0 && i + 1 < argc) {
             int width = 0, height = 0;
@@ -426,6 +497,32 @@ int main(int argc, char** argv) {
         else if (argv[i][0] != '-' && rom_path.empty()) {
             rom_path = argv[i]; // e.g. a ROM dropped onto the executable
         }
+    }
+
+    if (dedicated_server && !std::getenv("CONKER_DEDICATED_CHILD")) {
+        const int code = conker::dserver::supervise();
+        if (code >= 0) {
+            return code;
+        }
+    }
+    if (dedicated_server) {
+        auto set_env = [](const char* name, const std::string& value) {
+#if defined(_WIN32)
+            _putenv_s(name, value.c_str());
+#else
+            setenv(name, value.c_str(), 1);
+#endif
+        };
+        set_env("CONKER_NET_HOST", server_port);
+        set_env("CONKER_NET_PLAYERS", server_players);
+        if (!server_delay.empty()) {
+            set_env("CONKER_NET_DELAY", server_delay);
+        }
+        set_env("CONKER_NET_DEDICATED", "1");
+        if (!std::getenv("CONKER_NET_LOG")) {
+            set_env("CONKER_NET_LOG", "netplay_server.txt");
+        }
+        std::printf("[server] dedicated server: port %s, %s players\n", server_port.c_str(), server_players.c_str());
     }
 
     std::filesystem::path old_data_dir = exe_directory(argv[0]) / "conker_data";
@@ -512,6 +609,11 @@ int main(int argc, char** argv) {
     }
 #endif
 
+#if defined(CONKER_RT64)
+    if (headless) {
+        conker::save_states::init_headless();   // (the online session's snapshots are taken at its safe points)
+    }
+#endif
     std::thread timer;
     if (seconds > 0) {
         timer = std::thread([seconds] {

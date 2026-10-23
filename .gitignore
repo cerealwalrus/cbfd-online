@@ -28,3 +28,4 @@ __pycache__/
 /.claude/
 /.venv/
 /tools/macos/
+host/CBFD-Online-*.zip

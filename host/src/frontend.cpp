@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -22,6 +23,8 @@
 #include "nfd.h"
 
 #include "librecomp/game.hpp"
+#include "ultramodern/ultramodern.hpp"
+#include "recompinput/input_binding.h"
 #include "recompinput/input_events.h"
 #include "recompinput/input_state.h"
 #include "recompinput/players.h"
@@ -152,6 +155,27 @@ namespace {
     // Watches controllers connecting: each is printed, opened into the list above, and its C-buttons
     // remapped if they need it (pad_mappings.cpp). SDL calls this on the thread that announces the
     // device, the main one, as it pumps events, so the devices are listed there.
+    // The launcher's menus answer the mouse only: every window on a computer receives the game controller's buttons, so a
+    // press while playing in another window pressed this one's buttons (the dedicated server stopped by itself in a test).
+    // Set each frame: a menu is up and no game is running in this window.
+    std::atomic<bool> menus_mouse_only = false;
+
+    int SDLCALL drop_pad_menu_events(void*, SDL_Event* event) {
+        if (menus_mouse_only.load(std::memory_order_relaxed)) {
+            switch (event->type) {
+            case SDL_CONTROLLERBUTTONDOWN:
+            case SDL_CONTROLLERBUTTONUP:
+            case SDL_CONTROLLERAXISMOTION:
+            case SDL_JOYBUTTONDOWN:
+            case SDL_JOYBUTTONUP:
+            case SDL_JOYHATMOTION:
+            case SDL_JOYAXISMOTION:
+                return 0;
+            }
+        }
+        return 1;
+    }
+
     int SDLCALL watch_controllers(void*, SDL_Event* event) {
         switch (event->type) {
         case SDL_JOYDEVICEADDED:
@@ -198,6 +222,7 @@ namespace {
         if (SDL_Init(subsystems) != 0) {
             std::fprintf(stderr, "[frontend] SDL_Init failed: %s\n", SDL_GetError());
         }
+        SDL_SetEventFilter(drop_pad_menu_events, nullptr);
         SDL_version sdl_version;
         SDL_GetVersion(&sdl_version);
         std::printf("[frontend] SDL %d.%d.%d\n", sdl_version.major, sdl_version.minor, sdl_version.patch);
@@ -261,6 +286,8 @@ namespace {
     }
 
     void update_gfx(void*) {
+        // (not while a control is being bound: that takes the pad's buttons)
+        menus_mouse_only = recompui::is_any_context_shown() && !ultramodern::is_game_started() && !recompinput::binding::is_binding();
         recompinput::handle_events();
         conker::texture_packs::update_unpacking();
         conker::fps_counter::update();

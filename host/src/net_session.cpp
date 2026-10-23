@@ -321,6 +321,8 @@ namespace {
 
     bool enabled = false;          // CONKER_NET_HOST or _JOIN was given and the session hasn't ended
     bool is_host = false;
+    bool dedicated = false;        // the host is a server without a player: every slot is a remote player (slot 0 is the menu's "leader")
+    std::map<uint32_t, std::array<uint16_t, 16>> host_notes;   // dedicated: the server's notes of finished sounds, by the frame they apply at
     bool started = false;          // every player has joined and the game may begin
     bool failed = false;           // the session is over (this machine goes on offline)
     int my_slot = 0;
@@ -392,12 +394,21 @@ namespace {
     // The host's.
     std::vector<std::unique_ptr<Peer>> peers;     // host: its clients; client: the host (one)
     std::array<bool, max_players> connected{};
+    // Dedicated server: a player who joins a game that is already running is "joining" until the snapshot of the game
+    // has been sent to it; from the frame join_from on, the game waits for its input like for anyone's.
+    std::array<bool, max_players> joining{};
+    std::array<uint32_t, max_players> join_from = []{ std::array<uint32_t, max_players> a{}; a.fill(0xFFFFFFFFu); return a; }();
+    std::array<clock::time_point, max_players> joining_since{};
+    std::array<bool, max_players> input_since_join{};   // a late joiner has sent an input (its snapshot is loaded)
+    bool late_join = false;       // client: joined a game that was already running, to be brought up to date by a snapshot
+    bool late_synced = false;     // client: that snapshot is loaded
     std::map<uint32_t, std::array<std::pair<bool, PlayerInput>, max_players>> inbox;
     uint32_t next_broadcast = 0;
     socket_t listener = invalid_socket;
 
     // Counters.
     uint64_t desyncs = 0;
+    uint32_t last_quit_frame = 0;
     uint64_t stalls = 0;
     double waited_ms = 0.0;
     uint64_t waited_frames = 0;
@@ -451,6 +462,17 @@ namespace {
         if (!path.empty()) {
             // Beside the game, or where it was started from; if that can't be written to (a protected folder), in the
             // folder of the settings.
+            // (the last run's log is kept beside it, as <name>.previous.txt: a new run would overwrite it)
+            {
+                std::error_code rename_error;
+                const std::filesystem::path current_log(path);
+                if (std::filesystem::exists(current_log, rename_error)) {
+                    std::filesystem::path older = current_log;
+                    older.replace_extension(".previous.txt");
+                    std::filesystem::remove(older, rename_error);
+                    std::filesystem::rename(current_log, older, rename_error);
+                }
+            }
             log_file = std::fopen(path.c_str(), "w");
             std::error_code ec;
             if (log_file != nullptr) {
@@ -685,6 +707,21 @@ namespace {
 
     // --- Host: put the frames together ---
 
+    // Mutex held. Whether the game must wait for this player's input for frame f.
+    bool required_at(int s, uint32_t f) {
+        if (!connected[s]) {
+            return false;
+        }
+        if (!joining[s]) {
+            return true;
+        }
+        if (join_from[s] != 0xFFFFFFFFu && f >= join_from[s]) {
+            joining[s] = false;   // from here on the player is part of the game
+            return true;
+        }
+        return false;
+    }
+
     // Mutex held. Sends every frame that all connected players' inputs are in for.
     void try_broadcast() {
         while (true) {
@@ -692,8 +729,11 @@ namespace {
             auto it = inbox.find(f);
             FrameInputs fi;
             bool complete = true;
+            if (dedicated && host_notes.find(f) == host_notes.end()) {
+                return;   // the server's own part (its notes of finished sounds) for this frame isn't in yet
+            }
             for (int s = 0; s < max_players && complete; s++) {
-                if (!connected[s]) {
+                if (!required_at(s, f)) {
                     continue;
                 }
                 if (it == inbox.end() || !it->second[s].first) {
@@ -705,6 +745,10 @@ namespace {
             }
             if (!complete) {
                 return;
+            }
+            if (dedicated) {
+                fi.p[0].ended = host_notes[f];
+                host_notes.erase(f);
             }
             ready[f] = fi;
             Writer w(Frame);
@@ -737,6 +781,7 @@ namespace {
             return;   // the first one counts (a resynced machine sends some twice)
         }
         entry = { true, in };
+        input_since_join[slot] = true;
         try_broadcast();
     }
 
@@ -754,6 +799,7 @@ namespace {
         for (int s = 0; s < max_players; s++) {
             w.put_string(connected[s] ? names[s] : std::string());
         }
+        w.put((uint8_t)(dedicated ? 1 : 0));
         const auto& bytes = w.finish();
         for (auto& peer : peers) {
             if (peer->alive) {
@@ -856,12 +902,15 @@ namespace {
     void host_begin_game() {
         lobby_locked = true;
         Writer s(Start);
-        s.put(delay);
+        s.put(delay).put((uint8_t)(dedicated ? 1 : 0));
         for (auto& peer : peers) {
             peer->send_message(s.finish());
         }
         started = true;
         for (uint32_t f = 0; f < delay; f++) {
+            if (dedicated) {
+                host_notes[f] = {};
+            }
             for (int slot = 0; slot < max_players; slot++) {
                 if (connected[slot]) {
                     inbox[f][slot] = { true, PlayerInput{} };
@@ -919,6 +968,21 @@ namespace {
         std::vector<Peer*> to;
         {
             std::lock_guard lock{ mtx };
+            if (dedicated && is_host && started) {
+                // a player who joined and hasn't taken its snapshot in a minute is let go (the server goes on without it)
+                for (int k = 0; k < max_players; k++) {
+                    if (connected[k] && joining[k] && join_from[k] == 0xFFFFFFFFu && clock::now() - joining_since[k] > std::chrono::seconds(90)) {
+                        log_line("[net] player %d never took the snapshot of the running game, dropped", k + 1);
+                        connected[k] = false;
+                        joining[k] = false;
+                        for (auto& peer : peers) {
+                            if (peer->slot == k) {
+                                peer->drop();
+                            }
+                        }
+                    }
+                }
+            }
             if (!(enabled || lobby_phase == 2) || failed) {
                 return;
             }
@@ -1034,6 +1098,8 @@ namespace {
             log_line("[net] player %d left", peer->slot + 1);
         }
         connected[peer->slot] = false;
+        joining[peer->slot] = false;
+        join_from[peer->slot] = 0xFFFFFFFFu;
         if (!started) {
             names[peer->slot].clear();
             send_lobby_info();
@@ -1131,13 +1197,13 @@ namespace {
                 close_socket(s);
                 return;
             }
-            if (lobby_locked) {
+            if (lobby_locked && !dedicated) {
                 lock.unlock();
                 refuse(s, 3);
                 continue;
             }
             int slot = -1;
-            for (int k = 1; k < players_expected; k++) {
+            for (int k = dedicated ? 0 : 1; k < players_expected; k++) {
                 if (!connected[k]) {
                     slot = k;
                     break;
@@ -1159,6 +1225,16 @@ namespace {
             log_line("[net] player %d joined", slot + 1);
             Peer* raw = peer.get();
             connected[slot] = true;
+            if (started) {
+                // dedicated server, game running: this player is brought up to date by a snapshot (its own request)
+                joining[slot] = true;
+                join_from[slot] = 0xFFFFFFFFu;
+                joining_since[slot] = clock::now();
+                input_since_join[slot] = false;
+                for (auto& entry : inbox) {
+                    entry.second[slot] = {};   // (nothing left by whoever had the slot before)
+                }
+            }
             {
                 // two players with the same name: the later gets a number
                 std::string name = joiner_name;
@@ -1181,8 +1257,14 @@ namespace {
             raw->reader = std::thread(host_reader, raw);
             raw->reader.detach();
             send_lobby_info();
+            if (started) {
+                Writer late(Start);
+                late.put(delay).put((uint8_t)1).put((uint8_t)1);
+                raw->send_message(late.finish());
+                log_line("[net] player %d joins the running game, a snapshot will bring it up to date", slot + 1);
+            }
             cv.notify_all();
-            if (auto_start) {
+            if (auto_start && !started) {
                 int here = 0;
                 for (int k = 0; k < players_expected; k++) {
                     here += connected[k] ? 1 : 0;
@@ -1209,6 +1291,13 @@ namespace {
             switch (type) {
                 case Start:
                     delay = r.get<uint32_t>();
+                    if (r.at < r.size) {
+                        dedicated = r.get<uint8_t>() != 0;
+                    }
+                    if (r.at < r.size && r.get<uint8_t>() != 0) {
+                        late_join = true;      // the game is running already: a snapshot of it comes first
+                        late_synced = false;
+                    }
                     started = true;
                     game_launch = true;
                     log_line("[net] the game starts");
@@ -1232,11 +1321,13 @@ namespace {
                     for (auto& name : heard) {
                         name = clean_name(r.get_string());
                     }
+                    const bool dedicated_heard = !r.bad && r.at < r.size && r.get<uint8_t>() != 0;
                     if (!r.bad && expected >= 2 && expected <= max_players) {
                         players_expected = expected;
                         lobby_mask = mask;
                         delay = d;
                         names = heard;
+                        dedicated = dedicated_heard;
                     }
                     break;
                 }
@@ -1548,7 +1639,7 @@ namespace {
         const int slot = r.get<uint8_t>();
         const int expected = r.get<uint8_t>();
         const uint32_t d = r.get<uint32_t>();
-        if (r.bad || slot < 1 || slot >= max_players) {
+        if (r.bad || slot < 0 || slot >= max_players) {   // (0 is allowed: on a dedicated server the first player takes it)
             close_socket(s);
             return fail("The host sent something this version doesn't understand.");
         }
@@ -1610,8 +1701,8 @@ namespace {
             listener = invalid_socket;
             return false;
         }
-        connected[0] = true;
-        log_line("[net] hosting on port %u, waiting for %d players", (unsigned)port, players_expected);
+        connected[0] = !dedicated;   // (a dedicated server has no player: the first to join takes slot 0)
+        log_line("[net] %s on port %u, waiting for %d players", dedicated ? "dedicated server" : "hosting", (unsigned)port, players_expected);
         return true;
     }
 }
@@ -1634,12 +1725,13 @@ bool conker::netsession::init(uint8_t* rdram, bool (*local_sampler)(uint16_t*, f
     }
     const std::string host_port = get_env("CONKER_NET_HOST");
     const std::string join = get_env("CONKER_NET_JOIN");
+    dedicated = !host_port.empty() && !get_env("CONKER_NET_DEDICATED").empty();
     if (host_port.empty() && join.empty()) {
         return false;
     }
     open_log("");
     ram = rdram;
-    sampler = local_sampler;
+    sampler = dedicated ? nullptr : local_sampler;   // (a dedicated server has no controller of its own to read)
     const std::string delay_text = get_env("CONKER_NET_DELAY");
     if (!delay_text.empty()) {
         delay = std::clamp<uint32_t>((uint32_t)std::strtoul(delay_text.c_str(), nullptr, 10), 1, 30);
@@ -1673,6 +1765,11 @@ bool conker::netsession::init(uint8_t* rdram, bool (*local_sampler)(uint16_t*, f
         is_host = true;
         my_slot = 0;
         ok = start_host((uint16_t)std::atoi(host_port.c_str()), nullptr);
+        if (ok && dedicated) {
+            // a dedicated server's game runs from the start, with or without players; whoever joins is brought up to date
+            std::lock_guard lock{ mtx };
+            host_begin_game();
+        }
         if (ok) {
             std::thread(host_accept_loop, listener, lobby_gen.load(), true).detach();
         }
@@ -1720,6 +1817,7 @@ void conker::netsession::lobby_leave() {
     started = false;
     failed = false;
     game_launch = false;
+    late_join = late_synced = false;
     lobby_locked = false;
     lobby_mask = 0;
     lobby_phase = 0;
@@ -1839,6 +1937,7 @@ conker::netsession::LobbyStatus conker::netsession::lobby_status() {
     }
     st.can_start = is_host && lobby_phase == 2 && !started && here >= players_expected;
     st.launch = !is_host && game_launch;
+    st.dedicated = dedicated;
     st.ping_ms.fill(-1.0f);
     for (auto& peer : peers) {
         if (peer->alive && !peer->retired) {
@@ -2261,6 +2360,72 @@ namespace {
     }
 }
 
+// ultra_extras.cpp, when the game stops itself with its fatal-error trap: writes what is known to the log (the game's error code,
+// where it was, the audio voice list, and the heap's block chain), as the window that follows ends the program.
+void conker::netsession::note_halt(uint8_t* rdram, uint32_t vram, uint32_t return_address) {
+    if (log_file == nullptr || rdram == nullptr) {
+        return;
+    }
+    log_line("[halt] the game halted: syscall at %08X, return address %08X, net frame %u (last QUIT at frame %u)", vram, return_address,
+        (unsigned)current_frame, (unsigned)last_quit_frame);
+    log_line("[halt] the game's error code (D_8003C8E0): %08X", (unsigned)ram_w(rdram, 0x8003C8E0u));
+    // the audio voice list
+    {
+        std::vector<uint32_t> seen;
+        uint32_t cur = ram_w(rdram, voice_list_head);
+        std::string text;
+        while (cur != 0 && seen.size() < 80) {
+            char piece[32];
+            const bool again = std::find(seen.begin(), seen.end(), cur) != seen.end();
+            std::snprintf(piece, sizeof(piece), " %08X%s", (unsigned)cur, again ? "(again)" : "");
+            text += piece;
+            if (again || !ram_pointer(cur) || (cur & 3u) != 0) {
+                break;
+            }
+            seen.push_back(cur);
+            cur = ram_w(rdram, cur);
+        }
+        log_line("[halt] the audio library's voice list:%s", text.c_str());
+    }
+    // the heap's blocks (the chain from D_800380B4: next pointer at +0, state in the top byte of the word at +8)
+    {
+        uint32_t counts[256] = {};
+        uint32_t cur = ram_w(rdram, 0x800380B4u);
+        uint32_t blocks = 0;
+        bool broken = false;
+        std::vector<uint32_t> last;
+        while (cur != 0 && blocks < 20000) {
+            if (!ram_pointer(cur) || (cur & 3u) != 0) {
+                broken = true;
+                break;
+            }
+            counts[(ram_w(rdram, cur + 8u) >> 24) & 0xFF]++;
+            last.push_back(cur);
+            if (last.size() > 6) {
+                last.erase(last.begin());
+            }
+            cur = ram_w(rdram, cur);
+            blocks++;
+        }
+        std::string text;
+        for (int k = 0; k < 256; k++) {
+            if (counts[k] != 0) {
+                char piece[40];
+                std::snprintf(piece, sizeof(piece), " state %02X: %u", k, (unsigned)counts[k]);
+                text += piece;
+            }
+        }
+        log_line("[halt] heap chain: %u blocks%s;%s", blocks, broken ? ", then a link to something that is not memory" : (cur != 0 ? ", too long (a loop?)" : ""), text.c_str());
+        std::string tail;
+        for (uint32_t b : last) {
+            char piece[64];
+            std::snprintf(piece, sizeof(piece), " %08X(%08X)", (unsigned)b, (unsigned)ram_w(rdram, b + 8u));
+            tail += piece;
+        }
+        log_line("[halt] the last blocks of the chain:%s", tail.c_str());
+    }
+}
+
 // Every port read. The first of a pass starts a game frame: it sends this machine's input for the frame
 // `delay` ahead, then waits for the agreed inputs of the frame it's starting.
 void conker::netsession::on_port_read(int port) {
@@ -2331,6 +2496,21 @@ void conker::netsession::on_port_read(int port) {
     if (failed) {
         return;
     }
+    if (!is_host && late_join && !late_synced) {
+        // Joined a running game: until its snapshot is loaded this machine's game idles on its own, with nobody plugged
+        // in, and asks for the snapshot (again every 3 s until it has come).
+        current = FrameInputs{};
+        in_frame = true;
+        if (!peers.empty() && peers[0]->alive && (!resync_in_flight || clock::now() - resync_asked_at > std::chrono::seconds(3))) {
+            resync_in_flight = true;
+            resync_asked_at = clock::now();
+            Writer w(ResyncRequest);
+            w.put((uint32_t)0).put((uint32_t)0);
+            peers[0]->send_message(w.finish());
+            log_line("[net] asking the server for the running game's snapshot");
+        }
+        return;
+    }
     static PlayerInput::Leave pending_leave;
     // The online pause menu (net_menu.cpp). Start opens the game's own pause screen on this machine only, and while it's
     // open this player's own controller drives it and the game gets a still one: the game goes on for everyone. Only
@@ -2364,6 +2544,10 @@ void conker::netsession::on_port_read(int port) {
         const auto stick = [](float v, bool minus, bool plus) { return plus ? 80 : minus ? -80 : (int)std::lround(std::max(-1.0f, std::min(1.0f, v)) * 80.0f); };
         const int stick_x = stick(x, (buttons & 0x0200) != 0, (buttons & 0x0100) != 0);
         const int stick_y = stick(y, (buttons & 0x0400) != 0, (buttons & 0x0800) != 0);
+        if (start && !was_start && !open) {
+            log_line("[menu] f=%u Start pressed: plugged %d, in match %d (arena flag %d, game pause %d), pause allowed %d", frames_started, (int)plugged, (int)in_match,
+                ram != nullptr ? rd8(0x800BE616u) : -1, ram != nullptr ? rd8(0x800BEAC0u) : -1, (int)allow_pause);
+        }
         if (!open && !allow_pause && plugged && in_match && start && !was_start) {
             // a player slot nobody plays in: the menu reads its input from there
             int slot = -1;
@@ -2374,12 +2558,18 @@ void conker::netsession::on_port_read(int port) {
                 }
             }
             if (slot < 0) {
+                // all four players are in: the menu reads this player's own slot, put back as it was right after (net_menu.cpp)
+                slot = my_slot;
+                conker::netmenu::set_borrowed(true);
                 if (!warned) {
                     warned = true;
-                    log_line("[menu] no free player slot for the pause menu (all four players are in)");
+                    log_line("[menu] no free player slot for the pause menu (all four players are in): it uses this player's own");
                 }
             }
             else {
+                conker::netmenu::set_borrowed(false);
+            }
+            {
                 open = true;
                 at_open = (uint32_t)rd8(0x800E0B94u) & 0xFF;
                 // the variables QUIT changes, as they are now (they are put back when it's chosen, see below)
@@ -2634,7 +2824,12 @@ void conker::netsession::on_port_read(int port) {
             }
         }
     }
-    if (is_host) {
+    if (is_host && dedicated) {
+        // no player here: only this machine's notes of finished sounds go in for the frame (slot 0's input comes from the leader)
+        host_notes[f + delay] = mine.ended;
+        try_broadcast();
+    }
+    else if (is_host) {
         host_store_input(0, f + delay, mine);
     }
     else if (!peers.empty()) {
@@ -2708,14 +2903,23 @@ void conker::netsession::on_port_read(int port) {
     const auto began = clock::now();
     while (ready.find(f) == ready.end() && !failed) {
         // (the machines start the game a little apart: the first frames wait longer)
-        const auto limit = frames_started < 900 ? std::chrono::seconds(45) : (is_host ? host_waits_for_player : client_waits_for_host);
+        auto limit = frames_started < 900 ? std::chrono::seconds(45) : (is_host ? host_waits_for_player : client_waits_for_host);
+        if (is_host && dedicated) {
+            // a player that joined a running game and is still loading its snapshot (several at once on a slow or busy computer take
+            // a while) is waited for longer: dropping it only makes it ask again
+            for (int s = 0; s < max_players; s++) {
+                if (connected[s] && !input_since_join[s] && joining_since[s] != clock::time_point{} && clock::now() - joining_since[s] < std::chrono::seconds(60)) {
+                    limit = std::chrono::seconds(45);
+                }
+            }
+        }
         if (cv.wait_for(lock, std::chrono::milliseconds(250)) == std::cv_status::timeout) {
             if (clock::now() - began > limit) {
                 if (is_host) {
                     // Whoever hasn't sent its input for this frame is dropped; the game goes on without it.
                     const auto it = inbox.find(next_broadcast);
-                    for (int s = 1; s < max_players; s++) {
-                        if (connected[s] && (it == inbox.end() || !it->second[s].first)) {
+                    for (int s = dedicated ? 0 : 1; s < max_players; s++) {
+                        if (required_at(s, next_broadcast) && (it == inbox.end() || !it->second[s].first)) {
                             log_line("[net] player %d stopped answering, dropped", s + 1);
                             connected[s] = false;
                             for (auto& peer : peers) {
@@ -2746,6 +2950,11 @@ void conker::netsession::on_port_read(int port) {
     if (ms > 50.0) {
         stalls++;
     }
+    if (dedicated && is_host && f % 600 == 0) {
+        static clock::time_point server_began = clock::now();
+        log_line("[server] frame %u after %.1f s (%.1f frames a second on average)", f, std::chrono::duration<double>(clock::now() - server_began).count(),
+            (double)f / std::max(0.001, std::chrono::duration<double>(clock::now() - server_began).count()));
+    }
     if (f % 600 == 0) {
         log_line("[net] frame %u: waited %.1f ms on average (%llu longer than 50 ms), %llu desyncs", f,
             waited_ms / (double)std::max<uint64_t>(waited_frames, 1), (unsigned long long)stalls, (unsigned long long)desyncs);
@@ -2769,6 +2978,7 @@ void conker::netsession::on_port_read(int port) {
             set8(0x8008FD9Cu, lv.fd9c);
             set8(0x8008FE2Cu, lv.fe2c);
             set8(0x80087270u, lv.v7270);
+            last_quit_frame = f;
             log_line("[net] f=%u player %d chose QUIT: back to the multiplayer menu", f, slot + 1);
             conker::notices::show((name_of(slot) + " ended the match").c_str());
         }
@@ -2794,6 +3004,12 @@ void conker::netsession::on_port_read(int port) {
     if (f % 30 == 0) {
         log_line("[inputs] f=%u p1=%d:%04X,%g,%g p2=%d:%04X,%g,%g", f, (int)current.p[0].plugged, (unsigned)current.p[0].buttons, (double)current.p[0].x, (double)current.p[0].y,
             (int)current.p[1].plugged, (unsigned)current.p[1].buttons, (double)current.p[1].x, (double)current.p[1].y);
+    }
+    if (f % 30 == 0) {
+        // players 3 and 4 as well (the 4-player test: one camera swayed the whole session): their input and their camera turn
+        log_line("[inputs34] f=%u p3=%d:%04X,%g,%g,cam%d:%d,%d p4=%d:%04X,%g,%g,cam%d:%d,%d", f,
+            (int)current.p[2].plugged, (unsigned)current.p[2].buttons, (double)current.p[2].x, (double)current.p[2].y, (int)current.p[2].cam_on, (int)current.p[2].cam_yaw, (int)current.p[2].cam_pitch,
+            (int)current.p[3].plugged, (unsigned)current.p[3].buttons, (double)current.p[3].x, (double)current.p[3].y, (int)current.p[3].cam_on, (int)current.p[3].cam_yaw, (int)current.p[3].cam_pitch);
     }
     if (f % 10 == 0 && ram != nullptr) {
         // Where the two players are and a pointer-free hash of each object, to compare the logs of both machines.
@@ -2827,7 +3043,7 @@ void conker::netsession::on_port_read(int port) {
     // answering, and says so in the frame's inputs): every machine says so, as the same frame comes round for all.
     {
         static bool was_plugged[max_players] = {};
-        for (int s = 1; s < max_players; s++) {
+        for (int s = dedicated ? 0 : 1; s < max_players; s++) {
             const bool now = current.p[s].plugged != 0;
             if (was_plugged[s] && !now) {
                 conker::notices::show(name_of(s) + " left the match");
@@ -2846,7 +3062,7 @@ bool conker::netsession::input(int port, bool* plugged, uint16_t* buttons, float
         return false;
     }
     const PlayerInput& in = current.p[port];
-    *plugged = in.plugged != 0;
+    *plugged = dedicated || in.plugged != 0;   // a dedicated server's game always has all its controllers; an empty slot's is still
     *buttons = in.buttons;
     // The game stops everything while it's paused, and every machine has to go on together, so online the Start
     // button doesn't pause during a match (the multiplayer arenas, D_800BE616 set; D_800BEAC0 is the game's pause).
@@ -2907,6 +3123,11 @@ bool conker::netsession::device_present(int controller, bool* present) {
     if (!enabled || failed || controller < 0 || controller >= max_players) {
         return false;
     }
+    if (dedicated) {
+        // all the controllers are always plugged in (a console has no hot-plugging); whoever isn't playing holds a still one
+        *present = true;
+        return true;
+    }
     if (!started) {
         *present = controller == 0;
         return true;
@@ -2929,6 +3150,8 @@ namespace {
             // On the game's idle thread, at the safe point the state was taken at.
             uint32_t at_frame;
             uint32_t mask;
+            std::vector<std::vector<uint8_t>> catch_up;   // the frames from the snapshot's on, for whoever is joining
+            uint32_t joiners = 0;
             if (ok) {
                 conker::mouse_camera::reset();   // (at the safe point; the machine that loads it does the same)
             }
@@ -2939,13 +3162,32 @@ namespace {
                 snapshot_wanted_mask = 0;
                 capture_in_flight = false;
                 last_snapshot_sent = clock::now();
+                if (ok) {
+                    for (int s = 0; s < max_players; s++) {
+                        if ((mask & (1u << s)) && connected[s] && joining[s]) {
+                            joiners |= 1u << s;
+                            join_from[s] = next_broadcast;   // the game waits for this player's input from this frame on
+                        }
+                    }
+                    if (joiners != 0) {
+                        for (auto it = ready.lower_bound(at_frame > 0 ? at_frame - 1 : 0); it != ready.end(); ++it) {
+                            Writer fw(Frame);
+                            fw.put(it->first);
+                            for (int s = 0; s < max_players; s++) {
+                                fw.put_input(it->second.p[s]);
+                            }
+                            catch_up.push_back(fw.finish());
+                        }
+                        log_line("[net] snapshot at frame %u for joining players (mask %u): they take part from frame %u", at_frame, joiners, next_broadcast);
+                    }
+                }
             }
             if (!ok || mask == 0 || state.empty() || state.size() > snapshot_max_size) {
                 log_line("[net] the snapshot could not be taken (%s, %zu bytes)", ok ? "taken" : "the game wasn't at a safe point in time", state.size());
                 return;
             }
             // Compressing and sending take a while, so not on this thread.
-            std::thread([at_frame, mask, state = std::move(state)]() {
+            std::thread([at_frame, mask, joiners, catch_up = std::move(catch_up), state = std::move(state)]() {
                 const std::vector<uint8_t> packed = lz_compress(state.data(), state.size());
                 Writer w(Snapshot);
                 w.put(at_frame).put((uint32_t)state.size()).put((uint32_t)packed.size()).put_bytes(packed.data(), packed.size());
@@ -2960,6 +3202,11 @@ namespace {
                     }
                 }
                 for (Peer* peer : targets) {
+                    if (joiners & (1u << peer->slot)) {
+                        for (const auto& message : catch_up) {
+                            peer->send_message(message);
+                        }
+                    }
                     peer->send_message(bytes);
                 }
                 log_line("[net] snapshot of frame %u sent: %zu bytes, packed to %zu", at_frame, state.size(), packed.size());
@@ -3005,6 +3252,9 @@ namespace {
                 return;
             }
             conker::mouse_camera::reset();
+            if (late_join) {
+                late_synced = true;
+            }
             // The game goes on from the state: it was in the frame before at_frame.
             frames_started = at_frame;
             current_frame = at_frame > 0 ? at_frame - 1 : 0;

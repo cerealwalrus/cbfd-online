@@ -15,6 +15,16 @@
 
 #include "conker.hpp"
 
+
+namespace conker {
+    namespace default_settings {
+        extern const char* const general_json;
+        extern const char* const graphics_json;
+        extern const char* const camera_json;
+        extern const char* const controls_json;
+    }
+}
+
 namespace {
     // Cutscene Aspect Ratio (cutscene_aspect.cpp), on the Graphics tab.
     const std::string cutscene_aspect_id = "cutscene_aspect";
@@ -146,6 +156,61 @@ namespace {
         set_game_input_description(GameInput::DPAD_LEFT, dpad);
         set_game_input_description(GameInput::DPAD_RIGHT, dpad);
     }
+    // The settings a new player starts with (default_settings.cpp). Each flat tab file (general, graphics, camera) gets the keys it does
+    // not have yet, so a setting the player has saved is never changed, and a tab that was never saved starts with these; the controls file
+    // is only written when there is none. It runs after carry_over_moved_settings, so values moved from an old tab's file are kept.
+    void seed_defaults() {
+        const std::filesystem::path folder = recomp::get_config_path();
+        const auto read = [](const std::filesystem::path& path) {
+            std::ifstream file(path);
+            nlohmann::json json = file ? nlohmann::json::parse(file, nullptr, false) : nlohmann::json();
+            return json.is_object() ? json : nlohmann::json::object();
+        };
+        const auto write = [](const std::filesystem::path& path, const nlohmann::json& json) {
+            std::ofstream file(path, std::ios::trunc);
+            if (file) {
+                file << json.dump(4);
+            }
+        };
+        const struct { const char* id; const char* text; } flat_tabs[] = {
+            { "general", conker::default_settings::general_json },
+            { "graphics", conker::default_settings::graphics_json },
+            { "camera", conker::default_settings::camera_json },
+        };
+        for (const auto& tab : flat_tabs) {
+            try {
+                const nlohmann::json defaults = nlohmann::json::parse(tab.text, nullptr, false);
+                if (!defaults.is_object()) {
+                    continue;
+                }
+                const std::filesystem::path path = folder / (std::string(tab.id) + ".json");
+                nlohmann::json current = read(path);
+                bool changed = false;
+                for (auto it = defaults.begin(); it != defaults.end(); ++it) {
+                    if (!current.contains(it.key())) {
+                        current[it.key()] = it.value();
+                        changed = true;
+                    }
+                }
+                if (changed) {
+                    write(path, current);
+                }
+            }
+            catch (const std::exception&) {
+            }
+        }
+        try {
+            const std::filesystem::path path = folder / "controls.json";
+            if (!std::filesystem::exists(path)) {
+                const nlohmann::json defaults = nlohmann::json::parse(conker::default_settings::controls_json, nullptr, false);
+                if (defaults.is_object()) {
+                    write(path, defaults);
+                }
+            }
+        }
+        catch (const std::exception&) {
+        }
+    }
 }
 
 void conker::init_config() {
@@ -155,6 +220,7 @@ void conker::init_config() {
     }
 
     carry_over_moved_settings();
+    seed_defaults();
 
     // The General tab's rumble strength and gyro and mouse sensitivities are added by rumble.cpp and
     // look_aim.cpp instead, with the same ids, so each sits with the settings it goes with: rumble on
@@ -186,6 +252,7 @@ void conker::init_config() {
 
     recompui::config::finalize();
 }
+
 
 bool conker::graphics_config_ready() {
     // Not with --headless, which makes no menus: the game still asks for these every frame, and

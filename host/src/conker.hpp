@@ -56,6 +56,8 @@ namespace conker {
         bool switch_to_next();
         // The region a ROM file's header names ("US", "European"...); empty if it can't tell.
         std::string region_of(const std::filesystem::path& rom_path);
+        // The stored ROM in play (what a dedicated server started from the launcher loads).
+        std::filesystem::path stored_rom_path();
     }
 
     // main.cpp: why a ROM was refused.
@@ -245,6 +247,8 @@ namespace conker {
         bool is_open();
         // The controller of the player who has the menu open, in a player slot nobody uses (stick: -80 to 80).
         void set_input(int slot, uint16_t buttons, int x, int y);
+        // The menu reads the slot of a player in the game (all four are in): that slot's own input is kept and put back (net_menu.cpp).
+        void set_borrowed(bool borrowed);
     }
 
     // notices.cpp: a line in the top-left corner for a few seconds, one at a time (an unlock, a save state's
@@ -309,6 +313,7 @@ namespace conker {
             std::array<std::string, 4> names;   // their nicknames (empty: none chosen)
             std::string log_path;    // the log file the session writes (netplay_host.txt or netplay_join.txt), once open
             bool can_start = false;  // host: everybody is here
+            bool dedicated = false;  // the session is a dedicated server (slot 0 is the leader, not a host)
             bool launch = false;     // client: the host pressed Start
             std::string message;
             std::array<float, 4> ping_ms{ -1.0f, -1.0f, -1.0f, -1.0f };   // round trip to each player (a client: to the host), ms; -1: not known yet
@@ -316,6 +321,8 @@ namespace conker {
         // Text chat during a game (net_chat.cpp is its screen).
         bool chat_available();
         bool chat_send(const std::string& text);
+        // The game's fatal-error trap fired: what is known goes to the netplay log.
+        void note_halt(uint8_t* rdram, uint32_t vram, uint32_t return_address);
         // The lines the /network command shows (only on this machine): the round trip to the host (the host: to each player).
         std::vector<std::string> network_report();
         // The lines that have come in since the last call: (player slot, text).
@@ -393,6 +400,18 @@ namespace conker {
         Status status();
     }
 
+    // dedicated_server.cpp: a headless server (see docs/dedicated-server.md) that restarts after every
+    // session and stays up until it is closed.
+    namespace dserver {
+        // Launcher: starts / stops a server on this computer (stops with the launcher, too).
+        bool start(const std::string& rom_path, int port, int players, int delay, std::string* error);
+        void stop();
+        bool running();
+        // --dedicated from the command line: keeps the game running as a child, restarting it when it ends.
+        // Returns an exit code, or -1 where there is no supervisor (run the game in this process).
+        int supervise();
+    }
+
     // net_lobby.cpp: the launcher's Online screen (the lobby), see net_session.cpp's lobby functions.
     namespace netlobby {
         // The Online option was chosen (from any thread).
@@ -419,6 +438,8 @@ namespace conker {
     namespace save_states {
         // At start (frontend.cpp): the keys, and the runtime's idle moment that states are taken at.
         void init();
+        // The headless server (main.cpp --dedicated): only the safe-point hook, which the online session's snapshots need.
+        void init_headless();
         // For the online session (net_session.cpp): a state of the game as bytes, or loading one, each done at
         // the next safe point (on the game's idle thread, where done is called). Both fail after a few seconds.
         // False (and done is never called) if another such job is waiting.

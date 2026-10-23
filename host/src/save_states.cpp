@@ -449,6 +449,10 @@ bool conker::save_states::net_restore(std::vector<uint8_t>&& state, std::functio
     return true;
 }
 
+void conker::save_states::init_headless() {
+    ultramodern::save_states::set_safe_point_callback(on_safe_point);
+}
+
 void conker::save_states::init() {
     ultramodern::save_states::set_safe_point_callback(on_safe_point);
     SDL_AddEventWatch(watch_keys, nullptr);

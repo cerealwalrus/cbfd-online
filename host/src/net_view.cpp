@@ -13,6 +13,7 @@
 //  - the other cameras' passes get a scissor with no area, so what they draw is not seen.
 // CONKER_NET_VIEW=split turns this off (the game's split screen is shown).
 
+#include <set>
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -35,6 +36,32 @@
 #include "conker.hpp"
 
 namespace {
+    // The look kinds (+0x23E of the look camera) in which the screen-space sprites are moved down with the full view: the rocket launcher's
+    // (0x16) and the sniper scope's (0x24: what the log showed while aiming it; CONKER_NET_SPRITE_KINDS="16,15" (hex, comma-separated) replaces the list to try others).
+    const std::set<int>& sprite_kinds() {
+        static const std::set<int> kinds = []() {
+            std::set<int> out;
+            if (const char* text = std::getenv("CONKER_NET_SPRITE_KINDS")) {
+                const char* p = text;
+                while (*p != 0) {
+                    char* end = nullptr;
+                    const long v = std::strtol(p, &end, 16);
+                    if (end == p) {
+                        p++;
+                        continue;
+                    }
+                    out.insert((int)v);
+                    p = end;
+                }
+            }
+            if (out.empty()) {
+                out = { 0x16, 0x24 };
+            }
+            return out;
+        }();
+        return kinds;
+    }
+
     constexpr gpr cameras_pointer = (gpr)(int32_t)0x800BE628;
     constexpr gpr layout_variable = (gpr)(int32_t)0x80082FA0;   // D_80082FA0: players - 1
     constexpr uint32_t camera_size = 0x180;
@@ -178,7 +205,7 @@ namespace {
 
     // A copy of the viewport at `address` with its centre moved down by `shift` (in the viewport's own units, 4 to a
     // pixel), in our own memory; returns where the copy is.
-    uint32_t shifted_viewport_copy(uint8_t* rdram, uint32_t address, int32_t shift) {
+    uint32_t shifted_viewport_copy(uint8_t* rdram, uint32_t address, int32_t shift, int32_t shift_x) {
         const uint32_t copy = 0x80000000u | (viewport_start + (viewport_next % viewport_slots) * 16u);
         viewport_next++;
         for (int w = 0; w < 4; w++) {
@@ -186,7 +213,8 @@ namespace {
         }
         const uint32_t translation = (uint32_t)MEM_W(8, (gpr)(int32_t)copy);   // x (high half) and y (low half)
         const int32_t y = (int16_t)(translation & 0xFFFFu) + shift;
-        MEM_W(8, (gpr)(int32_t)copy) = (int32_t)((translation & 0xFFFF0000u) | ((uint32_t)y & 0xFFFFu));
+        const int32_t x = (int16_t)(translation >> 16) + shift_x;
+        MEM_W(8, (gpr)(int32_t)copy) = (int32_t)(((uint32_t)x << 16) | ((uint32_t)y & 0xFFFFu));
         return copy;
     }
 
@@ -281,6 +309,9 @@ namespace {
         // the middle is the full-screen view's
         const int32_t hud_shift = (int32_t)(int16_t)((uint32_t)MEM_W(field_viewports + 8, (gpr)(int32_t)full) & 0xFFFFu) -
             (int32_t)(int16_t)((uint32_t)MEM_W(field_viewports + 8, (gpr)(int32_t)own) & 0xFFFFu);
+        // (and sideways: the same, from the translation's high half; nothing with the two players' halves, which are as wide as the screen)
+        const int32_t hud_shift_x = (int32_t)(int16_t)((uint32_t)MEM_W(field_viewports + 8, (gpr)(int32_t)full) >> 16) -
+            (int32_t)(int16_t)((uint32_t)MEM_W(field_viewports + 8, (gpr)(int32_t)own) >> 16);
         // a one-time dump (the fourth logged frame, in play) of every command in the HUD passes, to see how the icons and
         // the health bars are drawn
         static int logged_frames = 0;
@@ -295,6 +326,9 @@ namespace {
         // The rocket launcher's look (kind 0x16 of this machine's player's camera): the green overlay it draws is a rectangle as large as the
         // camera's own, placed for the split screen's half and not moved with the view. It is hidden (below).
         bool rocket_look = false;
+        int local_kind = 0;
+        bool remote_sniper = false;   // another player is aiming the sniper (its laser's sprite is the other machine's to place: logged)
+        bool sprite_look = false;   // a look whose sprites are moved with the view (see sprite_kinds)
         unsigned rocket_mask = 0;   // every player whose look is the rocket launcher's
         {
             // (the look cameras, another array than the view's: pointer at 0x800DBFF0, 0x9A0 apart, the player at +0x23D, the look's kind at +0x23E)
@@ -302,6 +336,19 @@ namespace {
             if ((look_base >> 24) == 0x80 && (look_base & 0x7FFFFFu) < 0x7F0000u) {
                 for (int k = 0; k < 4; k++) {
                     const gpr record = (gpr)(int32_t)(look_base + (uint32_t)k * 0x9A0u);
+                    if ((int)MEM_BU(0x23D, record) == local && MEM_BU(0x23E, record) != 0) {
+                        // This machine's look (a player can have more than one record: the one with a kind is the look in use). The kind is
+                        // logged when it changes, and the looks listed in sprite_kinds() have the game's screen-space sprites (the rocket's
+                        // explosion, the sniper laser's star) moved with the view, as the rocket launcher's are.
+                        const int kind_now = (int)MEM_BU(0x23E, record);
+                        if (sprite_kinds().count(kind_now) != 0) {
+                            sprite_look = true;
+                        }
+                        local_kind = kind_now;
+                    }
+                    if ((int)MEM_BU(0x23D, record) != local && (int)MEM_BU(0x23D, record) < 4 && sprite_kinds().count((int)MEM_BU(0x23E, record)) != 0 && MEM_BU(0x23E, record) != 0x16) {
+                        remote_sniper = true;
+                    }
                     if (MEM_BU(0x23E, record) == 0x16 && (int)MEM_BU(0x23D, record) < 4) {
                         rocket_mask |= 1u << (int)MEM_BU(0x23D, record);
                         if ((int)MEM_BU(0x23D, record) == local) {
@@ -309,6 +356,15 @@ namespace {
                         }
                     }
                 }
+            }
+        }
+        {
+            static int logged_kind = -1;
+            if (local_kind != logged_kind) {
+                logged_kind = local_kind;
+                char line[120];
+                std::snprintf(line, sizeof(line), "[net view] this machine's look kind is now %02X", local_kind);
+                conker::netsession::log(line);
             }
         }
         for (int ovp = 0; ovp < 4; ovp++) if (((rocket_mask >> ovp) & 1u) != 0) {
@@ -455,8 +511,8 @@ namespace {
                     (w1 >= full + field_viewports && w1 < full + field_viewports + 0x40))) {
                 const bool own_viewport = w1 < own + field_viewports + 0x40 && w1 >= own + field_viewports;
                 const uint32_t target = own_viewport ? w1 - own + full : w1;
-                if (inside(hud_segments, address) && hud_shift != 0) {
-                    MEM_W(4, (gpr)(int32_t)address) = (int32_t)shifted_viewport_copy(rdram, target, hud_shift);
+                if (inside(hud_segments, address) && (hud_shift != 0 || hud_shift_x != 0)) {
+                    MEM_W(4, (gpr)(int32_t)address) = (int32_t)shifted_viewport_copy(rdram, target, hud_shift, hud_shift_x);
                 } else if (own_viewport) {
                     MEM_W(4, (gpr)(int32_t)address) = (int32_t)target;
                 }
@@ -527,7 +583,7 @@ namespace {
                 // The radar (a grey circle, 32 x 32 in the game's screen, and its dot) at each camera's top right: with two
                 // players only this machine's player's is shown, at the full view's top right.
                 int radar_camera = -1;
-                if (bar && players == 2 && width <= 34.5f && height <= 34.5f) {
+                if (bar && players >= 2 && width <= 34.5f && height <= 34.5f) {
                     for (int k = 0; k < players; k++) {
                         const uint32_t record = base + k * camera_size;
                         const float r_right = get_float(rdram, record, field_right), r_top = get_float(rdram, record, field_top);
@@ -546,6 +602,7 @@ namespace {
                     }
                 } else if (radar_camera >= 0) {
                     if (radar_camera == local) {
+                        dx = (int32_t)((right - get_float(rdram, own, field_right)) * 4.0f);
                         dy = (int32_t)((top - own_t) * 4.0f);
                         kind_name = "radar or weapon";
                     } else {
@@ -555,6 +612,7 @@ namespace {
                 } else if (leave) {
                     kind_name = "left alone";
                 } else if (!bar && std::fabs(cy - (own_t + own_b) * 0.5f) < 40.0f && std::fabs(cx - (own_l + own_r) * 0.5f) < 48.0f && in_rect(own_l, own_t, own_r, own_b)) {
+                    dx = hud_shift_x;
                     dy = hud_shift;
                     kind_name = "aim";
                 } else if (!bar && cy >= 0.5f * (top + bottom) - 10.0f && cy <= 0.5f * (top + bottom) + 8.0f) {
@@ -574,6 +632,7 @@ namespace {
                 } else if (!bar && cx >= own_l + 30.0f && cx <= own_r - 30.0f && cy >= own_t + 8.0f && cy <= own_b - 8.0f) {
                     // inside the camera's rectangle and away from its edges (the rocket's explosion): placed by the game in the rectangle's
                     // pixels, at the view's middle with the aim, so it moves down with the aim and not out to a corner
+                    dx = hud_shift_x;
                     dy = hud_shift;
                     kind_name = "world sprite";
                     static int world_logged = 0;
@@ -618,7 +677,26 @@ namespace {
                     }
                 }
             }
-            if (rocket_look && hud_layout && !menu_open && !nested && op == 0x64 && (w0 & 0x00FFFFFFu) == 0x000002u && hud_shift != 0 &&
+            if (remote_sniper && op == 0x64 && (w0 & 0x00FFFFFFu) == 0x000002u && address + 16 < range.to) {
+                static int sprite_lines = 0;
+                if (sprite_lines < 400) {
+                    // which pass of the frame the sprite is in, and where it is (10.2 fixed point): to find out what moves the other player's laser star
+                    int pass = -1;
+                    for (size_t i = 0; i < frame.size(); i++) {
+                        if (frame[i].gfx <= address) {
+                            pass = (int)i;
+                        }
+                    }
+                    const uint32_t c0 = (uint32_t)MEM_W(8, (gpr)(int32_t)address), c1 = (uint32_t)MEM_W(12, (gpr)(int32_t)address);
+                    char line[200];
+                    std::snprintf(line, sizeof(line), "[net view] remote sniper: sprite %08X in pass %d (camera %d, kind %d, local %d): w1 %08X, corners x %d..%d y %d..%d (quarter pixels), local look %02X",
+                        address, pass, pass >= 0 ? frame[pass].camera : -1, pass >= 0 ? frame[pass].kind : -1, local, (uint32_t)w1,
+                        (int)(int16_t)(c0 >> 16), (int)(int16_t)(c1 >> 16), (int)(int16_t)(c0 & 0xFFFF), (int)(int16_t)(c1 & 0xFFFF), local_kind);
+                    conker::netsession::log(line);
+                    sprite_lines++;
+                }
+            }
+            if ((rocket_look || sprite_look || remote_sniper) && hud_layout && !menu_open && !nested && op == 0x64 && (w0 & 0x00FFFFFFu) == 0x000002u && (hud_shift != 0 || hud_shift_x != 0) &&
                     inside(local_world_passes, address) && address + 16 < range.to) {
                 // The game's screen-space sprites (func_15130A9C: the rocket's explosion, sparkles, bees) are emitted as RT64's extended texture
                 // rectangle (widescreen.cpp): this word, then the corners (x, y, x, y: 10.2 fixed point, 16 bits each), then the texture words. The
@@ -626,9 +704,10 @@ namespace {
                 const uint32_t c0 = (uint32_t)MEM_W(8, (gpr)(int32_t)address), c1 = (uint32_t)MEM_W(12, (gpr)(int32_t)address);
                 const int32_t uly = (int32_t)(int16_t)(c0 & 0xFFFFu), lry = (int32_t)(int16_t)(c1 & 0xFFFFu);
                 const int32_t nuly = uly + hud_shift, nlry = lry + hud_shift;
-                if (nuly >= -0x8000 && nuly <= 0x7FFF && nlry >= -0x8000 && nlry <= 0x7FFF) {
-                    MEM_W(8, (gpr)(int32_t)address) = (int32_t)((c0 & 0xFFFF0000u) | ((uint32_t)nuly & 0xFFFFu));
-                    MEM_W(12, (gpr)(int32_t)address) = (int32_t)((c1 & 0xFFFF0000u) | ((uint32_t)nlry & 0xFFFFu));
+                const int32_t nulx = (int32_t)(int16_t)(c0 >> 16) + hud_shift_x, nlrx = (int32_t)(int16_t)(c1 >> 16) + hud_shift_x;
+                if (nuly >= -0x8000 && nuly <= 0x7FFF && nlry >= -0x8000 && nlry <= 0x7FFF && nulx >= -0x8000 && nulx <= 0x7FFF && nlrx >= -0x8000 && nlrx <= 0x7FFF) {
+                    MEM_W(8, (gpr)(int32_t)address) = (int32_t)(((uint32_t)nulx << 16) | ((uint32_t)nuly & 0xFFFFu));
+                    MEM_W(12, (gpr)(int32_t)address) = (int32_t)(((uint32_t)nlrx << 16) | ((uint32_t)nlry & 0xFFFFu));
                 }
             }
             if (rocket_look && (op == 0xE4 || op == 0xE5) &&
