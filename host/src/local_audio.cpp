@@ -207,8 +207,9 @@ namespace {
     // a sound on the first player's character while the game is running another player's character is that player's. In the
     // moving sounds' list, gCurrentObject means nothing: a delayed sound's owner is the one it was asked for by.
     uint32_t owner_of(uint8_t* rdram, uint32_t object, uint32_t sound) {
+        (void)rdram;
         if (!in_list) {
-            return owner_by_current(rdram, object);
+            return object;   // (0.9.23's log: the pickups are played on the picker's own character; no guessing from the game's loop)
         }
         int match = -1;
         for (int i = 0; i < 32; i++) {
@@ -293,7 +294,7 @@ namespace {
         delayed_next++;
         d.object = object;
         d.sound = (uint32_t)ctx->r4 & 0xFFFFu;
-        d.owner = owner_by_current(rdram, object);
+        d.owner = object;
     }
 
     // Listener k alone in the game's table while `call` runs; the table is as it was afterwards.
@@ -615,6 +616,22 @@ namespace {
             }
             return;
         }
+        if (ra == from_no_place && outer == 0x151007B4u) {
+            // func_15100600 (the sniper rifle's laser dot, for a character with a look camera): its sound with no place. The
+            // character's index in gObjects is at 0x2D9 of its frame (0x28 above func_10010F30's).
+            const uint32_t index = (uint32_t)MEM_BU(0, (gpr)(int32_t)(sp + 0x50 + 0x28 + 0x2D9));
+            const uint32_t holder = index < 25 ? 0x800CC2D0u + index * 0x32Cu : 0;
+            const int holder_player = holder != 0 ? character_player(rdram, holder) : -1;
+            const int k_now = local_listener(rdram);
+            if (k_now >= 0 && holder_player >= 0 && holder_player != conker::netsession::local_slot()) {
+                uint32_t volume = 0, pan = 0x40;
+                set_source(ra, (int)float_at(rdram, holder + 0x14), (int)float_at(rdram, holder + 0x18), (int)float_at(rdram, holder + 0x1C), 3u);
+                character_sound(rdram, ctx, k_now, holder, (uint32_t)ctx->r6 & 0xFFFFu, 500, 4501, &volume, &pan);
+                ctx->r6 = (gpr)(int32_t)volume;
+                ctx->r7 = (gpr)(int32_t)pan;
+            }
+            return;
+        }
         const bool no_place = ra == from_no_place && outer == no_place_character;
         if (no_place) {
             // (a test: who calls func_10010630 for these, and what it has in $s0 and $s1, saved in func_10010630's frame at 0x34 and 0x38)
@@ -841,6 +858,21 @@ extern "C" void conker_local_audio(uint8_t* rdram, recomp_context* ctx, int whic
         case 17:
             on_set_value(rdram, ctx);
             return;
+        case 19: {
+            // n_alSynStartVoiceParams begins (the audio thread): from the music player (__n_CSPHandleMIDIMsg), its note's volume ($a3)
+            // and pan (0x10($sp)); the sound player's own starts are logged elsewhere
+            static std::atomic<int> notes{ 0 };
+            const uint32_t from = (uint32_t)ctx->r31;
+            if (from >= 0x1001415Cu && from < 0x1001415Cu + 0xEE8u && conker::netsession::active() && notes.load() < 1500) {
+                notes.fetch_add(1);
+                char line[180];
+                std::snprintf(line, sizeof(line), "[snd] f=%u a voice started from %08X: volume %d pan %u, wave %08X", (unsigned)conker::netsession::frame(),
+                              (unsigned)from, (int)(int16_t)((uint32_t)ctx->r7 & 0xFFFFu), (unsigned)(word(rdram, (uint32_t)ctx->r29 + 0x10) & 0xFFu),
+                              (unsigned)(uint32_t)ctx->r5);
+                conker::netsession::log(line);
+            }
+            return;
+        }
         case 18: {
             // func_10017438 (the sound player's start) begins: from _n_handleEvent (the audio thread: a sound's next part), logged
             if ((uint32_t)ctx->r31 == 0x10016DCCu && conker::netsession::active()) {
