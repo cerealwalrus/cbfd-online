@@ -876,6 +876,11 @@ extern "C" void conker_local_audio(uint8_t* rdram, recomp_context* ctx, int whic
             // and pan (0x10($sp)); the sound player's own starts are logged elsewhere
             static std::atomic<int> notes{ 0 };
             const uint32_t from = (uint32_t)ctx->r31;
+            // (a test, 0.9.27: online, the music player's notes are silent, to tell whether the other players' bullet impacts that are
+            // still heard come from the music player or from the sound player)
+            if (from >= 0x1001415Cu && from < 0x1001415Cu + 0xEE8u && conker::netsession::active()) {
+                ctx->r7 = 0;
+            }
             // (0.9.24: the music player's notes are the music only. Now the sound player's voices: their volume, pan and effects send,
             // to see whether a sound started at volume 0 still reaches the speakers)
             const bool sound_player = from >= 0x10015944u && from < 0x10015944u + 0x154Cu;
@@ -886,6 +891,17 @@ extern "C" void conker_local_audio(uint8_t* rdram, recomp_context* ctx, int whic
                               (int)(int16_t)((uint32_t)ctx->r7 & 0xFFFFu), (unsigned)(word(rdram, (uint32_t)ctx->r29 + 0x10) & 0xFFu),
                               (unsigned)(word(rdram, (uint32_t)ctx->r29 + 0x14) & 0xFFu), (unsigned)(uint32_t)ctx->r5);
                 conker::netsession::log(line);
+            }
+            return;
+        }
+        case 20: {
+            // n_alSynSetVol begins (the audio thread): online, from the music player (__n_CSPHandleMIDIMsg, __n_CSPVoiceHandler,
+            // __n_seqpReleaseVoice), the volume is 0 too (the 0.9.27 test above)
+            const uint32_t from = (uint32_t)ctx->r31;
+            const bool music = (from >= 0x1001415Cu && from < 0x1001415Cu + 0xEE8u) || (from >= 0x10013598u && from < 0x10013598u + 0xAB0u) ||
+                               (from >= 0x1001ABA0u && from < 0x1001ABA0u + 0x204u);
+            if (music && conker::netsession::active()) {
+                ctx->r5 = 0;
             }
             return;
         }
