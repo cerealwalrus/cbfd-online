@@ -392,10 +392,26 @@ namespace {
     }
 
     // Sends this machine's volume and pan for a playing sound when they aren't what it was last given.
+    // (a test: every volume this machine's code sends, with what sent it)
+    void log_send(uint8_t* rdram, const char* who, uint32_t handle, uint32_t what, uint32_t value) {
+        static int logged = 0;
+        if (logged < 6000 && what == 8) {
+            logged++;
+            char line[140];
+            std::snprintf(line, sizeof(line), "[snd] f=%u %s sets the volume of %04X to %u", (unsigned)conker::netsession::frame(), who, (unsigned)handle,
+                          (unsigned)value);
+            conker::netsession::log(line);
+        }
+        (void)rdram;
+    }
+
+    const char* send_who = "?";
+
     void send_if_changed(uint8_t* rdram, recomp_context* ctx, uint32_t handle, uint32_t volume, uint32_t pan) {
         Sent& s = sent[handle & 0xFu];
         const bool known = s.handle == (uint16_t)handle;
         if (!known || s.volume != volume) {
+            log_send(rdram, send_who, handle, 8, volume);
             set_sound_value(rdram, ctx, handle, 8, volume);
         }
         if (!known || s.pan != pan) {
@@ -724,9 +740,18 @@ namespace {
             Sent& s = sent[handle & 0xFu];
             if (s.handle != (uint16_t)handle) {
                 remember_sent(handle, f.first_volume, f.first_pan);   // its first frame: what it was started with
+                static int logged_follow = 0;
+                if (logged_follow < 3000) {
+                    logged_follow++;
+                    char line[160];
+                    std::snprintf(line, sizeof(line), "[snd] f=%u following %04X on %08X (field %X): started at %u, near %d far %d", (unsigned)conker::netsession::frame(),
+                                  (unsigned)handle, (unsigned)f.object, (unsigned)f.field, (unsigned)f.first_volume, (int)f.near_distance, (int)f.far_distance);
+                    conker::netsession::log(line);
+                }
             }
             uint32_t volume = 0, pan = 0x40;
             character_sound(rdram, ctx, k, f.owner, f.volume, f.near_distance, f.far_distance, &volume, &pan);
+            send_who = "the follow-up of a character's sound";
             send_if_changed(rdram, ctx, handle, volume, pan);
         }
     }
@@ -927,6 +952,8 @@ extern "C" void conker_local_audio(uint8_t* rdram, recomp_context* ctx, int whic
             return;
         }
         case 9:
+            log_send(rdram, list_entry.ready && list_entry.entry == (uint32_t)ctx->r16 ? "the moving list (game's, this machine's value)" : "the moving list (game's own value)",
+                     (uint32_t)ctx->r18 & 0xFFFFu, 8, list_entry.ready && list_entry.entry == (uint32_t)ctx->r16 ? list_entry.volume : (uint32_t)ctx->r11);
             if (list_entry.ready && list_entry.entry == (uint32_t)ctx->r16) {
                 ctx->r11 = (gpr)(int32_t)list_entry.volume;
                 Sent& s = sent[(uint32_t)ctx->r18 & 0xFu];
@@ -947,6 +974,7 @@ extern "C" void conker_local_audio(uint8_t* rdram, recomp_context* ctx, int whic
         case 11: {
             const uint32_t handle = (uint32_t)ctx->r18 & 0xFFFFu;
             if (list_entry.ready && list_entry.entry == (uint32_t)ctx->r16 && slot_has(rdram, handle)) {
+                send_who = "the moving list (hook 11)";
                 send_if_changed(rdram, ctx, handle, list_entry.volume, list_entry.pan);
             }
             return;
@@ -1032,6 +1060,10 @@ extern "C" void conker_local_audio(uint8_t* rdram, recomp_context* ctx, int whic
             pending.pan = pan & 0x7Fu;
             log_change(2, "a sound played at a point", (base_volume * game_volume) >> 15, game_pan, pending.volume, pan, (int16_t)x, (int16_t)y, (int16_t)z);
         } else {
+            if (which == 0) {
+                // (func_1000F91C's handle is its first argument, at 0x30 of its frame; it sends (its volume argument x this) >> 15)
+                log_send(rdram, "func_1000F91C (a playing sound at a point; the attenuation)", half(rdram, sp + 0x32), 8, volume);
+            }
             ctx->r2 = (gpr)(int32_t)volume;
             put_word(rdram, pan_address, pan);
             log_change(which, which == 0 ? "a playing sound's volume" : "a playing sound's pan", game_volume, game_pan, volume, pan, (int16_t)x, (int16_t)y, (int16_t)z);
