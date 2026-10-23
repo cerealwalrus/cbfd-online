@@ -185,10 +185,52 @@ namespace {
         return (int)MEM_BU(look_player, (gpr)(int32_t)record);
     }
 
+    // Delayed sounds (func_10010558, func_10010720: an entry of the moving sounds' list whose callback plays the sound on the
+    // object later, from func_10011624, when gCurrentObject is just the last object the game ran): whose they were, from when
+    // they were asked for.
+    struct Delayed {
+        uint32_t object = 0;
+        uint32_t sound = 0;
+        uint32_t owner = 0;
+    };
+    Delayed delayed[32];
+    unsigned delayed_next = 0;
+    bool in_list = false;   // func_10011624 is running
+
+    uint32_t owner_by_current(uint8_t* rdram, uint32_t object);
+
     // The character a sound on `object` is heard from. The game plays some sounds of whoever is acting on the first player's
     // character (gObjects[0]: a single player's habit, the split screen's sounds being everybody's), such as the weapon pickups:
-    // a sound on the first player's character while the game is running another player's character is that player's.
-    uint32_t owner_of(uint8_t* rdram, uint32_t object) {
+    // a sound on the first player's character while the game is running another player's character is that player's. In the
+    // moving sounds' list, gCurrentObject means nothing: a delayed sound's owner is the one it was asked for by.
+    uint32_t owner_of(uint8_t* rdram, uint32_t object, uint32_t sound) {
+        if (!in_list) {
+            return owner_by_current(rdram, object);
+        }
+        int match = -1;
+        for (int i = 0; i < 32; i++) {
+            const int at = (int)((delayed_next + 31u - (unsigned)i) % 32u);   // the newest first
+            if (delayed[at].object == object && delayed[at].object != 0) {
+                if (delayed[at].sound == sound) {
+                    match = at;
+                    break;
+                }
+                if (match < 0) {
+                    match = at;
+                }
+            }
+        }
+        if (match < 0) {
+            return object;
+        }
+        const uint32_t owner = delayed[match].owner;
+        if (delayed[match].sound == sound) {
+            delayed[match].object = 0;
+        }
+        return owner;
+    }
+
+    uint32_t owner_by_current(uint8_t* rdram, uint32_t object) {
         if (character_player(rdram, object) == 0) {
             const uint32_t current = word(rdram, current_object);
             if (current != object && character_player(rdram, current) > 0) {
@@ -196,6 +238,24 @@ namespace {
             }
         }
         return object;
+    }
+
+    // func_1000FA64 (put an entry on the moving sounds' list) begins: from func_10010558 or func_10010720, a delayed sound on the
+    // object at 0x24($sp) (its caller's frame: func_1000FA64 hasn't made its own), whose owner is noted.
+    void on_list_add(uint8_t* rdram, recomp_context* ctx) {
+        const uint32_t ra = (uint32_t)ctx->r31;
+        if (ra != 0x1001061Cu && ra != 0x100107E4u) {
+            return;
+        }
+        const uint32_t object = word(rdram, (uint32_t)ctx->r29 + 0x24);
+        if (character_player(rdram, object) < 0) {
+            return;
+        }
+        Delayed& d = delayed[delayed_next % 32u];
+        delayed_next++;
+        d.object = object;
+        d.sound = (uint32_t)ctx->r4 & 0xFFFFu;
+        d.owner = owner_by_current(rdram, object);
     }
 
     // Listener k alone in the game's table while `call` runs; the table is as it was afterwards.
@@ -316,9 +376,10 @@ namespace {
     // starts and every 25th, with the volume and pan the sound player gets and where the sound is, when that is known.)
     struct Census {
         uint32_t ra = 0, outer = 0, sound = 0;
+        int who = -2;   // the player whose character the game is running (-1: none)
         unsigned count = 0;
     };
-    Census census[192];
+    Census census[320];
     bool source_known = false;
     uint32_t source_ra = 0;    // the start it is for (func_10010BE8's return address)
     int source_x = 0, source_y = 0, source_z = 0;
@@ -338,8 +399,9 @@ namespace {
     void count_start(uint8_t* rdram, const char* what, uint32_t ra, uint32_t outer, uint32_t sound, uint32_t game_volume, uint32_t game_pan,
                      uint32_t volume, uint32_t pan, uint32_t object, int player) {
         Census* c = nullptr;
+        const int who = character_player(rdram, word(rdram, 0x800D154C));
         for (Census& entry : census) {
-            if ((entry.ra == ra && entry.outer == outer && entry.sound == sound) || entry.ra == 0) {
+            if ((entry.ra == ra && entry.outer == outer && entry.sound == sound && entry.who == who) || entry.ra == 0) {
                 c = &entry;
                 break;
             }
@@ -352,6 +414,7 @@ namespace {
         c->ra = ra;
         c->outer = outer;
         c->sound = sound;
+        c->who = who;
         c->count++;
         if (c->count <= 2 || c->count % 25 == 0) {
             // (and the object the game is running, gCurrentObject: a sound with no place may still be a character's doing)
@@ -469,12 +532,27 @@ namespace {
             }
             return;
         }
+        if (ra == from_no_place && (outer == 0x15127730u || outer == 0x1512777Cu)) {
+            // func_15127520, the list's callback for the sniper rifle's laser: its beep, with no place, in the middle at 20000. The
+            // entry (its $s0) has the character holding the rifle at +0x18: another player's beep is heard from where that player is.
+            const uint32_t holder = word(rdram, caller_s0 + 0x18);
+            const int holder_player = character_player(rdram, holder);
+            const int k_now = local_listener(rdram);
+            if (k_now >= 0 && holder_player >= 0 && holder_player != conker::netsession::local_slot()) {
+                uint32_t volume = 0, pan = 0x40;
+                set_source(ra, (int)float_at(rdram, holder + 0x14), (int)float_at(rdram, holder + 0x18), (int)float_at(rdram, holder + 0x1C), 2u);
+                character_sound(rdram, ctx, k_now, holder, (uint32_t)ctx->r6 & 0xFFFFu, 500, 4501, &volume, &pan);
+                ctx->r6 = (gpr)(int32_t)volume;
+                ctx->r7 = (gpr)(int32_t)pan;
+            }
+            return;
+        }
         const bool no_place = ra == from_no_place && outer == no_place_character;
         if (ra != from_character && ra != from_character_loop && ra != from_play_on_object && !no_place) {
             return;
         }
         const int k = local_listener(rdram);
-        const uint32_t owner = owner_of(rdram, caller_s0);
+        const uint32_t owner = owner_of(rdram, caller_s0, (uint32_t)ctx->r5 & 0xFFFFu);
         const int player = character_player(rdram, owner);
         if (k < 0 || player < 0 || player == conker::netsession::local_slot()) {
             return;   // this machine's own player's: in the middle, at full volume, as the game plays it
@@ -597,7 +675,9 @@ namespace {
 //   9, 10: func_10011624, about to send a playing sound's volume ($t3, which the call's delay slot moves to $a2) or pan ($t5);
 //   11: func_10011624, done with a playing sound's changes (handle $s2);
 //   12: func_10011BB8 (every frame) begins;
-//   13: func_1001263C (start a streamed sound) begins.
+//   13: func_1001263C (start a streamed sound) begins;
+//   14: func_1000FA64 (put an entry on the moving sounds' list) begins;
+//   15, 16: func_10011BB8 calls func_10011624 (the moving sounds' list), and it has returned.
 extern "C" void conker_local_audio(uint8_t* rdram, recomp_context* ctx, int which) {
     const uint32_t sp = (uint32_t)ctx->r29;
     switch (which) {
@@ -612,6 +692,15 @@ extern "C" void conker_local_audio(uint8_t* rdram, recomp_context* ctx, int whic
             return;
         case 13:
             on_stream_start(rdram, ctx);
+            return;
+        case 14:
+            on_list_add(rdram, ctx);
+            return;
+        case 15:
+            in_list = true;
+            return;
+        case 16:
+            in_list = false;
             return;
         case 8: {
             const uint32_t handle = (uint32_t)ctx->r2 & 0xFFFFu;
