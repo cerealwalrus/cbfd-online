@@ -707,7 +707,9 @@ namespace {
     // request is for its point (the game sends it when the point is within 1000 of any player). With each machine's own volume,
     // another player's shot far from this one came out at volume 0 (or nearly), and it replaced this player's own gun as it fired:
     // the gun's sound stopped short. So a request this player can't hear isn't sent at all (as the game does for a shot nobody
-    // hears), and one quieter than what the layer was given in the last few frames doesn't replace it.
+    // hears), and another player's shot quieter than what the layer was given in the last few frames doesn't replace it. This player's
+    // own shots are always sent: each request plays its shot, and running, the volume of each shot of a burst was a little lower than
+    // the one before (the camera falls behind), so in 0.9.44 every other shot of a burst was held back and the gun's sound stopped short.
     uint32_t shot_layer_volume = 0;
     uint32_t shot_layer_frame = 0;
     constexpr uint32_t shot_layer_hold_frames = 8;
@@ -748,8 +750,22 @@ namespace {
             pan = p & 0x7Fu;
             const uint32_t now = (uint32_t)conker::netsession::frame();
             const bool recent = now - shot_layer_frame < shot_layer_hold_frames;
-            if (volume == 0 || (recent && volume < shot_layer_volume)) {
+            const int shooter = character_player(rdram, shot_music_object);
+            const bool own = shooter >= 0 && shooter == conker::netsession::local_slot();
+            const bool skip = !own && (volume == 0 || (recent && volume < shot_layer_volume));
+            static int logged = 0;
+            if (logged < 60) {
+                logged++;
+                char line[160];
+                std::snprintf(line, sizeof(line), "[shot layer] f=%u shooter %d (%s), volume %u (game's %u), last %u %u frames ago: %s", now, shooter,
+                    own ? "this player" : "another", volume, game_volume, shot_layer_volume, now - shot_layer_frame, skip ? "held back" : "sent");
+                conker::netsession::log(line);
+            }
+            if (skip) {
                 return false;
+            }
+            if (own && volume == 0) {
+                volume = 1;   // (this player's own shot as quiet as it gets, never silenced)
             }
             shot_layer_volume = volume;
             shot_layer_frame = now;
