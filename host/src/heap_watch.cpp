@@ -31,7 +31,6 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
-#include <map>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -72,22 +71,26 @@ namespace {
         return game_thread_known.load() && std::this_thread::get_id() != game_thread;
     }
 
-    // A pool: first fit by address in [start, end). A block is 16 bytes of header (the heap's: next and previous 0, then
-    // owner << 24 | size at the pointer - 4) and the memory, the pointer 16-aligned.
+    // A pool: first fit by address in [start, end), kept entirely in the game's memory, so that a resync (the host's memory copied
+    // to this machine) takes the pool's state with its contents. A block is 16 bytes of header and its memory, the pointer
+    // 16-aligned: +0 'USED' or 'FREE', +4 the next block (0: the last), +8 the previous one, +0xC owner << 24 | size (the heap's
+    // header layout before the pointer: next, previous, owner and size; func_100043B4 changes the owner there).
     struct Pool {
         uint32_t start;
         uint32_t end;
         const char* name;
-        std::map<uint32_t, uint32_t> free_ranges;    // start -> length
-        std::map<uint32_t, uint32_t> blocks;         // pointer -> length of the whole block (header included)
-        bool ready = false;
         uint32_t peak = 0;
-        uint32_t in_use = 0;
 
-        void init() {
-            if (!ready) {
-                free_ranges[start] = end - start;
-                ready = true;
+        static constexpr uint32_t used_mark = 0x55534544u;   // "USED"
+        static constexpr uint32_t free_mark = 0x46524545u;   // "FREE"
+
+        void init(uint8_t* rdram) const {
+            const uint32_t mark = word(rdram, start);
+            if (mark != used_mark && mark != free_mark) {
+                put_word(rdram, start, free_mark);
+                put_word(rdram, start + 4, 0);
+                put_word(rdram, start + 8, 0);
+                put_word(rdram, start + 0xC, (end - start - 0x10u) & 0xFFFFFFu);
             }
         }
 
@@ -95,53 +98,92 @@ namespace {
             return pointer >= start + 0x10u && pointer < end;
         }
 
-        uint32_t allocate(uint8_t* rdram, uint32_t size, uint32_t owner) {
-            init();
-            const uint32_t length = 0x10u + ((size + 15u) & ~15u);
-            for (auto it = free_ranges.begin(); it != free_ranges.end(); ++it) {
-                if (it->second < length) {
-                    continue;
+        static uint32_t size_of(uint8_t* rdram, uint32_t block) {
+            return word(rdram, block + 0xC) & 0xFFFFFFu;
+        }
+
+        // Calls fn(block, used) for every block, in address order.
+        template <typename F>
+        void each(uint8_t* rdram, F&& fn) const {
+            init(rdram);
+            uint32_t block = start;
+            for (int n = 0; block >= start && block < end && n < 100000; n++) {
+                const uint32_t mark = word(rdram, block);
+                if (mark != used_mark && mark != free_mark) {
+                    break;
                 }
-                const uint32_t block = it->first;
-                const uint32_t left = it->second - length;
-                free_ranges.erase(it);
-                if (left != 0) {
-                    free_ranges[block + length] = left;
+                fn(block, mark == used_mark);
+                block = word(rdram, block + 4);
+                if (block == 0) {
+                    break;
                 }
-                const uint32_t pointer = block + 0x10u;
-                blocks[pointer] = length;
-                in_use += length;
-                peak = in_use > peak ? in_use : peak;
-                put_word(rdram, pointer - 0xCu, 0);
-                put_word(rdram, pointer - 0x8u, 0);
-                put_word(rdram, pointer - 0x4u, (owner << 24) | ((length - 0x10u) & 0xFFFFFFu));
-                return pointer;
             }
-            return 0;
+        }
+
+        uint32_t allocate(uint8_t* rdram, uint32_t size, uint32_t owner) {
+            init(rdram);
+            const uint32_t need = (size + 15u) & ~15u;
+            uint32_t found = 0;
+            each(rdram, [&](uint32_t block, bool used) {
+                if (found == 0 && !used && size_of(rdram, block) >= need) {
+                    found = block;
+                }
+            });
+            if (found == 0) {
+                return 0;
+            }
+            const uint32_t have = size_of(rdram, found);
+            if (have - need >= 0x20u) {
+                // the rest stays free, as a block of its own after this one
+                const uint32_t rest = found + 0x10u + need, next = word(rdram, found + 4);
+                put_word(rdram, rest, free_mark);
+                put_word(rdram, rest + 4, next);
+                put_word(rdram, rest + 8, found);
+                put_word(rdram, rest + 0xC, (have - need - 0x10u) & 0xFFFFFFu);
+                if (next != 0) {
+                    put_word(rdram, next + 8, rest);
+                }
+                put_word(rdram, found + 4, rest);
+                put_word(rdram, found + 0xC, need);
+            }
+            put_word(rdram, found, used_mark);
+            put_word(rdram, found + 0xC, (owner << 24) | size_of(rdram, found));
+            uint32_t in_use = 0;
+            each(rdram, [&](uint32_t block, bool used) {
+                if (used) {
+                    in_use += 0x10u + size_of(rdram, block);
+                }
+            });
+            peak = in_use > peak ? in_use : peak;
+            return found + 0x10u;
         }
 
         bool release(uint8_t* rdram, uint32_t pointer) {
-            auto it = blocks.find(pointer);
-            if (it == blocks.end()) {
+            uint32_t block = pointer - 0x10u;
+            if (!owns(pointer) || word(rdram, block) != used_mark) {
                 return false;
             }
-            uint32_t block = pointer - 0x10u, length = it->second;
-            blocks.erase(it);
-            in_use -= length;
-            put_word(rdram, pointer - 0x4u, length - 0x10u);   // owner 0, as the heap marks a free block
-            auto next = free_ranges.lower_bound(block);
-            if (next != free_ranges.end() && next->first == block + length) {
-                length += next->second;
-                next = free_ranges.erase(next);
-            }
-            if (next != free_ranges.begin()) {
-                auto previous = std::prev(next);
-                if (previous->first + previous->second == block) {
-                    previous->second += length;
-                    return true;
+            put_word(rdram, block, free_mark);
+            put_word(rdram, block + 0xC, size_of(rdram, block));   // owner 0
+            // joined with the next block and the one before when they are free
+            const uint32_t next = word(rdram, block + 4);
+            if (next != 0 && word(rdram, next) == free_mark) {
+                const uint32_t after = word(rdram, next + 4);
+                put_word(rdram, block + 0xC, size_of(rdram, block) + 0x10u + size_of(rdram, next));
+                put_word(rdram, block + 4, after);
+                if (after != 0) {
+                    put_word(rdram, after + 8, block);
                 }
             }
-            free_ranges[block] = length;
+            const uint32_t previous = word(rdram, block + 8);
+            if (previous != 0 && word(rdram, previous) == free_mark) {
+                const uint32_t after = word(rdram, block + 4);
+                put_word(rdram, previous + 0xC, size_of(rdram, previous) + 0x10u + size_of(rdram, block));
+                put_word(rdram, previous + 4, after);
+                if (after != 0) {
+                    put_word(rdram, after + 8, previous);
+                }
+            }
             return true;
         }
 
@@ -149,12 +191,15 @@ namespace {
             return word(rdram, pointer - 0x4u) >> 24;
         }
 
-        uint32_t largest_free() const {
-            uint32_t largest = 0;
-            for (const auto& range : free_ranges) {
-                largest = range.second > largest ? range.second : largest;
-            }
-            return largest;
+        void stats(uint8_t* rdram, uint32_t* in_use, uint32_t* blocks) const {
+            *in_use = 0;
+            *blocks = 0;
+            each(rdram, [&](uint32_t block, bool used) {
+                if (used) {
+                    *in_use += 0x10u + size_of(rdram, block);
+                    (*blocks)++;
+                }
+            });
         }
     };
 
@@ -226,24 +271,29 @@ namespace {
         char line[400];
         {
             std::lock_guard lock{ pool_mutex };
+            uint32_t audio_in_use = 0, audio_blocks = 0, spare_in_use = 0, spare_blocks = 0;
+            audio_pool.stats(rdram, &audio_in_use, &audio_blocks);
+            spare_pool.stats(rdram, &spare_in_use, &spare_blocks);
             std::snprintf(line, sizeof(line),
                           "[heap] f=%u %s: %u blocks%s; in use %u bytes in %u, free %u bytes in %u (largest %u); last request %u bytes for owner %u, mode %u; "
                           "audio pool %u bytes in %u blocks (peak %u), spare pool %u bytes in %u blocks (used %u times)",
                           (unsigned)conker::netsession::frame(), why, (unsigned)blocks, broken ? " (the list is broken)" : "", (unsigned)used,
                           (unsigned)used_blocks, (unsigned)free_bytes, (unsigned)free_count, (unsigned)largest, (unsigned)word(rdram, request),
-                          (unsigned)word(rdram, request + 4), (unsigned)word(rdram, request + 8), (unsigned)audio_pool.in_use,
-                          (unsigned)audio_pool.blocks.size(), (unsigned)audio_pool.peak, (unsigned)spare_pool.in_use, (unsigned)spare_pool.blocks.size(),
+                          (unsigned)word(rdram, request + 4), (unsigned)word(rdram, request + 8), (unsigned)audio_in_use,
+                          (unsigned)audio_blocks, (unsigned)audio_pool.peak, (unsigned)spare_in_use, (unsigned)spare_blocks,
                           spare_used);
         }
         conker::netsession::log(line);
         {
             std::lock_guard lock{ pool_mutex };
             uint32_t pool_bytes[256] = {}, pool_count[256] = {};
-            for (const auto& block : audio_pool.blocks) {
-                const uint32_t owner = audio_pool.owner_of(rdram, block.first);
-                pool_bytes[owner] += block.second;
-                pool_count[owner]++;
-            }
+            audio_pool.each(rdram, [&](uint32_t block, bool used) {
+                if (used) {
+                    const uint32_t owner = audio_pool.owner_of(rdram, block + 0x10u);
+                    pool_bytes[owner] += 0x10u + Pool::size_of(rdram, block);
+                    pool_count[owner]++;
+                }
+            });
             std::string owners;
             for (int owner = 0; owner < 256; owner++) {
                 if (pool_count[owner] != 0) {
@@ -437,9 +487,11 @@ extern "C" void conker_heap_age(uint8_t* rdram, recomp_context* ctx, int all) {
     std::lock_guard lock{ pool_mutex };
     for (Pool* pool : { &audio_pool, &spare_pool }) {
         std::vector<uint32_t> pointers;
-        for (const auto& block : pool->blocks) {
-            pointers.push_back(block.first);
-        }
+        pool->each(rdram, [&](uint32_t block, bool used) {
+            if (used) {
+                pointers.push_back(block + 0x10u);
+            }
+        });
         for (uint32_t pointer : pointers) {
             const uint32_t owner = pool->owner_of(rdram, pointer);
             if (all != 0) {
