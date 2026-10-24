@@ -1188,3 +1188,44 @@ extern "C" void conker_local_audio(uint8_t* rdram, recomp_context* ctx, int whic
         }
     }
 }
+
+// (a test, 0.9.30) The game's calls to the music player's controls (the game thread, the same on every machine): which
+// function, its arguments and where it was called from, to find what turns up the music that plays with every shot.
+extern "C" void conker_music_trace(uint8_t* rdram, recomp_context* ctx, int which) {
+    if (!conker::netsession::active()) {
+        return;
+    }
+    static const char* const names[] = { "1000886C channels' volume", "10008790 channels' fade", "100086FC channel CC41", "10008744 channel pan",
+                                         "1000E46C track volume %", "1000E588 track volume % (2)", "1000E40C track value", "1000E704 track change",
+                                         "10008B60 MIDI", "10008BC0 player value", "10017E4C channel CC5C", "10008A94 channel CC5C (2)",
+                                         "10008C6C sequence", "10008CE8 sequence start" };
+    if (which < 0 || which >= (int)(sizeof(names) / sizeof(names[0]))) {
+        return;
+    }
+    struct Last {
+        uint32_t a[5] = {};
+        uint32_t ra = 0;
+        uint32_t frame = 0;
+    };
+    static Last last[16];
+    static int lines = 0;
+    const uint32_t sp = (uint32_t)ctx->r29;
+    const uint32_t a[5] = { (uint32_t)ctx->r4, (uint32_t)ctx->r5, (uint32_t)ctx->r6, (uint32_t)ctx->r7, word(rdram, sp + 0x10) };
+    const uint32_t ra = (uint32_t)ctx->r31;
+    const uint32_t now = (uint32_t)conker::netsession::frame();
+    Last& l = last[which];
+    if (l.ra == ra && std::memcmp(l.a, a, sizeof(a)) == 0 && now - l.frame < 60) {
+        return;   // the same call again: once a second is enough
+    }
+    std::memcpy(l.a, a, sizeof(a));
+    l.ra = ra;
+    l.frame = now;
+    if (lines >= 8000) {
+        return;
+    }
+    lines++;
+    char line[220];
+    std::snprintf(line, sizeof(line), "[mus] f=%u %s (%08X %08X %08X %08X; %08X) from %08X", (unsigned)now, names[which], (unsigned)a[0], (unsigned)a[1],
+                  (unsigned)a[2], (unsigned)a[3], (unsigned)a[4], (unsigned)ra);
+    conker::netsession::log(line);
+}
