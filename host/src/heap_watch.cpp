@@ -17,7 +17,8 @@
 //   - those allocations, and any allocation from a thread that isn't the game's, come from a pool of their own in the memory the
 //     game leaves unused (it uses the first 4 MB: 0x80400000-0x80600000), so the game's heap is only the game thread's, the same on every machine;
 //   - an allocation the heap can't give (where the game would stop) comes from a second pool (0x80600000-0x807F0000), only the
-//     game thread's; its blocks follow func_10004250 and func_10004308 like the heap's;
+//     game thread's;
+//   - the pools' blocks follow func_10004250 and func_10004308 (a level's data freed and aged by owner) like the heap's;
 //   - a heap block freed from another thread is freed by the game thread at its next frame.
 // A pool's block looks like the heap's to the game (a header before it with the owner and size: func_100043B4 changes the owner
 // there). Both pools are within the first 8 MB: the audio library stops the game for sample data past it (func_100214F0 at
@@ -235,6 +236,26 @@ namespace {
                           spare_used);
         }
         conker::netsession::log(line);
+        {
+            std::lock_guard lock{ pool_mutex };
+            uint32_t pool_bytes[256] = {}, pool_count[256] = {};
+            for (const auto& block : audio_pool.blocks) {
+                const uint32_t owner = audio_pool.owner_of(rdram, block.first);
+                pool_bytes[owner] += block.second;
+                pool_count[owner]++;
+            }
+            std::string owners;
+            for (int owner = 0; owner < 256; owner++) {
+                if (pool_count[owner] != 0) {
+                    char part[48];
+                    std::snprintf(part, sizeof(part), " %d:%u/%u", owner, (unsigned)pool_bytes[owner], (unsigned)pool_count[owner]);
+                    owners += part;
+                }
+            }
+            if (!owners.empty()) {
+                conker::netsession::log(("[heap]   audio pool by owner:bytes/blocks" + owners).c_str());
+            }
+        }
         std::string changes;
         for (int owner = 0; owner < 256; owner++) {
             if (bytes[owner] == last_bytes[owner] && count[owner] == last_count[owner] && walked_once) {
@@ -409,26 +430,28 @@ extern "C" int conker_heap_free(uint8_t* rdram, recomp_context* ctx) {
     return 0;
 }
 
-// func_10004250 begins (frees owner 2, ages owners 3 and 4 by one) and func_10004308 (frees owners 1-4): the same for the spare
-// pool's blocks (the audio pool's are the cache's and the voices', kept: 255).
+// func_10004250 begins (frees owner 2, ages owners 3 and 4 by one) and func_10004308 (frees owners 1-4): the same for the pools'
+// blocks, as they would have been in the heap (the cache's and the voices' are 255, kept).
 extern "C" void conker_heap_age(uint8_t* rdram, recomp_context* ctx, int all) {
     (void)ctx;
     std::lock_guard lock{ pool_mutex };
-    std::vector<uint32_t> pointers;
-    for (const auto& block : spare_pool.blocks) {
-        pointers.push_back(block.first);
-    }
-    for (uint32_t pointer : pointers) {
-        const uint32_t owner = spare_pool.owner_of(rdram, pointer);
-        if (all != 0) {
-            if (owner >= 1 && owner <= 4) {
-                spare_pool.release(rdram, pointer);
+    for (Pool* pool : { &audio_pool, &spare_pool }) {
+        std::vector<uint32_t> pointers;
+        for (const auto& block : pool->blocks) {
+            pointers.push_back(block.first);
+        }
+        for (uint32_t pointer : pointers) {
+            const uint32_t owner = pool->owner_of(rdram, pointer);
+            if (all != 0) {
+                if (owner >= 1 && owner <= 4) {
+                    pool->release(rdram, pointer);
+                }
+            } else if (owner == 2) {
+                pool->release(rdram, pointer);
+            } else if (owner == 3 || owner == 4) {
+                const uint32_t header = word(rdram, pointer - 0x4u);
+                put_word(rdram, pointer - 0x4u, ((owner - 1u) << 24) | (header & 0xFFFFFFu));
             }
-        } else if (owner == 2) {
-            spare_pool.release(rdram, pointer);
-        } else if (owner == 3 || owner == 4) {
-            const uint32_t header = word(rdram, pointer - 0x4u);
-            put_word(rdram, pointer - 0x4u, ((owner - 1u) << 24) | (header & 0xFFFFFFu));
         }
     }
 }
