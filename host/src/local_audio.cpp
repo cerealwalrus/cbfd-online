@@ -1189,43 +1189,61 @@ extern "C" void conker_local_audio(uint8_t* rdram, recomp_context* ctx, int whic
     }
 }
 
-// (a test, 0.9.30) The game's calls to the music player's controls (the game thread, the same on every machine): which
-// function, its arguments and where it was called from, to find what turns up the music that plays with every shot.
+// (a test, 0.9.30-0.9.31) The game's calls to the music player's controls (the game thread, the same on every machine): which
+// function, its arguments and where it was called from, to find what turns up the music that plays with every shot. A call
+// the same as the function's last one (its own arguments, from the same place) within a second isn't logged again, and each
+// function has its own number of lines, so the match is reached.
 extern "C" void conker_music_trace(uint8_t* rdram, recomp_context* ctx, int which) {
     if (!conker::netsession::active()) {
         return;
     }
-    static const char* const names[] = { "1000886C channels' volume", "10008790 channels' fade", "100086FC channel CC41", "10008744 channel pan",
-                                         "1000E46C track volume %", "1000E588 track volume % (2)", "1000E40C track value", "1000E704 track change",
-                                         "10008B60 MIDI", "10008BC0 player value", "10017E4C channel CC5C", "10008A94 channel CC5C (2)",
-                                         "10008C6C sequence", "10008CE8 sequence start" };
-    if (which < 0 || which >= (int)(sizeof(names) / sizeof(names[0]))) {
+    struct Kind {
+        const char* name;
+        int args;   // how many of $a0-$a3, 0x10($sp) are its arguments
+        int cap;
+    };
+    static const Kind kinds[] = {
+        { "1000886C channels' volume", 3, 900 },  { "10008790 channels' fade", 4, 900 },   { "100086FC channel CC41", 3, 300 },
+        { "10008744 channel pan", 3, 300 },       { "1000E46C track volume %", 4, 900 },   { "1000E588 track volume % (2)", 3, 900 },
+        { "1000E40C track value", 2, 600 },       { "1000E704 track change", 3, 600 },     { "10008B60 MIDI", 5, 300 },
+        { "10008BC0 player value", 3, 300 },      { "10017E4C channel CC5C", 3, 200 },     { "10008A94 channel CC5C (2)", 3, 200 },
+        { "10008C6C sequence", 2, 300 },          { "10008CE8 sequence start", 2, 300 },   { "10008824 channel volume", 3, 900 },
+        { "10008660 channel fade", 4, 900 },      { "10017D30 CC FC", 3, 900 },            { "10017C00 CC FC mute", 2, 300 },
+        { "10017C68 CC FD/FF", 4, 900 },          { "10017BB8 CC FC 0", 2, 300 },          { "10017CE0 CC 41", 3, 300 },
+        { "1001E400 send MIDI", 5, 1500 },
+    };
+    constexpr int count = (int)(sizeof(kinds) / sizeof(kinds[0]));
+    if (which < 0 || which >= count) {
         return;
     }
     struct Last {
         uint32_t a[5] = {};
         uint32_t ra = 0;
         uint32_t frame = 0;
+        int lines = 0;
     };
-    static Last last[16];
-    static int lines = 0;
+    static Last last[count];
+    const Kind& kind = kinds[which];
     const uint32_t sp = (uint32_t)ctx->r29;
-    const uint32_t a[5] = { (uint32_t)ctx->r4, (uint32_t)ctx->r5, (uint32_t)ctx->r6, (uint32_t)ctx->r7, word(rdram, sp + 0x10) };
+    uint32_t a[5] = { (uint32_t)ctx->r4, (uint32_t)ctx->r5, (uint32_t)ctx->r6, (uint32_t)ctx->r7, word(rdram, sp + 0x10) };
+    for (int n = kind.args; n < 5; n++) {
+        a[n] = 0;
+    }
     const uint32_t ra = (uint32_t)ctx->r31;
     const uint32_t now = (uint32_t)conker::netsession::frame();
     Last& l = last[which];
     if (l.ra == ra && std::memcmp(l.a, a, sizeof(a)) == 0 && now - l.frame < 60) {
-        return;   // the same call again: once a second is enough
+        return;
     }
     std::memcpy(l.a, a, sizeof(a));
     l.ra = ra;
     l.frame = now;
-    if (lines >= 8000) {
+    if (l.lines >= kind.cap) {
         return;
     }
-    lines++;
+    l.lines++;
     char line[220];
-    std::snprintf(line, sizeof(line), "[mus] f=%u %s (%08X %08X %08X %08X; %08X) from %08X", (unsigned)now, names[which], (unsigned)a[0], (unsigned)a[1],
+    std::snprintf(line, sizeof(line), "[mus] f=%u %s (%08X %08X %08X %08X; %08X) from %08X", (unsigned)now, kind.name, (unsigned)a[0], (unsigned)a[1],
                   (unsigned)a[2], (unsigned)a[3], (unsigned)a[4], (unsigned)ra);
     conker::netsession::log(line);
 }

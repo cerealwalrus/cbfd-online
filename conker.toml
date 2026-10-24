@@ -996,6 +996,46 @@ func = "func_10008CE8"
 before_vram = 0x10008CE8
 text = "{ extern void conker_music_trace(uint8_t*, recomp_context*, int); conker_music_trace(rdram, ctx, 13); }"
 
+[[patches.hook]]
+func = "func_10008824"
+before_vram = 0x10008824
+text = "{ extern void conker_music_trace(uint8_t*, recomp_context*, int); conker_music_trace(rdram, ctx, 14); }"
+
+[[patches.hook]]
+func = "func_10008660"
+before_vram = 0x10008660
+text = "{ extern void conker_music_trace(uint8_t*, recomp_context*, int); conker_music_trace(rdram, ctx, 15); }"
+
+[[patches.hook]]
+func = "func_10017D30"
+before_vram = 0x10017D30
+text = "{ extern void conker_music_trace(uint8_t*, recomp_context*, int); conker_music_trace(rdram, ctx, 16); }"
+
+[[patches.hook]]
+func = "func_10017C00"
+before_vram = 0x10017C00
+text = "{ extern void conker_music_trace(uint8_t*, recomp_context*, int); conker_music_trace(rdram, ctx, 17); }"
+
+[[patches.hook]]
+func = "func_10017C68"
+before_vram = 0x10017C68
+text = "{ extern void conker_music_trace(uint8_t*, recomp_context*, int); conker_music_trace(rdram, ctx, 18); }"
+
+[[patches.hook]]
+func = "func_10017BB8"
+before_vram = 0x10017BB8
+text = "{ extern void conker_music_trace(uint8_t*, recomp_context*, int); conker_music_trace(rdram, ctx, 19); }"
+
+[[patches.hook]]
+func = "func_10017CE0"
+before_vram = 0x10017CE0
+text = "{ extern void conker_music_trace(uint8_t*, recomp_context*, int); conker_music_trace(rdram, ctx, 20); }"
+
+[[patches.hook]]
+func = "func_1001E400"
+before_vram = 0x1001E400
+text = "{ extern void conker_music_trace(uint8_t*, recomp_context*, int); conker_music_trace(rdram, ctx, 21); }"
+
 
 [[patches.hook]]
 func = "func_10010BE8"
