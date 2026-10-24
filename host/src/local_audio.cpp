@@ -42,6 +42,8 @@ extern "C" void func_1000F6B8(uint8_t* rdram, recomp_context* ctx);
 extern "C" void func_100114D0(uint8_t* rdram, recomp_context* ctx);
 // Sets one of a playing sound's values: (handle, what: 8 volume, 4 pan, ...; value).
 extern "C" void func_1000F85C(uint8_t* rdram, recomp_context* ctx);
+// (a test) the game's heap, walked every so often online (heap_watch.cpp)
+extern "C" void conker_heap_watch(uint8_t* rdram);
 
 namespace {
     constexpr uint32_t listeners = 0x80041F68;       // D_80041F68: one per look camera, in their order, 0x1C bytes each
@@ -768,9 +770,11 @@ extern "C" void conker_local_audio(uint8_t* rdram, recomp_context* ctx, int whic
         case 5:
             pending.set = false;
             return;
-        case 12:
+        case 12: {
+            conker_heap_watch(rdram);
             follow_characters(rdram, ctx);
             return;
+        }
         case 13:
             on_stream_start(rdram, ctx);
             return;

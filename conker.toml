@@ -1004,3 +1004,10 @@ text = "{ extern void conker_net_pause_hook(uint8_t*, recomp_context*, int); con
 func = "func_151DDC20"
 before_vram = 0x151DE34C
 text = "{ extern void conker_net_pause_hook(uint8_t*, recomp_context*, int); conker_net_pause_hook(rdram, ctx, 6); }"
+
+# Online (a test, host/src/heap_watch.cpp): func_10003C6C (the game's allocator) about to stop the game because no free block
+# is big enough: the heap is walked and logged first.
+[[patches.hook]]
+func = "func_10003C6C"
+before_vram = 0x10003DD8
+text = "{ extern void conker_heap_failed(uint8_t*, recomp_context*); conker_heap_failed(rdram, ctx); }"
