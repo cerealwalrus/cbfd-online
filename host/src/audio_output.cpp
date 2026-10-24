@@ -5,8 +5,6 @@
 // (osAiGetLength), so the SDL device is used in queue mode: the reported
 // remaining frames are what SDL hasn't played yet.
 
-#include <cmath>
-#include <cstdint>
 #include <cstdio>
 #include <mutex>
 #include <vector>
@@ -69,25 +67,6 @@ void conker::audio::queue_samples(int16_t* samples, size_t sample_count) {
         convert_buffer[i + 1] = samples[i + 0] * scale;
     }
     SDL_QueueAudio(device, convert_buffer.data(), (Uint32)(sample_count * sizeof(float)));
-    if (conker::netsession::active()) {
-        // (a test: how loud what this machine plays is, buffer by buffer, with the game's frame: to see whether a sound shows up
-        // in the output at the frames another player's sound starts)
-        static int logged = 0;
-        if (logged < 60000) {
-            logged++;
-            int peak = 0;
-            int64_t sum = 0;
-            for (size_t i = 0; i < sample_count; i++) {
-                const int v = samples[i] < 0 ? -(int)samples[i] : (int)samples[i];
-                peak = v > peak ? v : peak;
-                sum += (int64_t)v * v;
-            }
-            const int rms = sample_count > 0 ? (int)std::sqrt((double)sum / (double)sample_count) : 0;
-            char line[96];
-            std::snprintf(line, sizeof(line), "[out] f=%u peak %d rms %d", (unsigned)conker::netsession::frame(), peak, rms);
-            conker::netsession::log(line);
-        }
-    }
 }
 
 size_t conker::audio::get_frames_remaining() {

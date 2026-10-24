@@ -910,21 +910,6 @@ func = "func_1000F85C"
 before_vram = 0x1000F85C
 text = "{ extern void conker_local_audio(uint8_t*, recomp_context*, int); conker_local_audio(rdram, ctx, 17); }"
 
-[[patches.hook]]
-func = "func_10017438"
-before_vram = 0x10017438
-text = "{ extern void conker_local_audio(uint8_t*, recomp_context*, int); conker_local_audio(rdram, ctx, 18); }"
-
-[[patches.hook]]
-func = "n_alSynStartVoiceParams"
-before_vram = 0x1001E170
-text = "{ extern void conker_local_audio(uint8_t*, recomp_context*, int); conker_local_audio(rdram, ctx, 19); }"
-
-[[patches.hook]]
-func = "n_alSynSetVol"
-before_vram = 0x1001C910
-text = "{ extern void conker_local_audio(uint8_t*, recomp_context*, int); conker_local_audio(rdram, ctx, 20); }"
-
 # Online: the music's layer played with each shot is heard from this machine's player (host/src/local_audio.cpp,
 # shot_music_send): func_151C2050 sends the music manager its volume and pan, which the split screen worked out from the
 # nearest camera or the shooter's own.
