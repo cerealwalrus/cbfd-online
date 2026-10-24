@@ -918,6 +918,12 @@ func = "func_151C2050"
 before_vram = 0x151C2050
 text = "{ extern void conker_local_audio(uint8_t*, recomp_context*, int); conker_local_audio(rdram, ctx, 22); }"
 
+# Online (host/src/local_audio.cpp): a character's new sound doesn't cut the one before it short (a footstep, the gunshot before it).
+[[patches.hook]]
+func = "func_10010BE8"
+before_vram = 0x10010C5C
+text = "{ extern void conker_local_audio(uint8_t*, recomp_context*, int); conker_local_audio(rdram, ctx, 25); }"
+
 [[patches.hook]]
 func = "func_151C2050"
 before_vram = 0x151C214C

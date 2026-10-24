@@ -29,6 +29,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <vector>
 
 #include <SDL.h>
 
@@ -42,6 +43,7 @@ extern "C" void func_1000F6B8(uint8_t* rdram, recomp_context* ctx);
 extern "C" void func_100114D0(uint8_t* rdram, recomp_context* ctx);
 // Sets one of a playing sound's values: (handle, what: 8 volume, 4 pan, ...; value).
 extern "C" void func_1000F85C(uint8_t* rdram, recomp_context* ctx);
+extern "C" void func_10017594(uint8_t* rdram, recomp_context* ctx);
 // the game's heap, kept the same on every machine online (heap_watch.cpp)
 extern "C" void conker_heap_watch(uint8_t* rdram, recomp_context* ctx);
 // online, every multiplayer character for everybody (mp_characters.cpp)
@@ -765,7 +767,7 @@ namespace {
                 return false;
             }
             if (own && volume == 0) {
-                volume = 1;   // (this player's own shot as quiet as it gets, never silenced)
+                volume = game_volume;   // (this player's own shot is never silenced: then as the game had it)
             }
             shot_layer_volume = volume;
             shot_layer_frame = now;
@@ -778,6 +780,110 @@ namespace {
             ctx->r5 = (gpr)(int32_t)request;
         }
         return true;
+    }
+}
+
+namespace {
+    // A character's sounds (func_10010154 and func_10010FFC: shots, footsteps, voices) share one handle (+0x8E): starting one stops the
+    // one before if it is still playing (func_10010BE8, 0x10010C5C). Running, each footstep cut the gunshot fired just before it short.
+    // Online, when the new sound is a different one, the one before isn't stopped there: it plays on by itself (its slot is cleared all
+    // the same, so the game goes on exactly as before) and is stopped tail_frames later if it is still playing then (a loop would
+    // otherwise play for ever). The same sound again (a gun's next shot) stops the one before, as the game has it. The characters'
+    // looping sounds (func_10010344, their own handle) aren't touched.
+    struct Tail {
+        uint32_t voice = 0;
+        uint16_t sound = 0;       // the voice's sound (+0x44) when it was let play on
+        uint32_t until = 0;
+    };
+    std::vector<Tail> tails;
+    constexpr uint32_t tail_frames = 24;      // 0.8 s
+    constexpr uint32_t voices_in_use = 0x8002BA20u;
+    int tails_logged = 0;
+    unsigned tails_kept = 0, tails_stopped = 0;
+
+    // func_10010BE8 at 0x10010C5C: $s0 the slot whose sound is still playing, about to be stopped (the call's delay slot loads its
+    // voice into $a0: cleared here, the stop does nothing).
+    void on_replace(uint8_t* rdram, recomp_context* ctx) {
+        if (!conker::netsession::active() || !switched_on()) {
+            return;
+        }
+        const uint32_t sp = (uint32_t)ctx->r29;
+        const uint32_t slot = (uint32_t)ctx->r16;
+        const uint32_t ra = word(rdram, sp + 0x2C);
+        const uint32_t voice = word(rdram, slot + 8);
+        if (!ram_pointer(voice) || (ra != from_character && ra != from_play_on_object)) {
+            return;
+        }
+        const uint32_t old_sound = half(rdram, slot + 4) & 0x7FFFu;
+        const uint32_t new_sound = word(rdram, sp + 0x54) & 0x7FFFu;
+        const int player = character_player(rdram, word(rdram, sp + 0x24));
+        const bool keep = old_sound != new_sound;
+        if (tails_logged < 80) {
+            tails_logged++;
+            char line[200];
+            std::snprintf(line, sizeof(line), "[audio] f=%u player %d's sound %04X (voice %08X) replaced by %04X: %s", (unsigned)conker::netsession::frame(), player + 1,
+                old_sound, voice, new_sound, keep ? "it plays on" : "stopped (the same sound)");
+            conker::netsession::log(line);
+        }
+        if (!keep) {
+            return;
+        }
+        if (tails.size() >= 24) {
+            return;   // (as the game has it)
+        }
+        tails.push_back({ voice, (uint16_t)half(rdram, voice + 0x44), (uint32_t)conker::netsession::frame() + tail_frames });
+        put_word(rdram, slot + 8, 0);
+        tails_kept++;
+    }
+
+    // Every frame (the game thread): the sounds let play on whose time is up are stopped, if they still play and are still theirs.
+    void stop_tails(uint8_t* rdram, recomp_context* ctx) {
+        if (tails.empty()) {
+            return;
+        }
+        const uint32_t now = (uint32_t)conker::netsession::frame();
+        for (size_t i = 0; i < tails.size();) {
+            const Tail t = tails[i];
+            if (conker::netsession::active() && now < t.until && now + tail_frames * 4 > t.until) {
+                i++;
+                continue;
+            }
+            tails.erase(tails.begin() + (ptrdiff_t)i);
+            if (!conker::netsession::active()) {
+                continue;
+            }
+            // still in use, playing, the same sound, and no slot's
+            bool in_use = false;
+            uint32_t current = word(rdram, voices_in_use);
+            for (int n = 0; n < 256 && current != 0 && ram_pointer(current); n++) {
+                if (current == t.voice) {
+                    in_use = true;
+                    break;
+                }
+                current = word(rdram, current);
+            }
+            bool held = false;
+            for (uint32_t k = 0; k < 16; k++) {
+                held |= word(rdram, sound_slots + k * 12 + 8) == t.voice;
+            }
+            if (!in_use || held || MEM_BU(0x54, (gpr)(int32_t)t.voice) == 0 || (uint16_t)half(rdram, t.voice + 0x44) != t.sound) {
+                continue;
+            }
+            const recomp_context saved = *ctx;
+            ctx->r4 = (gpr)(int32_t)t.voice;
+            ctx->r29 = (gpr)(int32_t)scratch_sp;
+            func_10017594(rdram, ctx);
+            *ctx = saved;
+            tails_stopped++;
+        }
+        static uint32_t last_report = 0;
+        if (now / 1800u != last_report) {
+            last_report = now / 1800u;
+            char line[160];
+            std::snprintf(line, sizeof(line), "[audio] f=%u sounds let play on after another sound of the same character: %u, stopped at the end of their time: %u", now,
+                tails_kept, tails_stopped);
+            conker::netsession::log(line);
+        }
     }
 }
 
@@ -807,7 +913,8 @@ extern "C" int conker_local_audio_shot(uint8_t* rdram, recomp_context* ctx) {
 //   14: func_1000FA64 (put an entry on the moving sounds' list) begins;
 //   15, 16: func_10011BB8 calls func_10011624 (the moving sounds' list), and it has returned;
 //   17: func_1000F85C (set a playing sound's value) begins;
-//   22: func_151C2050 (a shot's request for the music's shot layer) begins; 23, 24: it is about to send the request.
+//   22: func_151C2050 (a shot's request for the music's shot layer) begins; 23, 24: it is about to send the request;
+//   25: func_10010BE8, about to stop the sound still playing in the slot it was given the handle of (0x10010C5C).
 extern "C" void conker_local_audio(uint8_t* rdram, recomp_context* ctx, int which) {
     const uint32_t sp = (uint32_t)ctx->r29;
     switch (which) {
@@ -817,7 +924,11 @@ extern "C" void conker_local_audio(uint8_t* rdram, recomp_context* ctx, int whic
         case 5:
             pending.set = false;
             return;
+        case 25:
+            on_replace(rdram, ctx);
+            return;
         case 12: {
+            stop_tails(rdram, ctx);
             conker_heap_watch(rdram, ctx);
             conker_mp_characters(rdram);
             follow_characters(rdram, ctx);
