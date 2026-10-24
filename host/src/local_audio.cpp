@@ -44,8 +44,8 @@ extern "C" void func_100114D0(uint8_t* rdram, recomp_context* ctx);
 extern "C" void func_1000F85C(uint8_t* rdram, recomp_context* ctx);
 // the game's heap, kept the same on every machine online (heap_watch.cpp)
 extern "C" void conker_heap_watch(uint8_t* rdram, recomp_context* ctx);
-// (a test) the game's static data watched for the cheat codes' flags (cheat_watch.cpp)
-extern "C" void conker_cheat_watch(uint8_t* rdram);
+// online, every multiplayer character for everybody (mp_characters.cpp)
+extern "C" void conker_mp_characters(uint8_t* rdram);
 
 namespace {
     constexpr uint32_t listeners = 0x80041F68;       // D_80041F68: one per look camera, in their order, 0x1C bytes each
@@ -774,7 +774,7 @@ extern "C" void conker_local_audio(uint8_t* rdram, recomp_context* ctx, int whic
             return;
         case 12: {
             conker_heap_watch(rdram, ctx);
-            conker_cheat_watch(rdram);
+            conker_mp_characters(rdram);
             follow_characters(rdram, ctx);
             return;
         }
