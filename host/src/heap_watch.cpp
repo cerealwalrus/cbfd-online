@@ -1,25 +1,46 @@
-// Online (a test, 0.9.34): the game's memory heap, watched. A session halted when a new match was being loaded after a long
-// one: func_10003C6C (the game's allocator) found no free block big enough and called the game's own stop (func_150AD770, a
-// syscall). To find what fills the heap, it is walked every 15 seconds online and when an allocation fails:
-//   - every block is on one list in address order from D_800380B4 (+0 next, +4 previous, +8 owner << 24 | size), and the free
-//     ones are also on the free list from D_800380B8 (+0xC next free);
-//   - each owner's bytes in use are logged when they changed since the last walk.
-//   - (0.9.35) every allocation and free online is logged (the first 30000), with its caller and thread, to line the two
-//     machines' logs up: their heaps were laid out differently from the first seconds;
-//   - the heap's block map (address, size, owner; owner 0 is free) when an allocation fails and after a match's memory is
-//     given back.
-// Nothing is changed in the game.
+// Online: the game's memory heap, kept the same on every machine and kept from running out.
+//
+// The game's heap (func_10003C6C allocates, func_10004074 frees): every block on one list in address order from D_800380B4 (+0 next,
+// +4 previous, +8 owner << 24 | size; owner 0 is free), the free ones also on the free list from D_800380B8 (+0xC next free). The
+// owners 1-4 are a level's data by age (func_10004250 frees owner 2 and ages 3 and 4, func_10004308 frees 1-4), 255 is kept.
+//
+// Two things in it ran at the pace of each machine's own audio thread, not the game's:
+//   - a cache that func_10009CBC fills (allocating at 0x10009ED8, freeing at 0x1000A280), used from the audio thread too;
+//   - the streamed sounds' buffers (voices: func_151F2960 allocates four when one starts), which the audio thread frees when the
+//     sound has played (func_151F39E4 from func_151F2E88).
+// So the two machines' heaps were laid out differently within seconds, and the audio thread changed the heap's lists while the game
+// thread did (the game's interrupt masking doesn't stop a thread). Those blocks, kept between matches, also ended up anywhere in the
+// heap, cutting up the free memory: after long sessions a match's load found no free block big enough and the game stopped itself
+// (func_150AD770's syscall, called at 0x10003DD8), on one machine or both.
+//
+// Online now:
+//   - those allocations, and any allocation from a thread that isn't the game's, come from a pool of their own outside the game's
+//     8 MB (0x80C00000-0x80D00000), so the game's heap is only the game thread's, the same on every machine;
+//   - an allocation the heap can't give (where the game would stop) comes from a second pool (0x80D00000-0x80F00000), only the
+//     game thread's; its blocks follow func_10004250 and func_10004308 like the heap's;
+//   - a heap block freed from another thread is freed by the game thread at its next frame.
+// A pool's block looks like the heap's to the game (a header before it with the owner and size: func_100043B4 changes the owner
+// there). Both pools are below 16 MB (what the RSP and RT64 reach) and above the game's own memory.
+//
+// The heap is also walked every 15 seconds online and logged (what is in use and free, the largest free block, each owner's bytes
+// that changed), with the pools'.
 
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <map>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <unordered_set>
+#include <vector>
 
 #include "recomp.h"
 
 #include "conker.hpp"
+
+extern "C" void func_10004074(uint8_t* rdram, recomp_context* ctx);
 
 namespace {
     constexpr uint32_t first_block = 0x800380B4;
@@ -30,27 +51,128 @@ namespace {
         return (uint32_t)MEM_W(0, (gpr)(int32_t)address);
     }
 
+    void put_word(uint8_t* rdram, uint32_t address, uint32_t value) {
+        MEM_W(0, (gpr)(int32_t)address) = (int32_t)value;
+    }
+
     bool ram_pointer(uint32_t address) {
         return (address >> 24) == 0x80 && (address & 0x7FFFFFu) < 0x7FFFF0u && (address & 3u) == 0;
     }
 
     std::thread::id game_thread;
-    bool game_thread_known = false;
-    int trace_lines = 0;
-    uint32_t last_used = 0;
+    std::atomic<bool> game_thread_known{ false };
 
-    const char* thread_name() {
-        return game_thread_known && std::this_thread::get_id() == game_thread ? "game" : "other";
+    bool on_game_thread() {
+        return game_thread_known.load() && std::this_thread::get_id() == game_thread;
     }
+
+    bool on_other_thread() {
+        return game_thread_known.load() && std::this_thread::get_id() != game_thread;
+    }
+
+    // A pool: first fit by address in [start, end). A block is 16 bytes of header (the heap's: next and previous 0, then
+    // owner << 24 | size at the pointer - 4) and the memory, the pointer 16-aligned.
+    struct Pool {
+        uint32_t start;
+        uint32_t end;
+        const char* name;
+        std::map<uint32_t, uint32_t> free_ranges;    // start -> length
+        std::map<uint32_t, uint32_t> blocks;         // pointer -> length of the whole block (header included)
+        bool ready = false;
+        uint32_t peak = 0;
+        uint32_t in_use = 0;
+
+        void init() {
+            if (!ready) {
+                free_ranges[start] = end - start;
+                ready = true;
+            }
+        }
+
+        bool owns(uint32_t pointer) const {
+            return pointer >= start + 0x10u && pointer < end;
+        }
+
+        uint32_t allocate(uint8_t* rdram, uint32_t size, uint32_t owner) {
+            init();
+            const uint32_t length = 0x10u + ((size + 15u) & ~15u);
+            for (auto it = free_ranges.begin(); it != free_ranges.end(); ++it) {
+                if (it->second < length) {
+                    continue;
+                }
+                const uint32_t block = it->first;
+                const uint32_t left = it->second - length;
+                free_ranges.erase(it);
+                if (left != 0) {
+                    free_ranges[block + length] = left;
+                }
+                const uint32_t pointer = block + 0x10u;
+                blocks[pointer] = length;
+                in_use += length;
+                peak = in_use > peak ? in_use : peak;
+                put_word(rdram, pointer - 0xCu, 0);
+                put_word(rdram, pointer - 0x8u, 0);
+                put_word(rdram, pointer - 0x4u, (owner << 24) | ((length - 0x10u) & 0xFFFFFFu));
+                return pointer;
+            }
+            return 0;
+        }
+
+        bool release(uint8_t* rdram, uint32_t pointer) {
+            auto it = blocks.find(pointer);
+            if (it == blocks.end()) {
+                return false;
+            }
+            uint32_t block = pointer - 0x10u, length = it->second;
+            blocks.erase(it);
+            in_use -= length;
+            put_word(rdram, pointer - 0x4u, length - 0x10u);   // owner 0, as the heap marks a free block
+            auto next = free_ranges.lower_bound(block);
+            if (next != free_ranges.end() && next->first == block + length) {
+                length += next->second;
+                next = free_ranges.erase(next);
+            }
+            if (next != free_ranges.begin()) {
+                auto previous = std::prev(next);
+                if (previous->first + previous->second == block) {
+                    previous->second += length;
+                    return true;
+                }
+            }
+            free_ranges[block] = length;
+            return true;
+        }
+
+        uint32_t owner_of(uint8_t* rdram, uint32_t pointer) const {
+            return word(rdram, pointer - 0x4u) >> 24;
+        }
+
+        uint32_t largest_free() const {
+            uint32_t largest = 0;
+            for (const auto& range : free_ranges) {
+                largest = range.second > largest ? range.second : largest;
+            }
+            return largest;
+        }
+    };
+
+    std::mutex pool_mutex;
+    Pool audio_pool{ 0x80C00000u, 0x80D00000u, "audio" };
+    Pool spare_pool{ 0x80D00000u, 0x80F00000u, "spare" };
+    std::vector<uint32_t> deferred_frees;   // heap blocks freed from another thread, for the game thread
+    unsigned spare_used = 0;
+
+    uint32_t last_bytes[256] = {};
+    uint32_t last_count[256] = {};
+    bool walked_once = false;
 
     void block_map(uint8_t* rdram, const char* why) {
         std::string text;
         uint32_t b = word(rdram, first_block);
-        int n = 0;
         char head[96];
         std::snprintf(head, sizeof(head), "[heap] f=%u block map (%s), address:size:owner", (unsigned)conker::netsession::frame(), why);
         conker::netsession::log(head);
-        for (; b != 0 && ram_pointer(b) && n < 4000; n++) {
+        for (int n = 0; b != 0 && ram_pointer(b) && n < 4000; n++) {
             const uint32_t header = word(rdram, b + 8);
             char part[40];
             std::snprintf(part, sizeof(part), " %06X:%u:%u", (unsigned)(b & 0xFFFFFFu), (unsigned)(header & 0xFFFFFFu), (unsigned)(header >> 24));
@@ -65,10 +187,6 @@ namespace {
             conker::netsession::log(("[heap]  " + text).c_str());
         }
     }
-
-    uint32_t last_bytes[256] = {};
-    uint32_t last_count[256] = {};
-    bool walked_once = false;
 
     void walk(uint8_t* rdram, const char* why) {
         std::unordered_set<uint32_t> free_blocks;
@@ -103,11 +221,18 @@ namespace {
             }
             b = word(rdram, b);
         }
-        char line[300];
-        std::snprintf(line, sizeof(line), "[heap] f=%u %s: %u blocks%s; in use %u bytes in %u, free %u bytes in %u (largest %u); last request %u bytes for owner %u, mode %u",
-                      (unsigned)conker::netsession::frame(), why, (unsigned)blocks, broken ? " (the list is broken)" : "", (unsigned)used,
-                      (unsigned)used_blocks, (unsigned)free_bytes, (unsigned)free_count, (unsigned)largest, (unsigned)word(rdram, request),
-                      (unsigned)word(rdram, request + 4), (unsigned)word(rdram, request + 8));
+        char line[400];
+        {
+            std::lock_guard lock{ pool_mutex };
+            std::snprintf(line, sizeof(line),
+                          "[heap] f=%u %s: %u blocks%s; in use %u bytes in %u, free %u bytes in %u (largest %u); last request %u bytes for owner %u, mode %u; "
+                          "audio pool %u bytes in %u blocks (peak %u), spare pool %u bytes in %u blocks (used %u times)",
+                          (unsigned)conker::netsession::frame(), why, (unsigned)blocks, broken ? " (the list is broken)" : "", (unsigned)used,
+                          (unsigned)used_blocks, (unsigned)free_bytes, (unsigned)free_count, (unsigned)largest, (unsigned)word(rdram, request),
+                          (unsigned)word(rdram, request + 4), (unsigned)word(rdram, request + 8), (unsigned)audio_pool.in_use,
+                          (unsigned)audio_pool.blocks.size(), (unsigned)audio_pool.peak, (unsigned)spare_pool.in_use, (unsigned)spare_pool.blocks.size(),
+                          spare_used);
+        }
         conker::netsession::log(line);
         std::string changes;
         for (int owner = 0; owner < 256; owner++) {
@@ -129,24 +254,56 @@ namespace {
         if (!changes.empty()) {
             conker::netsession::log(("[heap]   owner:bytes/blocks(change)" + changes).c_str());
         }
-        if (last_used > used + 300000u) {
-            block_map(rdram, "after memory was given back");
-        }
-        last_used = used;
         std::memcpy(last_bytes, bytes, sizeof(bytes));
         std::memcpy(last_count, count, sizeof(count));
         walked_once = true;
     }
+
+    // Is a streamed sound being started (func_151F2960 on the game thread's stack)?
+    bool starting_stream(uint8_t* rdram, recomp_context* ctx, uint32_t from) {
+        if (from >= 0x151F2960u && from < 0x151F2BA8u) {
+            return true;
+        }
+        const uint32_t sp = (uint32_t)ctx->r29;
+        if (!ram_pointer(sp)) {
+            return false;
+        }
+        for (uint32_t offset = 0; offset < 0x400u; offset += 4) {
+            const uint32_t value = word(rdram, sp + offset);
+            if (value >= 0x151F2960u && value < 0x151F2BA8u) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Calls func_10004074 (free) from the game thread, its stack below the game's.
+    void free_on_game_thread(uint8_t* rdram, recomp_context* ctx, uint32_t pointer) {
+        const recomp_context saved = *ctx;
+        ctx->r4 = (gpr)(int32_t)pointer;
+        ctx->r29 = (gpr)(int32_t)(((uint32_t)saved.r29 - 0x200u) & ~7u);
+        func_10004074(rdram, ctx);
+        *ctx = saved;
+    }
 }
 
-// Every frame (func_10011BB8): a walk every 900 frames online.
-extern "C" void conker_heap_watch(uint8_t* rdram) {
+// Every frame (func_10011BB8, the game thread): the game thread is noted; online, the frees left by other threads are done, and the
+// heap is walked every 900 frames.
+extern "C" void conker_heap_watch(uint8_t* rdram, recomp_context* ctx) {
+    if (!game_thread_known.load()) {
+        game_thread = std::this_thread::get_id();
+        game_thread_known.store(true);
+    }
     if (!conker::netsession::active()) {
         return;
     }
-    if (!game_thread_known) {
-        game_thread = std::this_thread::get_id();
-        game_thread_known = true;
+    std::vector<uint32_t> frees;
+    {
+        std::lock_guard lock{ pool_mutex };
+        frees.swap(deferred_frees);
+    }
+    for (uint32_t pointer : frees) {
+        free_on_game_thread(rdram, ctx, pointer);
     }
     static uint32_t last = 0xFFFFFFFFu;
     const uint32_t now = (uint32_t)conker::netsession::frame();
@@ -156,55 +313,121 @@ extern "C" void conker_heap_watch(uint8_t* rdram) {
     }
 }
 
-// func_10003C6C about to stop the game: no free block for the request.
-extern "C" void conker_heap_failed(uint8_t* rdram, recomp_context* ctx) {
-    (void)ctx;
+// func_10003C6C (allocate: $a0 size, $a1 owner, $a2 mode, $a3 from the end, 0x10($sp) flag) begins. Returns 1 when the memory was
+// given from a pool ($v0), the function then not run. Called from func_10003C40, the caller is the one in func_10003C40's frame.
+extern "C" int conker_heap_alloc_begin(uint8_t* rdram, recomp_context* ctx) {
+    if (!conker::netsession::active()) {
+        return 0;
+    }
+    uint32_t from = (uint32_t)ctx->r31;
+    if (from == 0x10003C5Cu) {
+        from = word(rdram, (uint32_t)ctx->r29 + 0x1C);
+    }
+    const bool other_thread = on_other_thread();
+    const bool cache = from == 0x10009ED8u;
+    if (!other_thread && !cache && !starting_stream(rdram, ctx, from)) {
+        return 0;
+    }
+    uint32_t pointer = 0;
+    {
+        std::lock_guard lock{ pool_mutex };
+        pointer = audio_pool.allocate(rdram, (uint32_t)ctx->r4, (uint32_t)ctx->r5 & 0xFFu);
+    }
+    if (pointer == 0) {
+        static int logged = 0;
+        if (logged < 20) {
+            logged++;
+            char line[160];
+            std::snprintf(line, sizeof(line), "[heap] f=%u the audio pool is full: %u bytes for %08X from the game's heap", (unsigned)conker::netsession::frame(),
+                          (unsigned)(uint32_t)ctx->r4, (unsigned)from);
+            conker::netsession::log(line);
+        }
+        return 0;
+    }
+    ctx->r2 = (gpr)(int32_t)pointer;
+    return 1;
+}
+
+// func_10003C6C about to stop the game (0x10003DD8): no free block for the request. Online the spare pool gives it (returns 1, the
+// function's frame undone: $s0 and $ra from 0x18 and 0x1C of its frame of 0x70). Otherwise the heap is logged first.
+extern "C" int conker_heap_failed(uint8_t* rdram, recomp_context* ctx) {
+    const uint32_t size = word(rdram, request), owner = word(rdram, request + 4) & 0xFFu;
+    if (conker::netsession::active() && on_game_thread()) {
+        uint32_t pointer = 0;
+        {
+            std::lock_guard lock{ pool_mutex };
+            pointer = spare_pool.allocate(rdram, size, owner);
+            if (pointer != 0) {
+                spare_used++;
+            }
+        }
+        if (pointer != 0) {
+            char line[200];
+            std::snprintf(line, sizeof(line), "[heap] f=%u the heap had no block of %u bytes (owner %u): given from the spare pool at %08X", (unsigned)conker::netsession::frame(),
+                          (unsigned)size, (unsigned)owner, (unsigned)pointer);
+            conker::netsession::log(line);
+            static int maps = 0;
+            if (maps < 3) {
+                maps++;
+                walk(rdram, "the heap had no block big enough");
+                block_map(rdram, "the heap had no block big enough");
+            }
+            const uint32_t sp = (uint32_t)ctx->r29;
+            ctx->r2 = (gpr)(int32_t)pointer;
+            ctx->r16 = (gpr)(int32_t)word(rdram, sp + 0x18);
+            ctx->r31 = (gpr)(int32_t)word(rdram, sp + 0x1C);
+            ctx->r29 = (gpr)(int32_t)(sp + 0x70u);
+            return 1;
+        }
+    }
     walk(rdram, "NO MEMORY: an allocation failed");
     block_map(rdram, "the allocation failed");
+    return 0;
 }
 
-// func_10003C6C (allocate: $a0 size, $a1 owner, $a2 mode, $a3 from the end, 0x10($sp) flag) begins; called from
-// func_10003C40 its caller is the one in func_10003C40's frame.
-namespace {
-    uint32_t alloc_size = 0, alloc_owner = 0, alloc_mode = 0, alloc_end = 0, alloc_from = 0;
-}
-
-extern "C" void conker_heap_alloc_begin(uint8_t* rdram, recomp_context* ctx) {
-    alloc_size = (uint32_t)ctx->r4;
-    alloc_owner = (uint32_t)ctx->r5 & 0xFFu;
-    alloc_mode = (uint32_t)ctx->r6;
-    alloc_end = (uint32_t)ctx->r7;
-    alloc_from = (uint32_t)ctx->r31;
-    if (alloc_from == 0x10003C5Cu) {
-        alloc_from = word(rdram, (uint32_t)ctx->r29 + 0x1C);
+// func_10004074 (free: $a0 the memory) begins. Returns 1 when it was a pool's block (freed there) or a heap block freed from another
+// thread (left for the game thread), the function then not run.
+extern "C" int conker_heap_free(uint8_t* rdram, recomp_context* ctx) {
+    const uint32_t pointer = (uint32_t)ctx->r4;
+    if (pointer == 0) {
+        return 0;
     }
+    std::lock_guard lock{ pool_mutex };
+    if (audio_pool.owns(pointer)) {
+        audio_pool.release(rdram, pointer);
+        return 1;
+    }
+    if (spare_pool.owns(pointer)) {
+        spare_pool.release(rdram, pointer);
+        return 1;
+    }
+    if (conker::netsession::active() && on_other_thread() && ram_pointer(pointer)) {
+        deferred_frees.push_back(pointer);
+        return 1;
+    }
+    return 0;
 }
 
-// func_10003C6C returns ($v0: the memory, 0 if none).
-extern "C" void conker_heap_alloc_end(uint8_t* rdram, recomp_context* ctx) {
-    (void)rdram;
-    if (!conker::netsession::active() || trace_lines >= 30000) {
-        return;
+// func_10004250 begins (frees owner 2, ages owners 3 and 4 by one) and func_10004308 (frees owners 1-4): the same for the spare
+// pool's blocks (the audio pool's are the cache's and the voices', kept: 255).
+extern "C" void conker_heap_age(uint8_t* rdram, recomp_context* ctx, int all) {
+    (void)ctx;
+    std::lock_guard lock{ pool_mutex };
+    std::vector<uint32_t> pointers;
+    for (const auto& block : spare_pool.blocks) {
+        pointers.push_back(block.first);
     }
-    trace_lines++;
-    char line[160];
-    std::snprintf(line, sizeof(line), "[alloc] f=%u %u bytes owner %u mode %u%s -> %06X from %08X (%s)", (unsigned)conker::netsession::frame(),
-                  (unsigned)alloc_size, (unsigned)alloc_owner, (unsigned)alloc_mode, alloc_end != 0 ? " end" : "",
-                  (unsigned)((uint32_t)ctx->r2 & 0xFFFFFFu), (unsigned)alloc_from, thread_name());
-    conker::netsession::log(line);
-}
-
-// func_10004074 (free: $a0 the memory) begins.
-extern "C" void conker_heap_free(uint8_t* rdram, recomp_context* ctx) {
-    if (!conker::netsession::active() || trace_lines >= 30000 || (uint32_t)ctx->r4 == 0) {
-        return;
+    for (uint32_t pointer : pointers) {
+        const uint32_t owner = spare_pool.owner_of(rdram, pointer);
+        if (all != 0) {
+            if (owner >= 1 && owner <= 4) {
+                spare_pool.release(rdram, pointer);
+            }
+        } else if (owner == 2) {
+            spare_pool.release(rdram, pointer);
+        } else if (owner == 3 || owner == 4) {
+            const uint32_t header = word(rdram, pointer - 0x4u);
+            put_word(rdram, pointer - 0x4u, ((owner - 1u) << 24) | (header & 0xFFFFFFu));
+        }
     }
-    trace_lines++;
-    const uint32_t block = (uint32_t)ctx->r4 - 0xCu;
-    const uint32_t header = ram_pointer(block) ? word(rdram, block + 8) : 0;
-    char line[160];
-    std::snprintf(line, sizeof(line), "[alloc] f=%u free %06X (%u bytes owner %u) from %08X (%s)", (unsigned)conker::netsession::frame(),
-                  (unsigned)((uint32_t)ctx->r4 & 0xFFFFFFu), (unsigned)(header & 0xFFFFFFu), (unsigned)(header >> 24), (unsigned)(uint32_t)ctx->r31,
-                  thread_name());
-    conker::netsession::log(line);
 }

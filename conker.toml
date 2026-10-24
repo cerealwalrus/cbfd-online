@@ -1005,25 +1005,32 @@ func = "func_151DDC20"
 before_vram = 0x151DE34C
 text = "{ extern void conker_net_pause_hook(uint8_t*, recomp_context*, int); conker_net_pause_hook(rdram, ctx, 6); }"
 
-# Online (a test, host/src/heap_watch.cpp): func_10003C6C (the game's allocator) about to stop the game because no free block
-# is big enough: the heap is walked and logged first.
-[[patches.hook]]
-func = "func_10003C6C"
-before_vram = 0x10003DD8
-text = "{ extern void conker_heap_failed(uint8_t*, recomp_context*); conker_heap_failed(rdram, ctx); }"
-
-# (a test, host/src/heap_watch.cpp) every allocation and free online, logged
+# Online (host/src/heap_watch.cpp): the game's heap is only the game thread's, the same on every machine, and doesn't run out.
+# func_10003C6C (allocate) begins: the audio cache's, the streamed sounds' and other threads' allocations come from a pool of their own.
 [[patches.hook]]
 func = "func_10003C6C"
 before_vram = 0x10003C6C
-text = "{ extern void conker_heap_alloc_begin(uint8_t*, recomp_context*); conker_heap_alloc_begin(rdram, ctx); }"
+text = "{ extern int conker_heap_alloc_begin(uint8_t*, recomp_context*); if (conker_heap_alloc_begin(rdram, ctx)) { return; } }"
 
+# func_10003C6C about to stop the game (no free block big enough): the spare pool gives the memory instead.
 [[patches.hook]]
 func = "func_10003C6C"
-before_vram = 0x10004064
-text = "{ extern void conker_heap_alloc_end(uint8_t*, recomp_context*); conker_heap_alloc_end(rdram, ctx); }"
+before_vram = 0x10003DD8
+text = "{ extern int conker_heap_failed(uint8_t*, recomp_context*); if (conker_heap_failed(rdram, ctx)) { return; } }"
 
+# func_10004074 (free) begins: a pool's block is freed there; a heap block freed from another thread waits for the game thread.
 [[patches.hook]]
 func = "func_10004074"
 before_vram = 0x10004074
-text = "{ extern void conker_heap_free(uint8_t*, recomp_context*); conker_heap_free(rdram, ctx); }"
+text = "{ extern int conker_heap_free(uint8_t*, recomp_context*); if (conker_heap_free(rdram, ctx)) { return; } }"
+
+# func_10004250 (frees owner 2, ages 3 and 4) and func_10004308 (frees owners 1-4) begin: the same for the spare pool's blocks.
+[[patches.hook]]
+func = "func_10004250"
+before_vram = 0x10004250
+text = "{ extern void conker_heap_age(uint8_t*, recomp_context*, int); conker_heap_age(rdram, ctx, 0); }"
+
+[[patches.hook]]
+func = "func_10004308"
+before_vram = 0x10004308
+text = "{ extern void conker_heap_age(uint8_t*, recomp_context*, int); conker_heap_age(rdram, ctx, 1); }"
