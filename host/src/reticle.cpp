@@ -34,7 +34,6 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
-#include <cstdio>
 #include <cstring>
 
 #include "recomp.h"
@@ -75,9 +74,6 @@ namespace {
     // belongs on it (player 1's camera, full screen, not zoomed in).
     std::atomic<int64_t> last_aim_ticks = 0;
     std::atomic<bool> last_aim_shown = false;
-    // Online, zoomed in with a gun that draws no crosshair of its own (the tommy gun, the crossbow, ...): shown whatever the setting,
-    // as zoomed in there is nothing else to aim by.
-    std::atomic<bool> last_aim_forced = false;
     // The look mode's state of the last aiming frame (no_state for the second aiming mode).
     constexpr uint32_t no_state = 0xFFFFFFFFu;
     std::atomic<uint32_t> last_aim_state = no_state;
@@ -173,14 +169,7 @@ namespace {
 namespace {
     // A frame aiming with camera (its state's + 0x23D is the camera's index): player 1's, full
     // screen and not zoomed in, shows the reticle.
-    // The look kinds (+0x23E of the look camera) in which the scope draws a crosshair of its own: the sniper's.
-    bool own_crosshair(uint32_t kind) {
-        return kind == 0x24;
-    }
-
-    // online_gun: a gun aimed online (the look mode's gun kinds, or the second aiming mode outside the sniper's scope): shown zoomed in too.
-    // zoom_only: shown only zoomed in (a look that may not be a gun's: nothing unzoomed).
-    void aiming_frame(uint8_t* rdram, gpr camera, uint32_t state, bool online_gun = false, bool zoom_only = false) {
+    void aiming_frame(uint8_t* rdram, gpr camera, uint32_t state) {
         const uint32_t index = MEM_BU(0x23D, camera);
         const bool online = conker::netsession::active();
         if (index != (uint32_t)(online ? conker::netsession::local_slot() : 0)) {
@@ -194,72 +183,122 @@ namespace {
         // stop in the middle.
         const bool full_screen = online || read_float(rdram, view, camera_left) <= 4.0f && read_float(rdram, view, camera_right) >= 286.0f &&
             read_float(rdram, view, camera_top) <= 4.0f && read_float(rdram, view, camera_bottom) >= 210.0f;
-        last_aim_shown = (zoom_only ? zoomed : (!zoomed || online_gun)) && full_screen;
-        last_aim_forced = online_gun && zoomed;
+        last_aim_shown = !zoomed && full_screen;
         last_aim_state = state;
-        if (online) {
-            // each kind of aiming, once, to the netplay log: which looks show the reticle
-            static uint32_t seen[32] = {};
-            static int count = 0;
-            const uint32_t key = (MEM_BU(0x23E, camera) << 16) | ((state & 0xFFu) << 8) | (zoomed ? 2u : 0u) | (online_gun ? 1u : 0u);
-            bool known = false;
-            for (int i = 0; i < count; i++) {
-                known |= seen[i] == key;
-            }
-            if (!known && count < 32) {
-                seen[count++] = key;
-                char line[160];
-                std::snprintf(line, sizeof(line), "[reticle] aiming: look kind %02X, state %s%02X, %s, %s", (unsigned)MEM_BU(0x23E, camera), state == no_state ? "(second mode) " : "",
-                    state == no_state ? 0u : (unsigned)(state & 0xFFu), zoomed ? "zoomed in" : "not zoomed", last_aim_shown.load() ? (last_aim_forced.load() ? "reticle shown (online zoom)" : "reticle shown if the setting is on") : "no reticle");
-                conker::netsession::log(line);
-            }
-        }
         last_aim_ticks = clock::now().time_since_epoch().count();
     }
 }
 
+namespace {
+    // Online: the game's own cross (the M4's in War: yellow bars and dots, the bars from 3.5 to 7 of the N64's pixels from the
+    // middle and the dots at 10.5, each a pixel thick) for the guns that draw none of their own while aimed: the tommy gun's
+    // R-Look (look kinds 0x38 and 0x39) and the crossbow's (0x18, the second aiming mode). Drawn over the game like the reticle,
+    // in the middle of the screen, where the full-screen view puts the camera's aim (net_view.cpp). Not a setting.
+    std::atomic<int64_t> last_cross_ticks = 0;
+    bool cross_created = false;
+    recompui::ContextId cross_context = recompui::ContextId::null();
+    recompui::Element* cross_holder = nullptr;
+    float cross_aspect = 0.0f;
+
+    bool cross_kind(uint32_t kind, bool second_mode) {
+        return second_mode ? kind == 0x18 : (kind == 0x38 || kind == 0x39);
+    }
+
+    void cross_frame(uint8_t* rdram, gpr camera, bool second_mode) {
+        if (!conker::netsession::active() || MEM_BU(0x23D, camera) != (uint32_t)conker::netsession::local_slot() || !cross_kind(MEM_BU(0x23E, camera), second_mode)) {
+            return;
+        }
+        last_cross_ticks = clock::now().time_since_epoch().count();
+    }
+
+    // The holder is 22 of the N64's pixels square (216 of them the screen's height), the cross's middle at its middle.
+    void create_cross() {
+        const recompui::Color yellow{ 222, 180, 34, 215 };
+        cross_context = recompui::create_context();
+        cross_context.open();
+        cross_context.set_captures_input(false);
+        cross_context.set_captures_mouse(false);
+        cross_holder = cross_context.create_element<recompui::Element>(cross_context.get_root_element());
+        cross_holder->set_position(recompui::Position::Absolute);
+        const auto piece = [&](float left, float top, float width, float height) {
+            constexpr float unit = 1.0f / 22.0f;
+            recompui::Element* e = cross_context.create_element<recompui::Element>(cross_holder);
+            e->set_position(recompui::Position::Absolute);
+            e->set_left(left * unit * 100.0f, recompui::Unit::Percent);
+            e->set_top(top * unit * 100.0f, recompui::Unit::Percent);
+            e->set_width(width * unit * 100.0f, recompui::Unit::Percent);
+            e->set_height(height * unit * 100.0f, recompui::Unit::Percent);
+            e->set_background_color(yellow);
+        };
+        constexpr float mid = 11.0f, thick = 0.9f, bar_from = 3.5f, bar_to = 7.0f, dot_at = 10.5f, dot = 0.8f;
+        // the bars: left, right, top, bottom
+        piece(mid - bar_to, mid - thick / 2, bar_to - bar_from, thick);
+        piece(mid + bar_from, mid - thick / 2, bar_to - bar_from, thick);
+        piece(mid - thick / 2, mid - bar_to, thick, bar_to - bar_from);
+        piece(mid - thick / 2, mid + bar_from, thick, bar_to - bar_from);
+        // the dots
+        piece(mid - dot_at - dot / 2, mid - dot / 2, dot, dot);
+        piece(mid + dot_at - dot / 2, mid - dot / 2, dot, dot);
+        piece(mid - dot / 2, mid - dot_at - dot / 2, dot, dot);
+        piece(mid - dot / 2, mid + dot_at - dot / 2, dot, dot);
+        cross_context.close();
+        cross_created = true;
+    }
+
+    void place_cross() {
+        int width = 0, height = 0;
+        if (window != nullptr) {
+            SDL_GetWindowSize(window, &width, &height);
+        }
+        const float aspect = (width > 0 && height > 0) ? (float)width / (float)height : 16.0f / 9.0f;
+        if (aspect == cross_aspect) {
+            return;
+        }
+        cross_aspect = aspect;
+        const float h = 22.0f / 216.0f * 100.0f;
+        const float w = h / aspect;
+        cross_context.open();
+        cross_holder->set_width(w, recompui::Unit::Percent);
+        cross_holder->set_height(h, recompui::Unit::Percent);
+        cross_holder->set_left(50.0f - w / 2, recompui::Unit::Percent);
+        cross_holder->set_top(50.0f - h / 2, recompui::Unit::Percent);
+        cross_context.close();
+    }
+
+    void update_cross() {
+        const int64_t since = clock::now().time_since_epoch().count() - last_cross_ticks.load();
+        const bool wanted = ui_ready && ultramodern::is_game_started() && since >= 0 && clock::duration(since) < linger;
+        if (!wanted) {
+            if (cross_created && recompui::is_context_shown(cross_context)) {
+                recompui::hide_context(cross_context);
+            }
+            return;
+        }
+        if (!cross_created) {
+            create_cross();
+        }
+        place_cross();
+        if (!recompui::is_context_shown(cross_context)) {
+            recompui::show_context(cross_context, "");
+        }
+    }
+}
+
 void conker::reticle::aim_frame(uint8_t* rdram, gpr camera) {
-    // (online, the second aiming mode outside the sniper's scope, which draws its own crosshair)
-    aiming_frame(rdram, camera, no_state, conker::netsession::active() && !own_crosshair(MEM_BU(0x23E, camera)));
+    cross_frame(rdram, camera, true);
+    aiming_frame(rdram, camera, no_state);
 }
 
 void conker::reticle::look_frame(uint8_t* rdram, gpr camera, uint32_t state) {
+    cross_frame(rdram, camera, false);
     // The slingshot and the throwing knives; plain R-Look (0x0) and the rest aren't aiming anything.
     constexpr uint32_t slingshot = 0x2, throwing_knives = 0xA;
-    // the look mode's gun kinds (look_aim.cpp's): the SMG / tommy gun 0x39, the M4 0x09, and the others aimed the same way; the shotgun's
-    // (0x3B) has its laser sight
-    constexpr uint32_t online_guns[] = { 0x39, 0x09, 0x38, 0x37, 0x3A, 0x15, 0x26 };
-    const uint32_t kind = MEM_BU(0x23E, camera);
-    bool gun = false;
-    for (uint32_t g : online_guns) {
-        gun |= state == g || kind == g;
-    }
+    constexpr uint32_t online_guns[] = { 0x39, 0x09 };   // the SMG and the M4
     if (state == slingshot || state == throwing_knives) {
         aiming_frame(rdram, camera, state);
     }
-    else if (conker::netsession::active() && gun && !own_crosshair(kind)) {
-        aiming_frame(rdram, camera, state, true);
-    }
-    else if (conker::netsession::active() && (kind == 0x14 || kind == 0x18 || kind == 0x19)) {
-        // looks seen in The Vault's deathmatch (0.9.46 test) besides the guns above and the rocket launcher's (0x16), the tommy gun's
-        // or the crossbow's zoom among them: the reticle while zoomed in
-        aiming_frame(rdram, camera, state, true, true);
-    }
-    else if (conker::netsession::active() && kind != 0 && MEM_BU(0x23D, camera) == (uint32_t)conker::netsession::local_slot()) {
-        // (another look of this player's: each kind once to the netplay log, to find the ones a reticle would be wanted in)
-        static uint32_t seen[32] = {};
-        static int count = 0;
-        const uint32_t key = (kind << 8) | (state & 0xFFu);
-        bool known = false;
-        for (int i = 0; i < count; i++) {
-            known |= seen[i] == key;
-        }
-        if (!known && count < 32) {
-            seen[count++] = key;
-            char line[120];
-            std::snprintf(line, sizeof(line), "[reticle] look kind %02X, state %02X: no reticle", (unsigned)kind, (unsigned)(state & 0xFFu));
-            conker::netsession::log(line);
-        }
+    else if (conker::netsession::active() && (state == online_guns[0] || state == online_guns[1])) {
+        aiming_frame(rdram, camera, state);
     }
 }
 
@@ -268,9 +307,10 @@ void conker::reticle::on_ui_ready() {
 }
 
 void conker::reticle::update() {
+    update_cross();
     const int64_t since = clock::now().time_since_epoch().count() - last_aim_ticks.load();
     const bool aiming = since >= 0 && clock::duration(since) < linger && last_aim_shown.load();
-    const bool wanted = ui_ready && (conker::reticle::enabled() || last_aim_forced.load()) && ultramodern::is_game_started() && aiming;
+    const bool wanted = ui_ready && conker::reticle::enabled() && ultramodern::is_game_started() && aiming;
     if (!wanted) {
         if (created && recompui::is_context_shown(context)) {
             recompui::hide_context(context);
