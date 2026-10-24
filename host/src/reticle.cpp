@@ -34,6 +34,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 
 #include "recomp.h"
@@ -74,6 +75,9 @@ namespace {
     // belongs on it (player 1's camera, full screen, not zoomed in).
     std::atomic<int64_t> last_aim_ticks = 0;
     std::atomic<bool> last_aim_shown = false;
+    // Online, zoomed in with a gun that draws no crosshair of its own (the tommy gun, the crossbow, ...): shown whatever the setting,
+    // as zoomed in there is nothing else to aim by.
+    std::atomic<bool> last_aim_forced = false;
     // The look mode's state of the last aiming frame (no_state for the second aiming mode).
     constexpr uint32_t no_state = 0xFFFFFFFFu;
     std::atomic<uint32_t> last_aim_state = no_state;
@@ -169,7 +173,14 @@ namespace {
 namespace {
     // A frame aiming with camera (its state's + 0x23D is the camera's index): player 1's, full
     // screen and not zoomed in, shows the reticle.
-    void aiming_frame(uint8_t* rdram, gpr camera, uint32_t state) {
+    // The look kinds (+0x23E of the look camera) in which the scope draws a crosshair of its own: the sniper's.
+    bool own_crosshair(uint32_t kind) {
+        return kind == 0x24;
+    }
+
+    // online_gun: a gun aimed online (the look mode's gun kinds, or the second aiming mode outside the sniper's scope): shown zoomed in too.
+    // zoom_only: shown only zoomed in (a look that may not be a gun's: nothing unzoomed).
+    void aiming_frame(uint8_t* rdram, gpr camera, uint32_t state, bool online_gun = false, bool zoom_only = false) {
         const uint32_t index = MEM_BU(0x23D, camera);
         const bool online = conker::netsession::active();
         if (index != (uint32_t)(online ? conker::netsession::local_slot() : 0)) {
@@ -183,25 +194,72 @@ namespace {
         // stop in the middle.
         const bool full_screen = online || read_float(rdram, view, camera_left) <= 4.0f && read_float(rdram, view, camera_right) >= 286.0f &&
             read_float(rdram, view, camera_top) <= 4.0f && read_float(rdram, view, camera_bottom) >= 210.0f;
-        last_aim_shown = !zoomed && full_screen;
+        last_aim_shown = (zoom_only ? zoomed : (!zoomed || online_gun)) && full_screen;
+        last_aim_forced = online_gun && zoomed;
         last_aim_state = state;
+        if (online) {
+            // each kind of aiming, once, to the netplay log: which looks show the reticle
+            static uint32_t seen[32] = {};
+            static int count = 0;
+            const uint32_t key = (MEM_BU(0x23E, camera) << 16) | ((state & 0xFFu) << 8) | (zoomed ? 2u : 0u) | (online_gun ? 1u : 0u);
+            bool known = false;
+            for (int i = 0; i < count; i++) {
+                known |= seen[i] == key;
+            }
+            if (!known && count < 32) {
+                seen[count++] = key;
+                char line[160];
+                std::snprintf(line, sizeof(line), "[reticle] aiming: look kind %02X, state %s%02X, %s, %s", (unsigned)MEM_BU(0x23E, camera), state == no_state ? "(second mode) " : "",
+                    state == no_state ? 0u : (unsigned)(state & 0xFFu), zoomed ? "zoomed in" : "not zoomed", last_aim_shown.load() ? (last_aim_forced.load() ? "reticle shown (online zoom)" : "reticle shown if the setting is on") : "no reticle");
+                conker::netsession::log(line);
+            }
+        }
         last_aim_ticks = clock::now().time_since_epoch().count();
     }
 }
 
 void conker::reticle::aim_frame(uint8_t* rdram, gpr camera) {
-    aiming_frame(rdram, camera, no_state);
+    // (online, the second aiming mode outside the sniper's scope, which draws its own crosshair)
+    aiming_frame(rdram, camera, no_state, conker::netsession::active() && !own_crosshair(MEM_BU(0x23E, camera)));
 }
 
 void conker::reticle::look_frame(uint8_t* rdram, gpr camera, uint32_t state) {
     // The slingshot and the throwing knives; plain R-Look (0x0) and the rest aren't aiming anything.
     constexpr uint32_t slingshot = 0x2, throwing_knives = 0xA;
-    constexpr uint32_t online_guns[] = { 0x39, 0x09 };   // the SMG and the M4
+    // the look mode's gun kinds (look_aim.cpp's): the SMG / tommy gun 0x39, the M4 0x09, and the others aimed the same way; the shotgun's
+    // (0x3B) has its laser sight
+    constexpr uint32_t online_guns[] = { 0x39, 0x09, 0x38, 0x37, 0x3A, 0x15, 0x26 };
+    const uint32_t kind = MEM_BU(0x23E, camera);
+    bool gun = false;
+    for (uint32_t g : online_guns) {
+        gun |= state == g || kind == g;
+    }
     if (state == slingshot || state == throwing_knives) {
         aiming_frame(rdram, camera, state);
     }
-    else if (conker::netsession::active() && (state == online_guns[0] || state == online_guns[1])) {
-        aiming_frame(rdram, camera, state);
+    else if (conker::netsession::active() && gun && !own_crosshair(kind)) {
+        aiming_frame(rdram, camera, state, true);
+    }
+    else if (conker::netsession::active() && (kind == 0x14 || kind == 0x18 || kind == 0x19)) {
+        // looks seen in The Vault's deathmatch (0.9.46 test) besides the guns above and the rocket launcher's (0x16), the tommy gun's
+        // or the crossbow's zoom among them: the reticle while zoomed in
+        aiming_frame(rdram, camera, state, true, true);
+    }
+    else if (conker::netsession::active() && kind != 0 && MEM_BU(0x23D, camera) == (uint32_t)conker::netsession::local_slot()) {
+        // (another look of this player's: each kind once to the netplay log, to find the ones a reticle would be wanted in)
+        static uint32_t seen[32] = {};
+        static int count = 0;
+        const uint32_t key = (kind << 8) | (state & 0xFFu);
+        bool known = false;
+        for (int i = 0; i < count; i++) {
+            known |= seen[i] == key;
+        }
+        if (!known && count < 32) {
+            seen[count++] = key;
+            char line[120];
+            std::snprintf(line, sizeof(line), "[reticle] look kind %02X, state %02X: no reticle", (unsigned)kind, (unsigned)(state & 0xFFu));
+            conker::netsession::log(line);
+        }
     }
 }
 
@@ -212,7 +270,7 @@ void conker::reticle::on_ui_ready() {
 void conker::reticle::update() {
     const int64_t since = clock::now().time_since_epoch().count() - last_aim_ticks.load();
     const bool aiming = since >= 0 && clock::duration(since) < linger && last_aim_shown.load();
-    const bool wanted = ui_ready && conker::reticle::enabled() && ultramodern::is_game_started() && aiming;
+    const bool wanted = ui_ready && (conker::reticle::enabled() || last_aim_forced.load()) && ultramodern::is_game_started() && aiming;
     if (!wanted) {
         if (created && recompui::is_context_shown(context)) {
             recompui::hide_context(context);

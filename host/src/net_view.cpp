@@ -689,6 +689,13 @@ namespace {
                     }
                 } else if (leave) {
                     kind_name = "left alone";
+                } else if (!bar && in_rect(own_l, own_t, own_r, own_b) && cy < own_t + 18.0f && std::fabs(cx - (own_l + own_r) * 0.5f) < 64.0f) {
+                    // the top middle of this machine's camera's rectangle: the deathmatch's score and place ("1 (1st)"). It was taken for a
+                    // sprite of the world and moved down with the view, to the middle of the screen: it goes to the top of the full view, in
+                    // its middle across, for whichever player's camera it is (1 to 4)
+                    dx = (int32_t)((0.5f * (left + right) - 0.5f * (own_l + own_r)) * 4.0f);
+                    dy = (int32_t)((top - own_t) * 4.0f);
+                    kind_name = "score at the top";
                 } else if (!bar && std::fabs(cy - (own_t + own_b) * 0.5f) < 40.0f && std::fabs(cx - (own_l + own_r) * 0.5f) < 48.0f && in_rect(own_l, own_t, own_r, own_b)) {
                     dx = hud_shift_x;
                     dy = hud_shift;
