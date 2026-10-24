@@ -906,6 +906,75 @@ namespace {
     }
 }
 
+namespace {
+    // The music's shot layer (func_151C2050, the game thread): when a gun is fired the game asks the music manager
+    // (func_1000E7A0(8, ...): D_80041F08/D_80041F0C, read by func_1000C530) to play a layer of the music, its volume and pan
+    // packed in the request: (weapon + 1) | volume << 8 | pan << 16. The split screen works them out
+    //   - for a shot from an object without a look camera (or on some maps): at the bullet's point, from the nearest
+    //     listener (func_100114D0: near 100, far 1000), sent when louder than 0x1000;
+    //   - for a player's character: from the shooter's own values, as the shooter's own camera hears it.
+    // Online, every machine heard every shot's layer: this machine's player hears it from its own listener instead (the
+    // point's, or the shooter's place for another player's shot). Only the volume and pan sent change; whether the request
+    // is sent stays the game's (the music manager's state is the same on every machine).
+    uint32_t shot_music_object = 0;
+
+    void shot_music_start(uint8_t* rdram, recomp_context* ctx) {
+        (void)rdram;
+        shot_music_object = (uint32_t)ctx->r4;
+    }
+
+    // `character`: about to send the request for a player's character (at 0x151C2284: $t8 (weapon + 1) | volume << 8,
+    // $t1 pan << 16, which the call's delay slot puts together in $a1); else for a point (at 0x151C214C, $a1 ready).
+    void shot_music_send(uint8_t* rdram, recomp_context* ctx, bool character) {
+        const int k = local_listener(rdram);
+        if (k < 0) {
+            return;
+        }
+        const uint32_t sp = (uint32_t)ctx->r29;
+        uint32_t request = character ? (((uint32_t)ctx->r24 & 0xFFFFu) | ((uint32_t)ctx->r9 & 0xFF0000u)) : (uint32_t)ctx->r5;
+        const uint32_t game_volume = (request >> 8) & 0xFFu, game_pan = (request >> 16) & 0xFFu;
+        uint32_t volume = game_volume, pan = game_pan;
+        int player = -1;
+        if (character) {
+            player = character_player(rdram, shot_music_object);
+            if (player < 0 || player == conker::netsession::local_slot()) {
+                return;   // this machine's own player's shot: as the game plays it
+            }
+            uint32_t attenuation = 0, p = 0x40;
+            const int x = (int)float_at(rdram, shot_music_object + 0x14), y = (int)float_at(rdram, shot_music_object + 0x18),
+                      z = (int)float_at(rdram, shot_music_object + 0x1C);
+            evaluate_point(rdram, ctx, k, 0, (uint32_t)x, (uint32_t)y, (uint32_t)z, 500, 4501, &attenuation, &p);
+            volume = (game_volume * attenuation) >> 15;
+            pan = p & 0x7Fu;
+        } else {
+            const uint32_t point = word(rdram, sp + 0x54);
+            if (!ram_pointer(point)) {
+                return;
+            }
+            uint32_t attenuation = 0, p = 0x40;
+            const int x = (int)float_at(rdram, point), y = (int)float_at(rdram, point + 4), z = (int)float_at(rdram, point + 8);
+            evaluate_point(rdram, ctx, k, 0, (uint32_t)x, (uint32_t)y, (uint32_t)z, 100, 1000, &attenuation, &p);
+            volume = attenuation > 0x1000u ? (attenuation >> 7) & 0xFFu : 0u;
+            pan = p & 0x7Fu;
+        }
+        request = (request & 0xFFu) | (volume & 0xFFu) << 8 | (pan & 0xFFu) << 16;
+        if (character) {
+            ctx->r24 = (gpr)(int32_t)(request & 0xFFFFu);
+            ctx->r9 = (gpr)(int32_t)(request & 0xFF0000u);
+        } else {
+            ctx->r5 = (gpr)(int32_t)request;
+        }
+        static int logged = 0;
+        if (logged < 2000) {
+            logged++;
+            char line[200];
+            std::snprintf(line, sizeof(line), "[snd] f=%u the music's shot layer (%s, player %d): volume %u -> %u, pan %u -> %u", (unsigned)conker::netsession::frame(),
+                          character ? "a character's shot" : "at the bullet", player + 1, (unsigned)game_volume, (unsigned)volume, (unsigned)game_pan, (unsigned)pan);
+            conker::netsession::log(line);
+        }
+    }
+}
+
 // The hooks (conker.toml):
 //   0: func_1000F91C, 1: func_1000F9D4, 2: func_10010E78, just after their call to func_1000F6B8 (its arguments are still in the
 //      caller's frame: the listener argument and x, y, z at 0x0-0xC($sp), the pan's address at 0x10, near and far at 0x14, 0x18);
@@ -922,7 +991,8 @@ namespace {
 //   15, 16: func_10011BB8 calls func_10011624 (the moving sounds' list), and it has returned;
 //   17: func_1000F85C (set a playing sound's value) begins;
 //   18: func_10017438 (the sound player's start) begins;
-//   19: n_alSynStartVoiceParams begins; 20: n_alSynSetVol begins; 21: func_10020000 (the mixer's pull for one voice) begins.
+//   19: n_alSynStartVoiceParams begins; 20: n_alSynSetVol begins;
+//   22: func_151C2050 (a shot's request for the music's shot layer) begins; 23, 24: it is about to send the request.
 extern "C" void conker_local_audio(uint8_t* rdram, recomp_context* ctx, int which) {
     const uint32_t sp = (uint32_t)ctx->r29;
     switch (which) {
@@ -959,16 +1029,12 @@ extern "C" void conker_local_audio(uint8_t* rdram, recomp_context* ctx, int whic
             const bool sound_player = from >= 0x10015944u && from < 0x10015944u + 0x154Cu;
             const int volume = (int)(int16_t)((uint32_t)ctx->r7 & 0xFFFFu);
             note_voice((uint32_t)ctx->r4, music ? 2 : sound_player ? 1 : 3, from, (uint32_t)ctx->r5, volume);
-            // (a test, 0.9.27-0.9.29: online, the music player's notes are silent)
-            if (music && conker::netsession::active()) {
-                ctx->r7 = 0;
-            }
             static std::atomic<int> notes{ 0 };
-            if (conker::netsession::active() && notes.load() < 4000 && (sound_player || volume != 0)) {
+            if (conker::netsession::active() && notes.load() < 4000 && sound_player) {
                 notes.fetch_add(1);
                 char line[220];
                 std::snprintf(line, sizeof(line), "[snd] f=%u a voice %08X started by %s: volume %d%s pan %u, effects %u, wave %08X", (unsigned)conker::netsession::frame(),
-                              (unsigned)(uint32_t)ctx->r4, music ? "the music" : sound_player ? "the sound player" : "?", volume, music ? " (made 0)" : "",
+                              (unsigned)(uint32_t)ctx->r4, music ? "the music" : sound_player ? "the sound player" : "?", volume, "",
                               (unsigned)(word(rdram, (uint32_t)ctx->r29 + 0x10) & 0xFFu), (unsigned)(word(rdram, (uint32_t)ctx->r29 + 0x14) & 0xFFu),
                               (unsigned)(uint32_t)ctx->r5);
                 conker::netsession::log(line);
@@ -976,15 +1042,14 @@ extern "C" void conker_local_audio(uint8_t* rdram, recomp_context* ctx, int whic
             return;
         }
         case 20: {
-            // n_alSynSetVol begins (the audio thread): ($a0 the voice, $a1 the volume, $a2 the time). Online, a voice of the music
-            // player gets 0 from wherever it is set (the 0.9.27 test, now also its channels' fades, func_10019B50 and
-            // func_1001A45C); every other volume above 0 is logged, with who set it.
+            // n_alSynSetVol begins (the audio thread): ($a0 the voice, $a1 the volume, $a2 the time). A volume above 0 for a voice
+            // that isn't the music player's is logged, with who set it.
             const uint32_t from = (uint32_t)ctx->r31;
             const VoiceNote* note = find_voice((uint32_t)ctx->r4);
             const bool music = (from >= 0x1001415Cu && from < 0x1001415Cu + 0xEE8u) || (from >= 0x10013598u && from < 0x10013598u + 0xAB0u) ||
                                (from >= 0x1001ABA0u && from < 0x1001ABA0u + 0x204u) || (from >= 0x10019B50u && from < 0x10019C28u) ||
                                (from >= 0x1001A45Cu && from < 0x1001A508u) || (note != nullptr && note->kind == 2);
-            if (!conker::netsession::active()) {
+            if (!conker::netsession::active() || music) {
                 return;
             }
             const int volume = (int)(int16_t)((uint32_t)ctx->r5 & 0xFFFFu);
@@ -993,61 +1058,21 @@ extern "C" void conker_local_audio(uint8_t* rdram, recomp_context* ctx, int whic
                 sets.fetch_add(1);
                 const uint32_t state = (uint32_t)ctx->r4 - 0x10u;
                 char line[220];
-                std::snprintf(line, sizeof(line), "[snd] f=%u volume of voice %08X set to %d%s by %08X (its sound player state's volume %d), started f=%u by %d", (unsigned)conker::netsession::frame(),
-                              (unsigned)(uint32_t)ctx->r4, volume, music ? " (music: made 0)" : "", (unsigned)from,
-                              music ? -1 : (int)(int16_t)half(rdram, state + 0x44), note != nullptr ? (unsigned)note->frame : 0u, note != nullptr ? note->kind : 0);
+                std::snprintf(line, sizeof(line), "[snd] f=%u volume of voice %08X set to %d by %08X (its sound player state's volume %d), started f=%u", (unsigned)conker::netsession::frame(),
+                              (unsigned)(uint32_t)ctx->r4, volume, (unsigned)from, (int)(int16_t)half(rdram, state + 0x44), note != nullptr ? (unsigned)note->frame : 0u);
                 conker::netsession::log(line);
             }
-            if (music) {
-                ctx->r5 = 0;
-            }
             return;
         }
-        case 21: {
-            // func_10020000 (the mixer's pull for one voice: its envelope, pan and volume) begins (the audio thread), $a0 the
-            // voice's mixer state. A test (0.9.29): online, any voice the mixer is to play at more than nothing is logged, once a
-            // frame, with who started it, to find what still reaches the speakers when every sound started was given 0.
-            if (!conker::netsession::active()) {
-                return;
-            }
-            const uint32_t e = (uint32_t)ctx->r4;
-            if (!ram_pointer(e)) {
-                return;
-            }
-            const int volume = (int)(int16_t)half(rdram, e + 0x62);
-            const int left = (int)(int16_t)half(rdram, e + 0x64), right = (int)(int16_t)half(rdram, e + 0x66);
-            const int target_left = (int)(int16_t)half(rdram, e + 0x70), target_right = (int)(int16_t)half(rdram, e + 0x76);
-            const uint32_t params = word(rdram, e + 0x84);
-            const uint32_t param_type = ram_pointer(params) ? half(rdram, params + 8) : 0xFFFFu;
-            const int param_volume = ram_pointer(params) ? (int)(int16_t)half(rdram, params + 0x10) : 0;
-            auto loud = [](int v) { return v > 2 || v < -2; };
-            if (!loud(left) && !loud(right) && !loud(target_left) && !loud(target_right) && volume == 0 && param_volume == 0) {
-                return;
-            }
-            static uint32_t last_e[32] = {};
-            static uint32_t last_frame[32] = {};
-            const uint32_t now = (uint32_t)conker::netsession::frame();
-            const unsigned slot = (e >> 4) & 31u;
-            if (last_e[slot] == e && last_frame[slot] == now) {
-                return;
-            }
-            last_e[slot] = e;
-            last_frame[slot] = now;
-            static int mixed = 0;
-            if (mixed >= 20000) {
-                return;
-            }
-            mixed++;
-            const uint32_t voice = word(rdram, e + 8);
-            const VoiceNote* note = find_voice(voice);
-            char line[260];
-            std::snprintf(line, sizeof(line), "[mix] f=%u voice %08X (mixer %08X) volume %d, gains %d %d to %d %d, dry %d wet %d, next change %X (%d); started f=%u by %d at %d, wave %08X / %08X",
-                          (unsigned)now, (unsigned)voice, (unsigned)e, volume, left, right, target_left, target_right, (int)(int16_t)half(rdram, e + 0x68),
-                          (int)(int16_t)half(rdram, e + 0x6A), (unsigned)param_type, param_volume, note != nullptr ? (unsigned)note->frame : 0u, note != nullptr ? note->kind : 0,
-                          note != nullptr ? note->volume : 0, note != nullptr ? (unsigned)note->wave : 0u, (unsigned)word(rdram, e + 0x24));
-            conker::netsession::log(line);
+        case 22:
+            shot_music_start(rdram, ctx);
             return;
-        }
+        case 23:
+            shot_music_send(rdram, ctx, false);
+            return;
+        case 24:
+            shot_music_send(rdram, ctx, true);
+            return;
         case 18: {
             // func_10017438 (the sound player's start) begins: from _n_handleEvent (the audio thread: a sound's next part), logged
             if ((uint32_t)ctx->r31 == 0x10016DCCu && conker::netsession::active()) {
@@ -1189,61 +1214,3 @@ extern "C" void conker_local_audio(uint8_t* rdram, recomp_context* ctx, int whic
     }
 }
 
-// (a test, 0.9.30-0.9.31) The game's calls to the music player's controls (the game thread, the same on every machine): which
-// function, its arguments and where it was called from, to find what turns up the music that plays with every shot. A call
-// the same as the function's last one (its own arguments, from the same place) within a second isn't logged again, and each
-// function has its own number of lines, so the match is reached.
-extern "C" void conker_music_trace(uint8_t* rdram, recomp_context* ctx, int which) {
-    if (!conker::netsession::active()) {
-        return;
-    }
-    struct Kind {
-        const char* name;
-        int args;   // how many of $a0-$a3, 0x10($sp) are its arguments
-        int cap;
-    };
-    static const Kind kinds[] = {
-        { "1000886C channels' volume", 3, 900 },  { "10008790 channels' fade", 4, 900 },   { "100086FC channel CC41", 3, 300 },
-        { "10008744 channel pan", 3, 300 },       { "1000E46C track volume %", 4, 900 },   { "1000E588 track volume % (2)", 3, 900 },
-        { "1000E40C track value", 2, 600 },       { "1000E704 track change", 3, 600 },     { "10008B60 MIDI", 5, 300 },
-        { "10008BC0 player value", 3, 300 },      { "10017E4C channel CC5C", 3, 200 },     { "10008A94 channel CC5C (2)", 3, 200 },
-        { "10008C6C sequence", 2, 300 },          { "10008CE8 sequence start", 2, 300 },   { "10008824 channel volume", 3, 900 },
-        { "10008660 channel fade", 4, 900 },      { "10017D30 CC FC", 3, 900 },            { "10017C00 CC FC mute", 2, 300 },
-        { "10017C68 CC FD/FF", 4, 900 },          { "10017BB8 CC FC 0", 2, 300 },          { "10017CE0 CC 41", 3, 300 },
-        { "1001E400 send MIDI", 5, 1500 },
-    };
-    constexpr int count = (int)(sizeof(kinds) / sizeof(kinds[0]));
-    if (which < 0 || which >= count) {
-        return;
-    }
-    struct Last {
-        uint32_t a[5] = {};
-        uint32_t ra = 0;
-        uint32_t frame = 0;
-        int lines = 0;
-    };
-    static Last last[count];
-    const Kind& kind = kinds[which];
-    const uint32_t sp = (uint32_t)ctx->r29;
-    uint32_t a[5] = { (uint32_t)ctx->r4, (uint32_t)ctx->r5, (uint32_t)ctx->r6, (uint32_t)ctx->r7, word(rdram, sp + 0x10) };
-    for (int n = kind.args; n < 5; n++) {
-        a[n] = 0;
-    }
-    const uint32_t ra = (uint32_t)ctx->r31;
-    const uint32_t now = (uint32_t)conker::netsession::frame();
-    Last& l = last[which];
-    if (l.ra == ra && std::memcmp(l.a, a, sizeof(a)) == 0 && now - l.frame < 60) {
-        return;
-    }
-    std::memcpy(l.a, a, sizeof(a));
-    l.ra = ra;
-    l.frame = now;
-    if (l.lines >= kind.cap) {
-        return;
-    }
-    l.lines++;
-    char line[220];
-    std::snprintf(line, sizeof(line), "[mus] f=%u %s (%08X %08X %08X %08X; %08X) from %08X", (unsigned)now, kind.name, (unsigned)a[0], (unsigned)a[1],
-                  (unsigned)a[2], (unsigned)a[3], (unsigned)a[4], (unsigned)ra);
-    conker::netsession::log(line);
-}

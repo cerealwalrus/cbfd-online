@@ -925,117 +925,23 @@ func = "n_alSynSetVol"
 before_vram = 0x1001C910
 text = "{ extern void conker_local_audio(uint8_t*, recomp_context*, int); conker_local_audio(rdram, ctx, 20); }"
 
-# (a test, 0.9.30) the game's calls to the music player's controls, logged (host/src/local_audio.cpp, conker_music_trace)
+# Online: the music's layer played with each shot is heard from this machine's player (host/src/local_audio.cpp,
+# shot_music_send): func_151C2050 sends the music manager its volume and pan, which the split screen worked out from the
+# nearest camera or the shooter's own.
 [[patches.hook]]
-func = "func_1000886C"
-before_vram = 0x1000886C
-text = "{ extern void conker_music_trace(uint8_t*, recomp_context*, int); conker_music_trace(rdram, ctx, 0); }"
+func = "func_151C2050"
+before_vram = 0x151C2050
+text = "{ extern void conker_local_audio(uint8_t*, recomp_context*, int); conker_local_audio(rdram, ctx, 22); }"
 
 [[patches.hook]]
-func = "func_10008790"
-before_vram = 0x10008790
-text = "{ extern void conker_music_trace(uint8_t*, recomp_context*, int); conker_music_trace(rdram, ctx, 1); }"
+func = "func_151C2050"
+before_vram = 0x151C214C
+text = "{ extern void conker_local_audio(uint8_t*, recomp_context*, int); conker_local_audio(rdram, ctx, 23); }"
 
 [[patches.hook]]
-func = "func_100086FC"
-before_vram = 0x100086FC
-text = "{ extern void conker_music_trace(uint8_t*, recomp_context*, int); conker_music_trace(rdram, ctx, 2); }"
-
-[[patches.hook]]
-func = "func_10008744"
-before_vram = 0x10008744
-text = "{ extern void conker_music_trace(uint8_t*, recomp_context*, int); conker_music_trace(rdram, ctx, 3); }"
-
-[[patches.hook]]
-func = "func_1000E46C"
-before_vram = 0x1000E46C
-text = "{ extern void conker_music_trace(uint8_t*, recomp_context*, int); conker_music_trace(rdram, ctx, 4); }"
-
-[[patches.hook]]
-func = "func_1000E588"
-before_vram = 0x1000E588
-text = "{ extern void conker_music_trace(uint8_t*, recomp_context*, int); conker_music_trace(rdram, ctx, 5); }"
-
-[[patches.hook]]
-func = "func_1000E40C"
-before_vram = 0x1000E40C
-text = "{ extern void conker_music_trace(uint8_t*, recomp_context*, int); conker_music_trace(rdram, ctx, 6); }"
-
-[[patches.hook]]
-func = "func_1000E704"
-before_vram = 0x1000E704
-text = "{ extern void conker_music_trace(uint8_t*, recomp_context*, int); conker_music_trace(rdram, ctx, 7); }"
-
-[[patches.hook]]
-func = "func_10008B60"
-before_vram = 0x10008B60
-text = "{ extern void conker_music_trace(uint8_t*, recomp_context*, int); conker_music_trace(rdram, ctx, 8); }"
-
-[[patches.hook]]
-func = "func_10008BC0"
-before_vram = 0x10008BC0
-text = "{ extern void conker_music_trace(uint8_t*, recomp_context*, int); conker_music_trace(rdram, ctx, 9); }"
-
-[[patches.hook]]
-func = "func_10017E4C"
-before_vram = 0x10017E4C
-text = "{ extern void conker_music_trace(uint8_t*, recomp_context*, int); conker_music_trace(rdram, ctx, 10); }"
-
-[[patches.hook]]
-func = "func_10008A94"
-before_vram = 0x10008A94
-text = "{ extern void conker_music_trace(uint8_t*, recomp_context*, int); conker_music_trace(rdram, ctx, 11); }"
-
-[[patches.hook]]
-func = "func_10008C6C"
-before_vram = 0x10008C6C
-text = "{ extern void conker_music_trace(uint8_t*, recomp_context*, int); conker_music_trace(rdram, ctx, 12); }"
-
-[[patches.hook]]
-func = "func_10008CE8"
-before_vram = 0x10008CE8
-text = "{ extern void conker_music_trace(uint8_t*, recomp_context*, int); conker_music_trace(rdram, ctx, 13); }"
-
-[[patches.hook]]
-func = "func_10008824"
-before_vram = 0x10008824
-text = "{ extern void conker_music_trace(uint8_t*, recomp_context*, int); conker_music_trace(rdram, ctx, 14); }"
-
-[[patches.hook]]
-func = "func_10008660"
-before_vram = 0x10008660
-text = "{ extern void conker_music_trace(uint8_t*, recomp_context*, int); conker_music_trace(rdram, ctx, 15); }"
-
-[[patches.hook]]
-func = "func_10017D30"
-before_vram = 0x10017D30
-text = "{ extern void conker_music_trace(uint8_t*, recomp_context*, int); conker_music_trace(rdram, ctx, 16); }"
-
-[[patches.hook]]
-func = "func_10017C00"
-before_vram = 0x10017C00
-text = "{ extern void conker_music_trace(uint8_t*, recomp_context*, int); conker_music_trace(rdram, ctx, 17); }"
-
-[[patches.hook]]
-func = "func_10017C68"
-before_vram = 0x10017C68
-text = "{ extern void conker_music_trace(uint8_t*, recomp_context*, int); conker_music_trace(rdram, ctx, 18); }"
-
-[[patches.hook]]
-func = "func_10017BB8"
-before_vram = 0x10017BB8
-text = "{ extern void conker_music_trace(uint8_t*, recomp_context*, int); conker_music_trace(rdram, ctx, 19); }"
-
-[[patches.hook]]
-func = "func_10017CE0"
-before_vram = 0x10017CE0
-text = "{ extern void conker_music_trace(uint8_t*, recomp_context*, int); conker_music_trace(rdram, ctx, 20); }"
-
-[[patches.hook]]
-func = "func_1001E400"
-before_vram = 0x1001E400
-text = "{ extern void conker_music_trace(uint8_t*, recomp_context*, int); conker_music_trace(rdram, ctx, 21); }"
-
+func = "func_151C2050"
+before_vram = 0x151C2284
+text = "{ extern void conker_local_audio(uint8_t*, recomp_context*, int); conker_local_audio(rdram, ctx, 24); }"
 
 [[patches.hook]]
 func = "func_10010BE8"
