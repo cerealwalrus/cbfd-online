@@ -921,7 +921,7 @@ text = "{ extern void conker_local_audio(uint8_t*, recomp_context*, int); conker
 [[patches.hook]]
 func = "func_151C2050"
 before_vram = 0x151C214C
-text = "{ extern void conker_local_audio(uint8_t*, recomp_context*, int); conker_local_audio(rdram, ctx, 23); }"
+text = "{ extern int conker_local_audio_shot(uint8_t*, recomp_context*); if (conker_local_audio_shot(rdram, ctx)) { return; } }"
 
 [[patches.hook]]
 func = "func_151C2050"

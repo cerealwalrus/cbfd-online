@@ -84,12 +84,44 @@ namespace {
     }
 
     // What the game's culls (which decide what its logic sees: objects in view run their own code, and so on) widen
-    // by. In an online session every machine has to cull the same, so it is a fixed 16:9, not this window's shape.
+    // by. In an online session every machine has to cull the same, so it is a fixed shape, not this window's: 21:9, so an
+    // ultrawide window's sides are drawn too.
     float cull_ratio() {
         if (conker::netsession::active()) {
-            return (16.0f / 9.0f) / (4.0f / 3.0f);
+            return (21.0f / 9.0f) / (4.0f / 3.0f);
         }
         return widescreen_ratio();
+    }
+
+    // Online, the full-screen view (net_view.cpp) shows a split-screen camera at the pixels per angle of its own small rectangle, so it
+    // shows more than that camera's 4:3 view: as much more as the full-screen camera's viewport (the one at index `players`) is bigger
+    // than the camera's own, across and up (1.25 and 1.95 times in a 2-player game). The game culls the level and its objects to the
+    // camera's own view, so past it nothing was drawn and the level's background colour showed through (lime green in some levels, at
+    // the top of the screen and in doorways, as the camera turned). The culls are widened by this much more. It comes from the game's
+    // memory (the cameras' layout), the same on every machine, so every machine culls the same. 1 and 1 offline, or for a camera that
+    // is the whole screen.
+    constexpr uint32_t cameras_address = 0x800BE628;   // D_800BE628
+    constexpr uint32_t players_less_one = 0x80082FA0;  // D_80082FA0
+    void online_view_reach(uint8_t* rdram, gpr camera, float* across, float* up) {
+        *across = *up = 1.0f;
+        if (!conker::netsession::active()) {
+            return;
+        }
+        const uint32_t base = (uint32_t)MEM_W(0, (gpr)(int32_t)cameras_address);
+        const int players = (int)MEM_W(0, (gpr)(int32_t)players_less_one) + 1;
+        const uint32_t address = (uint32_t)camera;
+        if ((base >> 24) != 0x80 || players < 2 || players > 4 || address < base || (address - base) % 0x180u != 0 || (address - base) / 0x180u >= (uint32_t)players) {
+            return;
+        }
+        const uint32_t own = (uint32_t)MEM_W(0x40, camera);
+        const uint32_t full = (uint32_t)MEM_W(0x40, (gpr)(int32_t)(base + (uint32_t)players * 0x180u));
+        const float own_x = (float)(int16_t)(own >> 16), own_y = (float)(int16_t)(own & 0xFFFFu);
+        const float full_x = (float)(int16_t)(full >> 16), full_y = (float)(int16_t)(full & 0xFFFFu);
+        if (own_x > 0.0f && own_y > 0.0f && full_x > 0.0f && full_y > 0.0f) {
+            // (and a little more, so nothing pops in right at the screen's edge)
+            *across = std::clamp(full_x / own_x, 1.0f, 4.0f) * 1.04f;
+            *up = std::clamp(full_y / own_y, 1.0f, 4.0f) * 1.04f;
+        }
     }
 
     // TEMP-DEBUG: CONKER_CULL_EXTRA widens the frustum and cull scale this much more than
@@ -660,12 +692,28 @@ extern "C" void conker_iris_end(uint8_t* rdram, recomp_context* ctx) {
 // camera), rebuild the left and right planes from the horizontal field of view
 // as wide as the window shows it: tan(half angle) grows with the aspect ratio.
 extern "C" void conker_widen_frustum(uint8_t* rdram, recomp_context* ctx) {
-    const float ratio = cull_ratio();
+    const gpr camera = ctx->r16;
+    constexpr float degrees_to_radians = 3.14159265358979f / 180.0f;
+    float across = 1.0f, up = 1.0f;
+    online_view_reach(rdram, camera, &across, &up);
+    if (up > 1.0f && !no_cull_widen()) {
+        // the top and bottom planes, as tall as the online full-screen view shows the camera: (0, -cos, -sin) and (0, cos, -sin) as the
+        // game writes them
+        const float half_y = read_float(rdram, camera, 0x78) * 0.5f * degrees_to_radians;
+        const float wide_half_y = std::min(std::atan(std::tan(half_y) * up), 1.5f);
+        const float c = std::cos(wide_half_y);
+        const float s = std::sin(wide_half_y);
+        write_float(rdram, camera, 0xA0, 0.0f);
+        write_float(rdram, camera, 0xA4, -c);
+        write_float(rdram, camera, 0xA8, -s);
+        write_float(rdram, camera, 0xAC, 0.0f);
+        write_float(rdram, camera, 0xB0, c);
+        write_float(rdram, camera, 0xB4, -s);
+    }
+    const float ratio = cull_ratio() * across;
     if (ratio <= 1.0f || no_cull_widen()) {
         return;
     }
-    const gpr camera = ctx->r16;
-    constexpr float degrees_to_radians = 3.14159265358979f / 180.0f;
     const float half_x = read_float(rdram, camera, 0x74) * 0.5f * degrees_to_radians;
     const float wide_half_x = std::min(std::atan(std::tan(half_x) * ratio * cull_extra()), 1.5f);
     const float c = std::cos(wide_half_x);
@@ -706,11 +754,16 @@ extern "C" void conker_camera_background_fill(uint8_t* rdram, recomp_context* ct
 extern "C" void conker_widen_cull_scale(uint8_t* rdram, recomp_context* ctx) {
     // Camera: Field of View first ($v0 is the camera).
     conker::field_of_view::adjust_cull_scales(rdram, ctx->r2);
-    const float ratio = cull_ratio();
+    float across = 1.0f, up = 1.0f;
+    online_view_reach(rdram, ctx->r2, &across, &up);
+    const gpr cull_scale_x = (gpr)(int32_t)0x800D35E0; // cullScaleX_800D35E0, then y
+    if (up > 1.0f && !no_cull_widen()) {
+        write_float(rdram, cull_scale_x, 4, read_float(rdram, cull_scale_x, 4) / up);
+    }
+    const float ratio = cull_ratio() * across;
     if (ratio <= 1.0f || no_cull_widen()) {
         return;
     }
-    const gpr cull_scale_x = (gpr)(int32_t)0x800D35E0; // cullScaleX_800D35E0
     write_float(rdram, cull_scale_x, 0, read_float(rdram, cull_scale_x, 0) / (ratio * cull_extra()));
 }
 
@@ -742,17 +795,19 @@ extern "C" void conker_widen_backdrop_buffers(uint8_t* rdram, recomp_context* ct
 // the view's corners can reach: from the window's horizontal field of view, the
 // camera's vertical one and how far it looks up or down (its view matrix, D_800D9C10).
 extern "C" void conker_widen_backdrop_sectors(uint8_t* rdram, recomp_context* ctx) {
-    const float ratio = widescreen_ratio();
-    if (ratio <= 1.0f) {
-        return;
-    }
     constexpr float degrees_to_radians = 3.14159265358979f / 180.0f;
     constexpr float half_sector = 45.0f, spare = 10.0f;
     const uint32_t camera_index = (uint32_t)MEM_W(0, (gpr)(int32_t)0x80082FA4); // D_80082FA4
     const gpr camera = (gpr)(int32_t)MEM_W(0, (gpr)(int32_t)0x800BE628) + (gpr)(int32_t)(camera_index * 0x180);
+    float across = 1.0f, up = 1.0f;
+    online_view_reach(rdram, camera, &across, &up);
+    const float ratio = std::max(widescreen_ratio(), 1.0f) * across;
+    if (ratio <= 1.0f && up <= 1.0f) {
+        return;
+    }
     const gpr view = (gpr)(int32_t)(0x800D9C10 + camera_index * 0x40);
     const float half_x = std::atan(std::tan(read_float(rdram, camera, 0x74) * 0.5f * degrees_to_radians) * ratio);
-    const float half_y = read_float(rdram, camera, 0x78) * 0.5f * degrees_to_radians;
+    const float half_y = std::atan(std::tan(read_float(rdram, camera, 0x78) * 0.5f * degrees_to_radians) * up);
     // The camera looks along -z of its view: the y part of that is its pitch.
     const float pitch = std::asin(std::clamp(-read_float(rdram, view, 0x18), -1.0f, 1.0f));
     const float corner_pitch = std::fabs(pitch) + half_y;

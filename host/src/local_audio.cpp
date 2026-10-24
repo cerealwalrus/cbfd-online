@@ -703,12 +703,22 @@ namespace {
         shot_music_object = (uint32_t)ctx->r4;
     }
 
+    // The music's shot layer is one sound for every shot: each request replaces what it plays. In a multiplayer match every shot's
+    // request is for its point (the game sends it when the point is within 1000 of any player). With each machine's own volume,
+    // another player's shot far from this one came out at volume 0 (or nearly), and it replaced this player's own gun as it fired:
+    // the gun's sound stopped short. So a request this player can't hear isn't sent at all (as the game does for a shot nobody
+    // hears), and one quieter than what the layer was given in the last few frames doesn't replace it.
+    uint32_t shot_layer_volume = 0;
+    uint32_t shot_layer_frame = 0;
+    constexpr uint32_t shot_layer_hold_frames = 8;
+
     // `character`: about to send the request for a player's character (at 0x151C2284: $t8 (weapon + 1) | volume << 8,
     // $t1 pan << 16, which the call's delay slot puts together in $a1); else for a point (at 0x151C214C, $a1 ready).
-    void shot_music_send(uint8_t* rdram, recomp_context* ctx, bool character) {
+    // False: the request for the point is not to be sent (see shot_layer_volume).
+    bool shot_music_send(uint8_t* rdram, recomp_context* ctx, bool character) {
         const int k = local_listener(rdram);
         if (k < 0) {
-            return;
+            return true;
         }
         const uint32_t sp = (uint32_t)ctx->r29;
         uint32_t request = character ? (((uint32_t)ctx->r24 & 0xFFFFu) | ((uint32_t)ctx->r9 & 0xFF0000u)) : (uint32_t)ctx->r5;
@@ -718,7 +728,7 @@ namespace {
         if (character) {
             player = character_player(rdram, shot_music_object);
             if (player < 0 || player == conker::netsession::local_slot()) {
-                return;   // this machine's own player's shot: as the game plays it
+                return true;   // this machine's own player's shot: as the game plays it
             }
             uint32_t attenuation = 0, p = 0x40;
             const int x = (int)float_at(rdram, shot_music_object + 0x14), y = (int)float_at(rdram, shot_music_object + 0x18),
@@ -729,13 +739,20 @@ namespace {
         } else {
             const uint32_t point = word(rdram, sp + 0x54);
             if (!ram_pointer(point)) {
-                return;
+                return true;
             }
             uint32_t attenuation = 0, p = 0x40;
             const int x = (int)float_at(rdram, point), y = (int)float_at(rdram, point + 4), z = (int)float_at(rdram, point + 8);
             evaluate_point(rdram, ctx, k, 0, (uint32_t)x, (uint32_t)y, (uint32_t)z, 100, 1000, &attenuation, &p);
             volume = attenuation > 0x1000u ? (attenuation >> 7) & 0xFFu : 0u;
             pan = p & 0x7Fu;
+            const uint32_t now = (uint32_t)conker::netsession::frame();
+            const bool recent = now - shot_layer_frame < shot_layer_hold_frames;
+            if (volume == 0 || (recent && volume < shot_layer_volume)) {
+                return false;
+            }
+            shot_layer_volume = volume;
+            shot_layer_frame = now;
         }
         request = (request & 0xFFu) | (volume & 0xFFu) << 8 | (pan & 0xFFu) << 16;
         if (character) {
@@ -744,7 +761,19 @@ namespace {
         } else {
             ctx->r5 = (gpr)(int32_t)request;
         }
+        return true;
     }
+}
+
+// func_151C2050 at 0x151C214C, about to send a point's request for the music's shot layer: 1 when it isn't to be sent, the function
+// then returning as it does after the call (its frame: $ra at 0x2C($sp), 0x50 bytes).
+extern "C" int conker_local_audio_shot(uint8_t* rdram, recomp_context* ctx) {
+    if (shot_music_send(rdram, ctx, false)) {
+        return 0;
+    }
+    ctx->r31 = (gpr)(int32_t)MEM_W(0x2C, ctx->r29);
+    ctx->r29 = (gpr)(int32_t)((uint32_t)ctx->r29 + 0x50u);
+    return 1;
 }
 
 // The hooks (conker.toml):
@@ -797,8 +826,7 @@ extern "C" void conker_local_audio(uint8_t* rdram, recomp_context* ctx, int whic
             shot_music_start(rdram, ctx);
             return;
         case 23:
-            shot_music_send(rdram, ctx, false);
-            return;
+            return;   // (0x151C214C's hook calls conker_local_audio_shot, which can skip the request)
         case 24:
             shot_music_send(rdram, ctx, true);
             return;
