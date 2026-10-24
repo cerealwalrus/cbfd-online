@@ -388,61 +388,6 @@ namespace {
                 }
             }
         }
-        {
-            // (to find how the game draws a look's crosshair, the M4's in War: the 2D commands of this machine's camera's passes and of the
-            // passes for no camera, once for each look kind, 45 frames after the look began, when the camera has moved in)
-            static int look_frames = 0;
-            static int look_frames_kind = -1;
-            static std::set<int> kinds_deep;
-            if (local_kind != look_frames_kind) {
-                look_frames_kind = local_kind;
-                look_frames = 0;
-            }
-            look_frames++;
-            if (local_kind != 0 && look_frames == 45 && kinds_deep.size() < 12 && kinds_deep.insert(local_kind).second) {
-                int lines = 0;
-                const auto interesting = [](uint32_t op) {
-                    return op == 0xE4 || op == 0xE5 || op == 0xF6 || op == 0xF7 || op == 0xFA || op == 0xFB || op == 0xFC || op == 0xFD || op == 0xF5 || op == 0xF3 ||
-                        op == 0xF2 || op == 0xE1 || op == 0xF1 || op == 0xED || op == 0xDE || op == 0xE2 || op == 0xE3 || op == 0x64 || op == 0x01 || op == 0xDA || op == 0x05 || op == 0x06;
-                };
-                for (size_t i = 0; i < frame.size() && lines < 900; i++) {
-                    if (frame[i].camera != local && frame[i].camera != 255) {
-                        continue;
-                    }
-                    const uint32_t from = frame[i].gfx, to = i + 1 < frame.size() ? frame[i + 1].gfx : end;
-                    if ((from >> 24) != 0x80 || to <= from || to - from > 0x40000u) {
-                        continue;
-                    }
-                    for (uint32_t a = from; a < to && lines < 900; a += 8) {
-                        const uint32_t c0 = (uint32_t)MEM_W(0, (gpr)(int32_t)a), c1 = (uint32_t)MEM_W(4, (gpr)(int32_t)a);
-                        if (!interesting(c0 >> 24)) {
-                            continue;
-                        }
-                        char line[160];
-                        std::snprintf(line, sizeof(line), "[net view] look %02X dl pass %zu (camera %d kind %d) %08X: %08X %08X", local_kind, i, frame[i].camera, frame[i].kind, a, c0, c1);
-                        conker::netsession::log(line);
-                        lines++;
-                        if ((c0 >> 24) == 0xDE && (c1 >> 24) == 0x80 && (c1 & 0x7FFFFFu) < 0x7FF000u) {
-                            // the list it calls, as far as its end
-                            for (uint32_t b = c1, n = 0; n < 96 && lines < 900; b += 8, n++) {
-                                const uint32_t d0 = (uint32_t)MEM_W(0, (gpr)(int32_t)b), d1 = (uint32_t)MEM_W(4, (gpr)(int32_t)b);
-                                if (interesting(d0 >> 24) || (d0 >> 24) == 0xDF) {
-                                    std::snprintf(line, sizeof(line), "[net view] look %02X dl   called %08X: %08X %08X", local_kind, b, d0, d1);
-                                    conker::netsession::log(line);
-                                    lines++;
-                                }
-                                if ((d0 >> 24) == 0xDF) {
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-                char line[120];
-                std::snprintf(line, sizeof(line), "[net view] look %02X: %d lines of its frame's 2D commands logged", local_kind, lines);
-                conker::netsession::log(line);
-            }
-        }
         if (dump_look) {
             for (size_t i = 0; i < frame.size(); i++) {
                 const uint32_t to = i + 1 < frame.size() ? frame[i + 1].gfx : 0;
@@ -1089,6 +1034,21 @@ extern "C" void conker_player_visibility(uint8_t* rdram, recomp_context* ctx, in
     const uint32_t object = (uint32_t)MEM_W(0x5C, ctx->r29);
     const uint32_t camera = (uint32_t)MEM_W(0x60, ctx->r29);
     static const bool keep_cull = std::getenv("CONKER_NET_KEEPCULL") != nullptr;
+    if (which == 0 && !keep_cull && object < 4 && object == camera && conker::netsession::active()) {
+        // A player aiming the crossbow (its look's kind 0x18, The Vault's deathmatch) sees through its sight with the camera in its
+        // head: the game draws its body (and the crossbow in its hands) for its own camera there, filling the view, where a Nintendo 64
+        // shows nothing of it. Hidden from its own camera while it aims, for every player on every machine (from the game's memory).
+        const uint32_t looks = (uint32_t)MEM_W(0, (gpr)(int32_t)0x800DBFF0);
+        if ((looks >> 24) == 0x80 && (looks & 0x7FFFFFu) + 4u * 0x9A0u <= 0x800000u) {
+            for (uint32_t k = 0; k < 4; k++) {
+                const gpr record = (gpr)(int32_t)(looks + k * 0x9A0u);
+                if (MEM_BU(0x23D, record) == camera && MEM_BU(0x23E, record) == 0x18) {
+                    ctx->r15 = ctx->r15 | ((gpr)1 << camera);
+                }
+            }
+        }
+        return;
+    }
     if (keep_cull || object >= 4 || camera >= 4 || object == camera || !conker::netsession::active()) {
         return;
     }

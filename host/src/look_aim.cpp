@@ -151,7 +151,10 @@ namespace {
     // game's own memory.
     constexpr float gun_pitch_scale = 4.06f / 1.9f;
     bool gun_aim_online(uint8_t* rdram, gpr camera) {
-        if (!conker::netsession::active()) {
+        // Off: online R-Look is the game's own, as on a Nintendo 64 (0.9.53: the view eases onto the aim and turns up and down at the
+        // game's speed, as it does there). Every machine has to do the same for every player, so it's not a setting.
+        constexpr bool snappy = false;
+        if (!snappy || !conker::netsession::active()) {
             return false;
         }
         const uint8_t kind = MEM_BU(0x23E, camera);
@@ -396,7 +399,9 @@ extern "C" void conker_aim_lock_on(uint8_t* rdram, recomp_context* ctx) {
 // (kind 0: gone straight to the second stage instead). Here the target and the current yaw are both set to it each frame, so the view is on the aim from the first frame.
 extern "C" void conker_look_stage_one(uint8_t* rdram, recomp_context* ctx) {
 #if defined(CONKER_RT64)
-    if (!conker::netsession::active()) {
+    // (off, as gun_aim_online: on a Nintendo 64 the camera swings round onto the aim over the first stage, and online it does the same now)
+    constexpr bool snappy = false;
+    if (!snappy || !conker::netsession::active()) {
         return;
     }
     const gpr camera = (gpr)(int32_t)ctx->r4;
