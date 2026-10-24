@@ -725,7 +725,10 @@ namespace {
                         }
                     }
                 }
-                const bool leave = bar && radar_camera < 0 && (op == 0xF6 || !(width <= 16.5f && height <= 5.5f && near_left));
+                // (with limited lives each camera's count, a digit 5 x 7 to the left of its health bar, is drawn here too: it goes with its
+                // health bar, to this machine's corner, or away with another camera's)
+                const bool lives_digit = bar && op != 0xF6 && width <= 8.5f && height <= 9.5f && near_left;
+                const bool leave = bar && radar_camera < 0 && (op == 0xF6 || !(width <= 16.5f && height <= 5.5f && near_left)) && !lives_digit;
                 if (menu_open) {
                     if (bar && (radar_camera >= 0 || !leave)) {
                         hide = true;
