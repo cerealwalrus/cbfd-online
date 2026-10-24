@@ -1011,3 +1011,19 @@ text = "{ extern void conker_net_pause_hook(uint8_t*, recomp_context*, int); con
 func = "func_10003C6C"
 before_vram = 0x10003DD8
 text = "{ extern void conker_heap_failed(uint8_t*, recomp_context*); conker_heap_failed(rdram, ctx); }"
+
+# (a test, host/src/heap_watch.cpp) every allocation and free online, logged
+[[patches.hook]]
+func = "func_10003C6C"
+before_vram = 0x10003C6C
+text = "{ extern void conker_heap_alloc_begin(uint8_t*, recomp_context*); conker_heap_alloc_begin(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_10003C6C"
+before_vram = 0x10004064
+text = "{ extern void conker_heap_alloc_end(uint8_t*, recomp_context*); conker_heap_alloc_end(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_10004074"
+before_vram = 0x10004074
+text = "{ extern void conker_heap_free(uint8_t*, recomp_context*); conker_heap_free(rdram, ctx); }"
