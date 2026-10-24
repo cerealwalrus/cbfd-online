@@ -81,7 +81,7 @@ namespace {
 
     constexpr int max_players = 4;
     constexpr uint32_t magic = 0x544E4243;  // "CBNT"
-    constexpr uint32_t protocol_version = 11;
+    constexpr uint32_t protocol_version = 12;
     constexpr uint32_t check_every = 30;
     constexpr uint32_t history = 1200;       // frames of inputs kept (for resyncs)
     constexpr uint32_t max_message = 64u << 20;
@@ -101,6 +101,9 @@ namespace {
         uint8_t cam_on = 0;
         // The player's sticks are swapped (Aiming: Swap Sticks): they aim with the right stick and move with the left.
         uint8_t swap = 0;
+        // The player's aiming settings that change what the game does with its sticks (look_aim.cpp's look_flag bits: the stick's
+        // inverting, its response, the lock-on): every machine plays that player's aiming with that player's own settings.
+        uint8_t look = 0;
         int16_t cam_yaw = 0;
         int16_t cam_pitch = 0;
         // Only the host's input has any: for each of the game's 16 sound slots, the handle of a sound that has finished
@@ -149,7 +152,7 @@ namespace {
         }
         Writer& put_input(const PlayerInput& in) {
             put(in.plugged).put(in.buttons).put(in.x).put(in.y);
-            put((uint8_t)((in.cam_on ? 1 : 0) | (in.swap ? 2 : 0)));
+            put((uint8_t)((in.cam_on ? 1 : 0) | (in.swap ? 2 : 0) | ((in.look & 0x3Fu) << 2)));
             if (in.cam_on) {
                 put(in.cam_yaw).put(in.cam_pitch);
             }
@@ -207,6 +210,7 @@ namespace {
             const uint8_t flags = get<uint8_t>();
             in.cam_on = flags & 1;
             in.swap = (flags & 2) ? 1 : 0;
+            in.look = (uint8_t)(flags >> 2);
             if (in.cam_on) {
                 in.cam_yaw = get<int16_t>();
                 in.cam_pitch = get<int16_t>();
@@ -2281,6 +2285,11 @@ std::string conker::netsession::player_name(int slot) {
     return name_of(slot);
 }
 
+uint8_t conker::netsession::look_flags(int player) {
+    std::lock_guard lock{ mtx };
+    return (enabled && !failed && player >= 0 && player < max_players) ? current.p[player].look : 0;
+}
+
 bool conker::netsession::swap_flag(int player) {
     std::lock_guard lock{ mtx };
     return enabled && !failed && player >= 0 && player < max_players && current.p[player].swap != 0;
@@ -3149,6 +3158,7 @@ void conker::netsession::on_port_read(int port) {
     mine.y = y;
     mine.cam_on = cam_on ? 1 : 0;
     mine.swap = swapped ? 1 : 0;
+    mine.look = sampler != nullptr ? conker::look_aim::sampled_look_flags() : 0;
     mine.cam_yaw = (int16_t)std::lround(std::clamp(cam_yaw, -3.0f, 3.0f) * 10000.0f);
     mine.cam_pitch = (int16_t)std::lround(std::clamp(cam_pitch, -3.0f, 3.0f) * 10000.0f);
     sound_sync = true;

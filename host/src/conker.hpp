@@ -175,6 +175,8 @@ namespace conker {
         void set_entry_hold(bool hold);
         bool entry_hold();
         bool sampled_swap();
+        // This machine's aiming settings that change what the game does (look_aim.cpp's look_flag bits), for its input online.
+        uint8_t sampled_look_flags();
         // Whether the player's character is aiming the shotgun (state 0x3B), where Z (the laser sight) makes
         // C-Left and C-Right turn the aim: the swapped left stick leaves them out while Z is held (frontend.cpp).
         bool z_turns_aim(int player);
@@ -349,6 +351,8 @@ namespace conker {
         // Online: whether that player's sticks are swapped this frame (aiming with the right stick, moving with the
         // left), from the frame's agreed input.
         bool swap_flag(int player);
+        // Online: that player's aiming settings (look_aim.cpp's look_flag bits), from the frame's agreed input.
+        uint8_t look_flags(int player);
         // The game's read of a port (input, and Swap Sticks' no weapon walking).
         bool input_for_game(int port, bool* plugged, uint16_t* buttons, float* x, float* y);
         // Every port read, before it is answered: the first of a pass waits for the frame's agreed inputs.

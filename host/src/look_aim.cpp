@@ -376,6 +376,11 @@ bool conker::look_aim::mouse_turns_camera() {
 // reads as clear, and the stick turns the aim as when there's no target.
 extern "C" void conker_aim_lock_on(uint8_t* rdram, recomp_context* ctx) {
 #if defined(CONKER_RT64)
+    // (online every machine has to do the same for every player: the lock-on is the game's own there, as it is with the setting On;
+    // the setting is for single player)
+    if (conker::netsession::active()) {
+        return;
+    }
     if (option_config(options::aim_lock_on) != nullptr && option<Toggle>(options::aim_lock_on) == Toggle::Off) {
         ctx->r9 = 0;
     }
@@ -726,22 +731,53 @@ void conker::look_aim::free_camera_invert(bool& x, bool& y) {
 namespace {
     // The game's own stick is Invert Y, so X turns around when the setting has X, and Y when the
     // setting lacks it.
-    bool turn_stick_x() {
+    bool own_turn_stick_x() {
         const Invert invert = option<Invert>(options::stick_invert);
         return invert == Invert::X || invert == Invert::Both;
     }
-    bool turn_stick_y() {
+    bool own_turn_stick_y() {
         const Invert invert = option<Invert>(options::stick_invert);
         return invert == Invert::None || invert == Invert::X;
     }
+
+    // The aiming settings that change what the game does with a player's sticks, as bits for its input online (see
+    // look_flag): online they were this machine's for every player, so a player whose settings differed from the other
+    // machine's (Stick: Aiming Response Direct here, Smooth there) aimed differently on each machine: aiming the tommy gun
+    // (whose look the SMG's and the M4's fix-ups don't cover) the games drifted apart every second (0.9.46 test).
+    constexpr uint8_t look_turn_x = 1, look_turn_y = 2, look_direct = 4;
+
+    // Whether the look mode's camera's player has the bit: online from the frame's agreed input (that player's own settings),
+    // offline this machine's.
+    bool look_flag(uint8_t* rdram, gpr camera, uint8_t bit) {
+        if (conker::netsession::active()) {
+            const int player = (int)MEM_BU(0x23D, camera);
+            return (conker::netsession::look_flags(player) & bit) != 0;
+        }
+        if (bit == look_turn_x) {
+            return own_turn_stick_x();
+        }
+        if (bit == look_turn_y) {
+            return own_turn_stick_y();
+        }
+        return option<Response>(options::stick_response) == Response::Direct;
+    }
 }
 #endif
+
+uint8_t conker::look_aim::sampled_look_flags() {
+#if defined(CONKER_RT64)
+    return (uint8_t)((own_turn_stick_x() ? look_turn_x : 0) | (own_turn_stick_y() ? look_turn_y : 0) |
+        (option<Response>(options::stick_response) == Response::Direct ? look_direct : 0));
+#else
+    return 0;
+#endif
+}
 
 // The stick's yaw: target - stick x * scale, stored at 0x15120A14 (one state, which then goes on
 // through the next one too) and at 0x15120A44 (every state). Turned around, it's a +.
 extern "C" void conker_look_stick_yaw_a(uint8_t* rdram, recomp_context* ctx) {
 #if defined(CONKER_RT64)
-    if (turn_stick_x()) {
+    if (look_flag(rdram, ctx->r16, look_turn_x)) {
         ctx->f6.fl = ctx->f8.fl + ctx->f18.fl;  // 0x15120A10: sub.s $f6, $f8, $f18
     }
 #endif
@@ -749,7 +785,7 @@ extern "C" void conker_look_stick_yaw_a(uint8_t* rdram, recomp_context* ctx) {
 
 extern "C" void conker_look_stick_yaw_b(uint8_t* rdram, recomp_context* ctx) {
 #if defined(CONKER_RT64)
-    if (turn_stick_x()) {
+    if (look_flag(rdram, ctx->r16, look_turn_x)) {
         ctx->f18.fl = ctx->f4.fl + ctx->f10.fl;  // 0x15120A40: sub.s $f18, $f4, $f10
     }
 #endif
@@ -758,7 +794,7 @@ extern "C" void conker_look_stick_yaw_b(uint8_t* rdram, recomp_context* ctx) {
 // The stick's pitch: target + stick y * scale, stored at 0x15120A98. Turned around, it's a -.
 extern "C" void conker_look_stick_pitch(uint8_t* rdram, recomp_context* ctx) {
 #if defined(CONKER_RT64)
-    if (turn_stick_y()) {
+    if (look_flag(rdram, ctx->r16, look_turn_y)) {
         ctx->f10.fl = ctx->f6.fl - ctx->f8.fl;  // 0x15120A94: add.s $f10, $f6, $f8
     }
     if (gun_aim_online(rdram, ctx->r16)) {
@@ -772,6 +808,9 @@ extern "C" void conker_look_stick_pitch(uint8_t* rdram, recomp_context* ctx) {
 // C-buttons' turn direction, 1 (C-Right) or -1 (C-Left), at + 0x6B0.
 extern "C" void conker_camera_turn_invert(uint8_t* rdram, recomp_context* ctx) {
 #if defined(CONKER_RT64)
+    if (conker::netsession::active()) {
+        return;   // (online the game's own, the same on every machine: the setting is for single player)
+    }
     const Invert invert = option<Invert>(options::camera_turn_invert);
     if (invert == Invert::X || invert == Invert::Both) {
         MEM_W(0x6B0, ctx->r16) = -MEM_W(0x6B0, ctx->r16);
@@ -781,6 +820,9 @@ extern "C" void conker_camera_turn_invert(uint8_t* rdram, recomp_context* ctx) {
 
 #if defined(CONKER_RT64)
 float conker::look_aim::camera_turn_speed() {
+    if (conker::netsession::active()) {
+        return 1.0f;   // (online the game's own, the same on every machine: the setting is for single player)
+    }
     return (float)(number_option(options::camera_turn_speed, 100.0) / 100.0);
 }
 #endif
@@ -848,10 +890,10 @@ extern "C" void conker_aim_stick(uint8_t* rdram, recomp_context* ctx) {
     conker::reticle::aim_frame(rdram, ctx->r16);
     // Aiming: Swap Sticks: this camera's player is aiming.
     note_aiming(rdram, ctx->r16, camera_player(rdram, ctx->r16));
-    if (turn_stick_x()) {
+    if (look_flag(rdram, ctx->r16, look_turn_x)) {
         ctx->f14.fl = -ctx->f14.fl;
     }
-    if (turn_stick_y()) {
+    if (look_flag(rdram, ctx->r16, look_turn_y)) {
         ctx->f12.fl = -ctx->f12.fl;
     }
 
@@ -1038,7 +1080,7 @@ extern "C" void conker_look_currents(uint8_t* rdram, recomp_context* ctx) {
         write_float(rdram, state, current_yaw, read_float(rdram, targets, target_yaw));
         write_float(rdram, targets, yaw_velocity, 0.0f);
     }
-    if (option<Response>(options::stick_response) == Response::Direct) {
+    if (look_flag(rdram, state, look_direct)) {
         // The view is where the targets are, and the spring keeps no speed to overshoot with.
         write_float(rdram, state, current_yaw, read_float(rdram, targets, target_yaw));
         write_float(rdram, targets, current_pitch, read_float(rdram, targets, target_pitch));
