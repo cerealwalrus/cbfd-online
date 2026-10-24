@@ -38,7 +38,7 @@ namespace {
 
     // The settings, kept for the run.
     int players = 2;
-    int delay_frames = 3;
+    int delay_frames = 0;   // 0: Auto (the host works it out from the round trips, and changes it during the game)
     int input_choice = 0;
     std::string address_text = "conkerstavern.servebeer.com";   // filled in for joining
     std::string nickname_text;
@@ -131,7 +131,7 @@ namespace {
 
     void refresh_settings_buttons() {
         players_button->set_text("Players: " + std::to_string(players));
-        delay_button->set_text("Input delay: " + std::to_string(delay_frames) + (delay_frames == 1 ? " frame" : " frames"));
+        delay_button->set_text(delay_frames <= 0 ? std::string("Input delay: Auto") : "Input delay: " + std::to_string(delay_frames) + (delay_frames == 1 ? " frame" : " frames"));
         input_button->set_text(input_name());
     }
 
@@ -307,7 +307,7 @@ namespace {
     // The lobby page, from the session's state.
     void refresh_lobby(const conker::netsession::LobbyStatus& st) {
         std::string signature = std::to_string(st.phase) + "|" + std::to_string(st.mask) + "|" + std::to_string(st.expected) + "|" +
-            std::to_string(st.delay) + "|" + std::to_string(st.slot) + "|" + std::to_string(st.can_start) + "|" + std::to_string(st.dedicated) + "|" + st.message + "|" + st.names[0] + "|" + st.names[1] + "|" + st.names[2] + "|" + st.names[3] + "|" + st.log_path;
+            std::to_string(st.delay) + "|" + std::to_string(st.auto_delay) + "|" + std::to_string(st.slot) + "|" + std::to_string(st.can_start) + "|" + std::to_string(st.dedicated) + "|" + st.message + "|" + st.names[0] + "|" + st.names[1] + "|" + st.names[2] + "|" + st.names[3] + "|" + st.log_path;
         for (float p : st.ping_ms) {
             signature += "|" + std::to_string(p < 0 ? -1 : (int)(p + 0.5f));
         }
@@ -330,7 +330,9 @@ namespace {
             message = "Joined. Waiting for the host to start the game.";
         }
         message_label->set_text(message);
-        info_label->set_text(st.phase == 2 ? "Input delay: " + std::to_string(st.delay) + (st.delay == 1 ? " frame" : " frames") + " (the host chose it)" + (st.log_path.empty() ? std::string() : "\nLog file: " + st.log_path) : std::string());
+        const std::string frames_text = std::to_string(st.delay) + (st.delay == 1 ? " frame" : " frames");
+        const std::string delay_text = st.auto_delay ? "Input delay: Auto (" + frames_text + " for these round trips now; it follows them during the game)" : "Input delay: " + frames_text + " (the host chose it)";
+        info_label->set_text(st.phase == 2 ? delay_text + (st.log_path.empty() ? std::string() : "\nLog file: " + st.log_path) : std::string());
         for (int i = 0; i < 4; i++) {
             std::string line;
             if (i < st.expected && st.phase == 2) {
@@ -402,7 +404,7 @@ void conker::netlobby::update(const std::u8string& game_id) {
                     refresh_settings_buttons();
                     break;
                 case Action::Delay: {
-                    static const int choices[] = { 2, 3, 4, 5, 6, 8, 10 };
+                    static const int choices[] = { 0, 2, 3, 4, 5, 6, 8, 10 };   // (0: Auto)
                     int next = choices[0];
                     for (int c : choices) {
                         if (c > delay_frames) {

@@ -7,7 +7,8 @@
 // waits for it, so nobody runs ahead of anybody.
 //
 // Input delay hides the network's latency: the input read at game frame f is the one used at frame f + delay
-// (3 frames by default, 100 ms at the game's 30 frames a second), so a FRAME message has that long to arrive.
+// (100 ms for 3 frames at the game's 30 frames a second), so a FRAME message has that long to arrive. On Auto (the lobby's
+// default) the host works it out from the round trips and changes it during the game when they change.
 //
 // The host also tells the others the game's RNG state every 30 frames (CHECK). A machine that sees a different
 // one has drifted (netplay.cpp tells why that can happen); resync.cpp's snapshot, taken by the host, puts it
@@ -17,7 +18,8 @@
 //   CONKER_NET_HOST=<port>        host a game on that UDP port
 //   CONKER_NET_PLAYERS=<2..4>     how many players the host waits for before the game starts (default 2)
 //   CONKER_NET_JOIN=<host>:<port> join a game
-//   CONKER_NET_DELAY=<frames>     input delay (default 3)
+//   CONKER_NET_DELAY=<frames>     input delay (default 3; 0 or auto: from the round trips)
+//   CONKER_NET_DIAG=1             when the games differ, the client is sent the host's memory to compare (megabytes: a test only)
 //   CONKER_NET_TEST_DESYNC=<frame>  (a client) upsets its own RNG at that frame, to see the resync work
 //   CONKER_NET_INPUT=<keyboard|gamepad|gamepad2>  this machine's player uses only that (two windows on one PC);
 //                                 gamepad2 is the second controller. Unset: the keyboard and the first controller
@@ -79,14 +81,15 @@ namespace {
 
     constexpr int max_players = 4;
     constexpr uint32_t magic = 0x544E4243;  // "CBNT"
-    constexpr uint32_t protocol_version = 10;
+    constexpr uint32_t protocol_version = 11;
     constexpr uint32_t check_every = 30;
     constexpr uint32_t history = 1200;       // frames of inputs kept (for resyncs)
     constexpr uint32_t max_message = 64u << 20;
     constexpr auto host_waits_for_player = std::chrono::seconds(5);
     constexpr auto client_waits_for_host = std::chrono::seconds(10);
 
-    enum Msg : uint8_t { Hello = 1, Welcome = 2, Start = 3, Input = 4, Frame = 5, Check = 6, ResyncRequest = 7, Snapshot = 8, FrameRngMsg = 9, DiagRequest = 10, DiagData = 11, LobbyInfo = 12, Refused = 13, Chat = 14, Ping = 15, Pong = 16 };
+    enum Msg : uint8_t { Hello = 1, Welcome = 2, Start = 3, Input = 4, Frame = 5, Check = 6, ResyncRequest = 7, Snapshot = 8, FrameRngMsg = 9, DiagRequest = 10, DiagData = 11, LobbyInfo = 12, Refused = 13, Chat = 14, Ping = 15, Pong = 16,
+        SnapHashes = 17, SnapDiff = 18, DelayChange = 19 };
 
     struct PlayerInput {
         uint8_t plugged = 0;
@@ -118,6 +121,10 @@ namespace {
     };
     struct FrameInputs {
         std::array<PlayerInput, max_players> p{};
+        // The host's word, in the frame itself so every machine acts on it at the same frame: the players (a bit each) whose game is
+        // to be put right by a resync. Every machine takes a copy of its game after this frame; the ones named send the host a hash
+        // of each piece of theirs, and the host sends back only the pieces that differ from its own (see the resync part below).
+        uint8_t snap = 0;
     };
 
     // --- Messages: u32 length (of what follows), u8 type, payload ---
@@ -636,8 +643,105 @@ namespace {
     constexpr uint32_t block_size = 16384;
     constexpr uint32_t ram_bytes = 8u << 20;
 
-    void on_resync_requested(int slot, uint32_t frame, uint32_t diverged);
+    // The memory comparisons (DIAG): seven copies of the host's memory sent to a client whenever their games differ. Only with
+    // CONKER_NET_DIAG=1 (a test for finding a drift's cause): in a normal game they took the connection for seconds at a time.
+    bool diag_dumps_on() {
+        static const bool on = [] {
+            const std::string v = get_env("CONKER_NET_DIAG");
+            return !v.empty() && v != "0";
+        }();
+        return on;
+    }
+
+    // --- Input delay ---
+    // The host's choice, or (auto_delay) worked out by the host from the round trips and changed during the game when they change.
+    // Each machine puts its own input in for frame f + delay at frame f; when the delay grows, the frames in between get the same
+    // input (so none is missing), and when it shrinks, an input whose frame was sent for already waits for the next one with what it
+    // carries that mustn't be lost. So the machines needn't change the delay at the same frame: each one's inputs always cover every
+    // frame, and the frames' inputs are still the host's alone.
+    bool auto_delay = false;
+    bool have_target = false;        // this machine has sent its input for every frame up to last_target
+    uint32_t last_target = 0;
+    PlayerInput carry;               // finished sounds and a QUIT from inputs that had no frame of their own
+    int delay_up_seconds = 0, delay_down_seconds = 0;   // host: seconds in a row the round trips have called for more, or fewer, frames
+    constexpr int auto_delay_min = 2, auto_delay_max = 10;
+
+    // --- Resyncs by the pieces that differ ---
+    // A client whose game has drifted asks; the host names it in the next frame it sends (FrameInputs::snap); at that frame every
+    // machine named, and the host, takes a copy of its game. The client sends a hash of each 2 KB piece of its copy, the host sends the
+    // pieces of its own that differ (with a hash of the whole, to check it), and the client puts them in its copy and loads that.
+    // The two copies are of the same frame of the same game, so only what drifted and what each machine has of its own (its view,
+    // its sound) differs: a few hundred KB where a whole snapshot was 8 MB (1.6 MB packed).
+    constexpr uint32_t page_bytes = 2048;
+    uint8_t snap_order_pending = 0;      // host: the players to name in the next frame sent
+    struct SnapRound {
+        bool active = false;
+        uint32_t order_frame = 0;
+        uint8_t waiting = 0;             // the players still to be sent their pieces
+        bool captured = false;           // the host's copy is taken (state empty: it couldn't be)
+        uint32_t at_frame = 0;
+        std::shared_ptr<const std::vector<uint8_t>> state;
+        std::array<std::vector<uint32_t>, max_players> hashes;
+        std::array<bool, max_players> hashes_in{};
+        std::array<uint32_t, max_players> base_frame{};
+        std::array<uint32_t, max_players> base_size{};
+        clock::time_point began{};
+    };
+    SnapRound snap_round;                // host
+    uint8_t full_next = 0;               // host: players whose next resync is a whole snapshot (the pieces didn't work for them)
+    std::array<clock::time_point, max_players> resync_sent_at{};   // host: when each player was last sent a snapshot (it goes back in time to load it)
+    clock::time_point last_round_end{};  // host
+    struct ClientBase {
+        bool busy = false;               // being taken
+        bool have = false;
+        uint32_t at_frame = 0;
+        std::vector<uint8_t> state;
+    };
+    ClientBase snap_base;                // client: its own copy, for the host's pieces to go in
+    bool want_full = false;              // client: the next resync it asks for is a whole snapshot
+    constexpr uint32_t stale_snapshot_frames = 300;   // client: a snapshot this far behind (10 s) isn't loaded, a new one is asked for
+
+    uint32_t piece_hash(const uint8_t* p, size_t n) {
+        uint64_t h = 0xCBF29CE484222325ull ^ (uint64_t)n;
+        size_t i = 0;
+        for (; i + 8 <= n; i += 8) {
+            uint64_t v;
+            std::memcpy(&v, p + i, 8);
+            h = (h ^ v) * 0x100000001B3ull;
+            h ^= h >> 31;
+        }
+        for (; i < n; i++) {
+            h = (h ^ p[i]) * 0x100000001B3ull;
+        }
+        return (uint32_t)(h ^ (h >> 32));
+    }
+
+    uint64_t whole_hash(const std::vector<uint8_t>& s) {
+        uint64_t a = 0x9E3779B97F4A7C15ull ^ (uint64_t)s.size(), b = 0xD6E8FEB86659FD93ull;
+        size_t i = 0;
+        for (; i + 8 <= s.size(); i += 8) {
+            uint64_t v;
+            std::memcpy(&v, s.data() + i, 8);
+            a = (a ^ v) * 0x100000001B3ull;
+            a ^= a >> 29;
+            b = (b + v) * 0xFF51AFD7ED558CCDull;
+            b ^= b >> 33;
+        }
+        for (; i < s.size(); i++) {
+            a = (a ^ s[i]) * 0x100000001B3ull;
+            b = (b + s[i]) * 0xFF51AFD7ED558CCDull;
+        }
+        return a ^ (b * 0xC4CEB9FE1A85EC53ull);
+    }
+
+    void on_resync_requested(int slot, uint32_t frame, uint32_t diverged, bool full);
     void on_snapshot_message(const std::vector<uint8_t>& payload);
+    void on_snap_order(uint32_t f, uint8_t mask);
+    void on_snap_hashes(int slot, Reader& r);
+    void on_snap_diff(const std::vector<uint8_t>& payload);
+    void serve_snap_round();
+    void start_capture_locked();
+    void set_delay_locked(uint32_t d, const char* why);
     void on_check(uint32_t f, CheckInfo&& theirs);
     void compare_check(uint32_t f, const CheckInfo& mine, const CheckInfo& theirs);
     void request_resync(uint32_t f);
@@ -726,12 +830,32 @@ namespace {
                 fi.p[0].ended = host_notes[f];
                 host_notes.erase(f);
             }
+            if (snap_order_pending != 0 && !snap_round.active && clock::now() - last_round_end > std::chrono::milliseconds(500)) {
+                // the players who asked for a resync: named in this frame, every machine takes its copy after it
+                uint8_t mask = 0;
+                for (int s = 0; s < max_players; s++) {
+                    if ((snap_order_pending & (1u << s)) && connected[s] && !joining[s]) {
+                        mask |= (uint8_t)(1u << s);
+                    }
+                }
+                snap_order_pending = 0;
+                if (mask != 0) {
+                    fi.snap = mask;
+                    snap_round = SnapRound{};
+                    snap_round.active = true;
+                    snap_round.order_frame = f;
+                    snap_round.waiting = mask;
+                    snap_round.began = clock::now();
+                    log_line("[net] resync of players (mask %u) at frame %u: every machine takes a copy of its game after it", (unsigned)mask, f);
+                }
+            }
             ready[f] = fi;
             Writer w(Frame);
             w.put(f);
             for (int s = 0; s < max_players; s++) {
                 w.put_input(fi.p[s]);
             }
+            w.put(fi.snap);
             const auto& bytes = w.finish();
             for (auto& peer : peers) {
                 if (peer->alive) {
@@ -771,7 +895,7 @@ namespace {
         }
         lobby_mask = mask;
         Writer w(LobbyInfo);
-        w.put((uint8_t)players_expected).put(mask).put(delay);
+        w.put((uint8_t)players_expected).put(mask).put(delay | (auto_delay ? 0x80000000u : 0u));
         for (int s = 0; s < max_players; s++) {
             w.put_string(connected[s] ? names[s] : std::string());
         }
@@ -886,9 +1010,80 @@ namespace {
         return image;
     }
 
+    // Mutex held (host). The input delay the round trips call for: enough frames (at 30 a second) to cover the slowest player's round
+    // trip, its usual ups and downs and a little more; -1 while nobody's is known. (A player's input for frame f is read at its frame
+    // f - delay, takes half a round trip to the host, and the frame takes the other half to come back: with too few frames for that,
+    // every frame waits, and the game runs slower than 30 frames a second for everyone, as with 3 frames on a 111 ms link.)
+    int wanted_delay_locked() {
+        double worst = -1.0;
+        for (auto& peer : peers) {
+            if (!peer->alive || peer->retired || peer->slot < 0 || peer->slot >= max_players) {
+                continue;
+            }
+            if (started && (!connected[peer->slot] || joining[peer->slot])) {
+                continue;
+            }
+            double rtt;
+            {
+                std::lock_guard rtt_lock{ peer->rtt_mutex };
+                const uint32_t size = (uint32_t)peer->rtt_recent.size();
+                const uint32_t n = std::min<uint32_t>(peer->rtt_recent_n, size);
+                if (n == 0) {
+                    continue;
+                }
+                double sum = 0, sq = 0, latest = 0;
+                for (uint32_t k = 0; k < n; k++) {
+                    const double v = peer->rtt_recent[k];
+                    sum += v;
+                    sq += v * v;
+                }
+                for (uint32_t j = 1; j <= std::min<uint32_t>(3, n); j++) {
+                    latest = std::max(latest, peer->rtt_recent[(peer->rtt_recent_n - j) % size]);
+                }
+                const double mean = sum / n;
+                const double spread = std::sqrt(std::max(0.0, sq / n - mean * mean));
+                rtt = std::max(mean + 2.0 * spread, latest);
+            }
+            if (peer->conn != nullptr) {
+                rtt = std::max(rtt, peer->conn->rtt_ms());
+            }
+            worst = std::max(worst, rtt);
+        }
+        if (worst < 0.0) {
+            return -1;
+        }
+        const double frame_ms = 1000.0 / 30.0;
+        return std::clamp((int)std::ceil((worst + 10.0) / frame_ms), auto_delay_min, auto_delay_max);
+    }
+
+    // Mutex held (host): the delay changes now, here and for everyone (each machine at the frame the word reaches it, see auto_delay).
+    void set_delay_locked(uint32_t d, const char* why) {
+        if (d == delay) {
+            return;
+        }
+        log_line("[net] f=%u input delay %u -> %u frames (%s)", frames_started, delay, d, why);
+        delay = d;
+        Writer w(DelayChange);
+        w.put(delay);
+        const auto& bytes = w.finish();
+        for (auto& peer : peers) {
+            if (peer->alive && !peer->retired) {
+                peer->send_message(bytes);
+            }
+        }
+    }
+
     // Mutex held. The first `delay` frames have nobody's input yet, so they are neutral for all.
     void host_begin_game() {
         lobby_locked = true;
+        if (auto_delay) {
+            const int want = wanted_delay_locked();
+            delay = (uint32_t)(want > 0 ? want : 4);
+            log_line("[net] input delay: %u frames (worked out from the round trips%s; it follows them during the game)", delay, want > 0 ? "" : ", none known yet");
+        }
+        have_target = true;
+        last_target = delay - 1;
+        carry = PlayerInput{};
         Writer s(Start);
         const std::vector<char> save = host_save_image();
         s.put(delay).put((uint8_t)(dedicated ? 1 : 0)).put((uint8_t)0).put((uint32_t)save.size()).put_bytes(save.data(), save.size());
@@ -975,6 +1170,56 @@ namespace {
             }
             if (!(enabled || lobby_phase == 2) || failed) {
                 return;
+            }
+            if (is_host && auto_delay) {
+                // the delay follows the round trips: up (to what they call for) once they have called for more for 2 s, down (a frame
+                // at a time) once they have called for fewer for 8 s; before the game, what the lobby shows
+                const int want = wanted_delay_locked();
+                if (want > 0 && !started) {
+                    delay = (uint32_t)want;
+                }
+                else if (want > 0) {
+                    if (want > (int)delay) {
+                        delay_down_seconds = 0;
+                        if (++delay_up_seconds >= 2) {
+                            delay_up_seconds = 0;
+                            set_delay_locked((uint32_t)want, "the round trips grew");
+                        }
+                    }
+                    else if (want < (int)delay) {
+                        delay_up_seconds = 0;
+                        if (++delay_down_seconds >= 8) {
+                            delay_down_seconds = 0;
+                            set_delay_locked(delay - 1, "the round trips shrank");
+                        }
+                    }
+                    else {
+                        delay_up_seconds = delay_down_seconds = 0;
+                    }
+                }
+            }
+            if (is_host && snap_round.active && clock::now() - snap_round.began > std::chrono::seconds(6)) {
+                // a resync whose copies or hashes didn't come in time: whoever is still waiting gets the whole snapshot
+                log_line("[net] the resync of frame %u is taking too long (waiting for players mask %u, the host's copy %s): whole snapshots instead",
+                    snap_round.order_frame, (unsigned)snap_round.waiting, snap_round.captured ? (snap_round.state ? "taken" : "failed") : "not taken yet");
+                if (!snap_round.captured) {
+                    full_next |= snap_round.waiting;
+                    snapshot_wanted_mask |= snap_round.waiting;
+                    snap_round = SnapRound{};
+                    last_round_end = clock::now();
+                    if (!capture_in_flight) {
+                        start_capture_locked();
+                    }
+                }
+                else {
+                    for (int k = 0; k < max_players; k++) {
+                        if (snap_round.waiting & (1u << k)) {
+                            snap_round.hashes_in[k] = true;
+                            snap_round.hashes[k].clear();
+                        }
+                    }
+                    serve_snap_round();
+                }
             }
             for (auto& peer : peers) {
                 if (peer->alive && !peer->retired) {
@@ -1070,9 +1315,13 @@ namespace {
             else if (type == ResyncRequest) {
                 const uint32_t frame = r.get<uint32_t>();
                 const uint32_t diverged = r.get<uint32_t>();
+                const bool full = !r.bad && r.at < r.size && r.get<uint8_t>() != 0;
                 if (!r.bad) {
-                    on_resync_requested(peer->slot, frame, diverged);
+                    on_resync_requested(peer->slot, frame, diverged, full);
                 }
+            }
+            else if (type == SnapHashes) {
+                on_snap_hashes(peer->slot, r);
             }
             else if (type == Chat) {
                 int from;
@@ -1195,7 +1444,7 @@ namespace {
             peer->slot = slot;
             peer->alive = true;
             Writer w(Welcome);
-            w.put((uint8_t)slot).put((uint8_t)players_expected).put(delay);
+            w.put((uint8_t)slot).put((uint8_t)players_expected).put(delay | (auto_delay ? 0x80000000u : 0u));
             peer->send_message(w.finish());
             log_line("[net] player %d joined", slot + 1);
             Peer* raw = peer.get();
@@ -1284,6 +1533,11 @@ namespace {
                             log_line("[net] the host's save data came (%u bytes): this game plays with it, so the setup options are the host's", (unsigned)n);
                         }
                     }
+                    // the first `delay` frames are the host's (nobody's input): this machine's go in from frame `delay` on; one
+                    // joining a running game starts from its snapshot's frame instead
+                    have_target = !late_join;
+                    last_target = delay > 0 ? delay - 1 : 0;
+                    carry = PlayerInput{};
                     started = true;
                     game_launch = true;
                     log_line("[net] the game starts");
@@ -1311,7 +1565,8 @@ namespace {
                     if (!r.bad && expected >= 2 && expected <= max_players) {
                         players_expected = expected;
                         lobby_mask = mask;
-                        delay = d;
+                        delay = d & 0xFFu;
+                        auto_delay = (d & 0x80000000u) != 0;   // (the host works it out from the round trips)
                         names = heard;
                         dedicated = dedicated_heard;
                     }
@@ -1323,6 +1578,7 @@ namespace {
                     for (int s = 0; s < max_players; s++) {
                         fi.p[s] = r.get_input();
                     }
+                    fi.snap = r.get<uint8_t>();
                     if (!r.bad) {
                         ready[f] = fi;
                         if (f >= history) {
@@ -1357,6 +1613,17 @@ namespace {
                 case Snapshot:
                     on_snapshot_message(payload);
                     break;
+                case SnapDiff:
+                    on_snap_diff(payload);
+                    break;
+                case DelayChange: {
+                    const uint32_t d = r.get<uint32_t>();
+                    if (!r.bad && d >= 1 && d <= 30 && d != delay) {
+                        log_line("[net] f=%u the host changed the input delay: %u -> %u frames", frames_started, delay, d);
+                        delay = d;
+                    }
+                    break;
+                }
                 case FrameRngMsg: {
                     const uint32_t f = r.get<uint32_t>();
                     const uint64_t v = r.get<uint64_t>();
@@ -1534,14 +1801,16 @@ namespace {
             }
             return;
         }
-        if (resync_in_flight && clock::now() - resync_asked_at < std::chrono::seconds(3)) {
+        // (one at a time: the pieces come in well under a second, a whole snapshot on a slow link in a few)
+        if (resync_in_flight && clock::now() - resync_asked_at < std::chrono::seconds(8)) {
             return;
         }
         if (!peers.empty() && peers[0]->alive) {
             resync_in_flight = true;
             resync_asked_at = clock::now();
             Writer w(ResyncRequest);
-            w.put(f).put(last_diverged_frame);
+            w.put(f).put(last_diverged_frame).put((uint8_t)(want_full ? 1 : 0));
+            want_full = false;
             last_diverged_frame = 0;
             peers[0]->send_message(w.finish());
         }
@@ -1623,7 +1892,8 @@ namespace {
         }
         my_slot = slot;
         players_expected = expected;
-        delay = d;
+        delay = d & 0xFFu;
+        auto_delay = (d & 0x80000000u) != 0;
         peers.push_back(std::move(peer));
         ensure_ping_thread();
         raw->reader = std::thread(client_reader, raw);
@@ -1682,7 +1952,9 @@ bool conker::netsession::init(uint8_t* rdram, bool (*local_sampler)(uint16_t*, f
     sampler = dedicated ? nullptr : local_sampler;   // (a dedicated server has no controller of its own to read)
     const std::string delay_text = get_env("CONKER_NET_DELAY");
     if (!delay_text.empty()) {
-        delay = std::clamp<uint32_t>((uint32_t)std::strtoul(delay_text.c_str(), nullptr, 10), 1, 30);
+        // (0 or "auto": worked out from the round trips, see wanted_delay_locked)
+        auto_delay = delay_text == "0" || delay_text == "auto";
+        delay = auto_delay ? 4u : std::clamp<uint32_t>((uint32_t)std::strtoul(delay_text.c_str(), nullptr, 10), 1, 30);
     }
     const std::string input_text = get_env("CONKER_NET_INPUT");
     if (input_text == "keyboard") {
@@ -1804,7 +2076,8 @@ void conker::netsession::lobby_open(const LobbySettings& cfg) {
         names[0] = my_name;
     }
     players_expected = std::clamp(cfg.players, 2, max_players);
-    delay = (uint32_t)std::clamp(cfg.delay, 1, 30);
+    auto_delay = cfg.delay <= 0;   // (0: Auto, worked out from the round trips)
+    delay = auto_delay ? 4u : (uint32_t)std::clamp(cfg.delay, 1, 30);
     log_line("[net] build %s, protocol %d, lobby: %s, %d players, delay %u", CONKER_ONLINE_VERSION, (int)protocol_version, cfg.host ? "hosting" : "joining", players_expected, delay);
     if (cfg.host) {
         my_slot = 0;
@@ -1869,6 +2142,7 @@ conker::netsession::LobbyStatus conker::netsession::lobby_status() {
     st.slot = my_slot;
     st.expected = players_expected;
     st.delay = (int)delay;
+    st.auto_delay = auto_delay;
     st.message = lobby_message;
     st.names = names;
     st.log_path = log_path;
@@ -1949,8 +2223,8 @@ std::vector<std::string> conker::netsession::network_report() {
             recent += peer->rtt_recent[k];
         }
         recent /= std::max<uint32_t>(recent_n, 1);
-        std::snprintf(text, sizeof(text), "Network: ping to %s averages %.0f ms (now %.0f, best %.0f, worst %.0f), input delay %u frames",
-            who.c_str(), peer->rtt_total_sum / (double)peer->rtt_total_n, recent, peer->rtt_total_min, peer->rtt_all_max, (unsigned)delay);
+        std::snprintf(text, sizeof(text), "Network: ping to %s averages %.0f ms (now %.0f, best %.0f, worst %.0f), input delay %u frames%s",
+            who.c_str(), peer->rtt_total_sum / (double)peer->rtt_total_n, recent, peer->rtt_total_min, peer->rtt_all_max, (unsigned)delay, auto_delay ? " (auto)" : "");
         out.push_back(text);
     }
     if (out.empty()) {
@@ -2326,6 +2600,13 @@ namespace {
                 reported_frame = frame;
                 reports = 0;
             }
+            {
+                // (offline after the session ended, the game no longer goes through the session's frames: nothing to watch)
+                std::lock_guard lock{ mtx };
+                if (failed || !enabled) {
+                    continue;
+                }
+            }
             if (idle >= 4000 && reports < 6 && idle >= 4000 + (int64_t)reports * 4000) {
                 reports++;
                 log_line("[net] watchdog: the game has not started a frame for %lld s (last frame %u), %s", (long long)(idle / 1000), frame,
@@ -2437,6 +2718,78 @@ void conker::netsession::note_halt(uint8_t* rdram, uint32_t vram, uint32_t retur
     }
 }
 
+namespace {
+    // Mutex held. This machine's part of frame g's inputs: a dedicated server's is its notes of finished sounds (slot 0's input comes
+    // from the leader), the host's goes straight in, a client's goes to the host.
+    void put_own_input(uint32_t g, const PlayerInput& in) {
+        if (is_host && dedicated) {
+            host_notes[g] = in.ended;
+        }
+        else if (is_host) {
+            host_store_input(0, g, in);
+        }
+        else if (!peers.empty()) {
+            Writer w(Input);
+            w.put(g).put_input(in);
+            peers[0]->send_message(w.finish());
+            sent_inputs[g] = in;
+            if (sent_inputs.size() > 120) {
+                sent_inputs.erase(sent_inputs.begin());
+            }
+        }
+    }
+
+    // Mutex held. The input read at frame f is for frame f + delay (see auto_delay): every frame after the last one sent for gets it
+    // (more than one when the delay has just grown: the later ones without the finished sounds, the QUIT and the camera's turn, which
+    // happen once), or, when f + delay was sent for already (the delay has just shrunk, or a resync took the game back), it has no frame
+    // of its own and what must not be lost goes with the next one.
+    void schedule_own_input(uint32_t f, PlayerInput mine) {
+        const uint32_t target = f + delay;
+        if (have_target && target <= last_target) {
+            for (size_t k = 0; k < mine.ended.size(); k++) {
+                if (mine.ended[k] != 0) {
+                    carry.ended[k] = mine.ended[k];
+                }
+            }
+            if (mine.leave.on) {
+                carry.leave = mine.leave;
+            }
+            return;
+        }
+        for (size_t k = 0; k < mine.ended.size(); k++) {
+            if (mine.ended[k] == 0) {
+                mine.ended[k] = carry.ended[k];
+            }
+        }
+        if (!mine.leave.on && carry.leave.on) {
+            mine.leave = carry.leave;
+        }
+        carry = PlayerInput{};
+        const uint32_t first = have_target ? last_target + 1 : target;
+        if (target - first > 0) {
+            static int said = 0;
+            if (said++ < 40) {
+                log_line("[net] f=%u the delay grew: this machine's input goes in for frames %u to %u", f, first, target);
+            }
+        }
+        for (uint32_t g = first; g <= target; g++) {
+            PlayerInput in = mine;
+            if (g != first) {
+                in.ended = {};
+                in.leave = PlayerInput::Leave{};
+                in.cam_yaw = 0;
+                in.cam_pitch = 0;
+            }
+            put_own_input(g, in);
+        }
+        last_target = target;
+        have_target = true;
+        if (is_host && dedicated) {
+            try_broadcast();
+        }
+    }
+}
+
 // Every port read. The first of a pass starts a game frame: it sends this machine's input for the frame
 // `delay` ahead, then waits for the agreed inputs of the frame it's starting.
 void conker::netsession::on_port_read(int port) {
@@ -2512,7 +2865,7 @@ void conker::netsession::on_port_read(int port) {
         // in, and asks for the snapshot (again every 3 s until it has come).
         current = FrameInputs{};
         in_frame = true;
-        if (!peers.empty() && peers[0]->alive && (!resync_in_flight || clock::now() - resync_asked_at > std::chrono::seconds(3))) {
+        if (!peers.empty() && peers[0]->alive && (!resync_in_flight || clock::now() - resync_asked_at > std::chrono::seconds(8))) {
             resync_in_flight = true;
             resync_asked_at = clock::now();
             Writer w(ResyncRequest);
@@ -2708,10 +3061,13 @@ void conker::netsession::on_port_read(int port) {
     }
     conker::netsession::watch_poll("start", f);
     if (ram != nullptr) {
-        RawCopy& rc = raw_ring[f % raw_ring_size];
-        rc.frame = f;
-        rc.data.resize(ram_bytes);
-        std::memcpy(rc.data.data(), ram, ram_bytes);
+        if (diag_dumps_on()) {
+            // (only for the memory comparisons: an 8 MB copy every frame, 160 MB kept)
+            RawCopy& rc = raw_ring[f % raw_ring_size];
+            rc.frame = f;
+            rc.data.resize(ram_bytes);
+            std::memcpy(rc.data.data(), ram, ram_bytes);
+        }
         obj_ring[f % raw_ring_size][0] = f;
         obj_ring[f % raw_ring_size][1] = objects_hash(0, 6);
         {
@@ -2888,23 +3244,7 @@ void conker::netsession::on_port_read(int port) {
             }
         }
     }
-    if (is_host && dedicated) {
-        // no player here: only this machine's notes of finished sounds go in for the frame (slot 0's input comes from the leader)
-        host_notes[f + delay] = mine.ended;
-        try_broadcast();
-    }
-    else if (is_host) {
-        host_store_input(0, f + delay, mine);
-    }
-    else if (!peers.empty()) {
-        Writer w(Input);
-        w.put(f + delay).put_input(mine);
-        peers[0]->send_message(w.finish());
-        sent_inputs[f + delay] = mine;
-        if (sent_inputs.size() > 120) {
-            sent_inputs.erase(sent_inputs.begin());
-        }
-    }
+    schedule_own_input(f, mine);
 
     // A test of the resync: this machine's RNG is upset on purpose (it is the first thing a real drift shows in).
     if (!is_host && f == test_desync_frame && ram != nullptr) {
@@ -2977,6 +3317,15 @@ void conker::netsession::on_port_read(int port) {
                 }
             }
         }
+        if (is_host) {
+            // a player that was just sent a snapshot loads it and goes back to its frame, then plays the frames since then again:
+            // until it has caught up its inputs come late, which is waited for longer (it isn't gone)
+            for (int s = 0; s < max_players; s++) {
+                if (connected[s] && resync_sent_at[s] != clock::time_point{} && clock::now() - resync_sent_at[s] < std::chrono::seconds(30)) {
+                    limit = std::max(limit, std::chrono::seconds(20));
+                }
+            }
+        }
         if (cv.wait_for(lock, std::chrono::milliseconds(250)) == std::cv_status::timeout) {
             if (clock::now() - began > limit) {
                 if (is_host) {
@@ -3024,6 +3373,9 @@ void conker::netsession::on_port_read(int port) {
             waited_ms / (double)std::max<uint64_t>(waited_frames, 1), (unsigned long long)stalls, (unsigned long long)desyncs);
     }
     current = ready[f];
+    if (current.snap != 0) {
+        on_snap_order(f, current.snap);
+    }
     if (ram != nullptr) {
         // a player chose QUIT in the pause menu: every machine sets what the game's quit sets, at this same frame
         for (int slot = 0; slot < max_players; slot++) {
@@ -3262,6 +3614,7 @@ namespace {
                     for (auto& peer : peers) {
                         if (peer->alive && (mask & (1u << peer->slot))) {
                             targets.push_back(peer.get());
+                            resync_sent_at[peer->slot] = clock::now();
                         }
                     }
                 }
@@ -3278,31 +3631,249 @@ namespace {
         });
     }
 
-    // Mutex held.
-    void on_resync_requested(int slot, uint32_t frame, uint32_t diverged) {
-        log_line("[net] player %d asks for a resync at frame %u", slot + 1, frame);
+    // Mutex held (host). full: the client asks for a whole snapshot (its pieces didn't check out).
+    void on_resync_requested(int slot, uint32_t frame, uint32_t diverged, bool full) {
+        log_line("[net] player %d asks for a resync at frame %u%s", slot + 1, frame, full ? " (a whole snapshot)" : "");
         if (diverged != 0) {
             log_callers("host", diverged);
         }
-        snapshot_wanted_mask |= 1u << slot;
-        if (!capture_in_flight && clock::now() - last_snapshot_sent > std::chrono::seconds(2)) {
+        const uint8_t bit = (uint8_t)(1u << slot);
+        if (full || (full_next & bit) || joining[slot] || frame == 0) {
+            // a whole snapshot: for a player joining a running game, or one whose pieces didn't work
+            full_next &= (uint8_t)~bit;
+            snapshot_wanted_mask |= bit;
+            if (!capture_in_flight && clock::now() - last_snapshot_sent > std::chrono::seconds(2)) {
+                start_capture_locked();
+            }
+            return;
+        }
+        if (snap_round.active && (snap_round.waiting & bit)) {
+            return;   // (being done)
+        }
+        snap_order_pending |= bit;   // named in the next frame sent (try_broadcast)
+    }
+
+    // Mutex held (host): sends whoever's pieces are ready (both copies taken, the client's hashes in) what they need.
+    void serve_snap_round() {
+        if (!snap_round.active || !snap_round.captured) {
+            return;
+        }
+        bool whole = false;
+        for (int s = 0; s < max_players; s++) {
+            const uint8_t bit = (uint8_t)(1u << s);
+            if (!(snap_round.waiting & bit)) {
+                continue;
+            }
+            if (!snap_round.state) {
+                // the host's copy couldn't be taken: a whole snapshot, the old way
+                snap_round.waiting &= (uint8_t)~bit;
+                snapshot_wanted_mask |= bit;
+                whole = true;
+                continue;
+            }
+            if (!snap_round.hashes_in[s]) {
+                continue;
+            }
+            snap_round.waiting &= (uint8_t)~bit;
+            Peer* target = nullptr;
+            for (auto& peer : peers) {
+                if (peer->alive && peer->slot == s) {
+                    target = peer.get();
+                }
+            }
+            if (target == nullptr) {
+                continue;
+            }
+            resync_sent_at[s] = clock::now();
+            last_snapshot_sent = clock::now();
+            // the pieces are found and packed on a thread of their own (the game's frames go on meanwhile)
+            std::thread([s, target, at = snap_round.at_frame, base_frame = snap_round.base_frame[s], base_size = snap_round.base_size[s],
+                         state = snap_round.state, hashes = std::move(snap_round.hashes[s])]() {
+                const std::vector<uint8_t>& mine = *state;
+                const uint32_t pages = (uint32_t)((mine.size() + page_bytes - 1) / page_bytes);
+                // (the copies needn't be the same size: what the client's lacks or has of a different length is sent, and it makes
+                // its copy the host's size first)
+                bool whole_one = hashes.empty();
+                std::vector<uint32_t> differ;
+                if (!whole_one) {
+                    for (uint32_t i = 0; i < pages; i++) {
+                        const size_t at_byte = (size_t)i * page_bytes;
+                        const size_t n = std::min<size_t>(page_bytes, mine.size() - at_byte);
+                        const size_t theirs_n = base_size > at_byte ? std::min<size_t>(page_bytes, base_size - at_byte) : 0;
+                        if (i >= hashes.size() || n != theirs_n || piece_hash(mine.data() + at_byte, n) != hashes[i]) {
+                            differ.push_back(i);
+                        }
+                    }
+                    whole_one = differ.size() > pages / 2;
+                }
+                std::vector<uint8_t> bytes;
+                size_t raw = 0, packed_size = 0;
+                if (whole_one) {
+                    const std::vector<uint8_t> packed = lz_compress(mine.data(), mine.size());
+                    Writer w(Snapshot);
+                    w.put(at).put((uint32_t)mine.size()).put((uint32_t)packed.size()).put_bytes(packed.data(), packed.size());
+                    bytes = w.finish();
+                    raw = mine.size();
+                    packed_size = packed.size();
+                }
+                else {
+                    std::vector<uint8_t> body;
+                    body.reserve(differ.size() * (4 + page_bytes));
+                    for (uint32_t i : differ) {
+                        const uint8_t* b = reinterpret_cast<const uint8_t*>(&i);
+                        body.insert(body.end(), b, b + 4);
+                    }
+                    for (uint32_t i : differ) {
+                        const size_t at_byte = (size_t)i * page_bytes;
+                        const size_t n = std::min<size_t>(page_bytes, mine.size() - at_byte);
+                        body.insert(body.end(), mine.data() + at_byte, mine.data() + at_byte + n);
+                    }
+                    const std::vector<uint8_t> packed = lz_compress(body.data(), body.size());
+                    Writer w(SnapDiff);
+                    w.put(at).put(base_frame).put((uint32_t)mine.size()).put(page_bytes).put(whole_hash(mine)).put((uint32_t)differ.size())
+                        .put((uint32_t)body.size()).put((uint32_t)packed.size()).put_bytes(packed.data(), packed.size());
+                    bytes = w.finish();
+                    raw = body.size();
+                    packed_size = packed.size();
+                }
+                std::lock_guard lock{ mtx };
+                bool alive = false;
+                for (auto& peer : peers) {
+                    alive |= peer.get() == target && peer->alive;
+                }
+                if (!alive) {
+                    return;
+                }
+                target->send_message(bytes, 2);
+                if (whole_one) {
+                    log_line("[net] resync of player %d: frame %u, a whole snapshot (%zu bytes, packed to %zu)%s", s + 1, at, raw, packed_size,
+                        hashes.empty() ? ", its copy wasn't there" : ", too much differed");
+                }
+                else {
+                    log_line("[net] resync of player %d: frame %u, %zu of %u pieces differ from its copy of frame %u (%zu bytes, packed to %zu)", s + 1, at,
+                        differ.size(), pages, base_frame, raw, packed_size);
+                }
+            }).detach();
+        }
+        if (whole && !capture_in_flight) {
             start_capture_locked();
+        }
+        if (snap_round.waiting == 0) {
+            snap_round = SnapRound{};
+            last_round_end = clock::now();
         }
     }
 
-    // Mutex held (client): the host's snapshot has come.
-    void on_snapshot_message(const std::vector<uint8_t>& payload) {
-        Reader r{ payload.data(), payload.size() };
-        const uint32_t at_frame = r.get<uint32_t>();
-        const uint32_t raw_size = r.get<uint32_t>();
-        const uint32_t packed_size = r.get<uint32_t>();
-        if (r.bad || raw_size == 0 || raw_size > snapshot_max_size || r.at + packed_size > payload.size()) {
-            resync_in_flight = false;
+    // Mutex held (client): takes this machine's copy of its game, for the host's pieces, and sends the host the hashes of its pieces.
+    void take_snap_base() {
+        if (snap_base.busy) {
             return;
         }
-        std::vector<uint8_t> state(raw_size);
-        if (!lz_decompress(payload.data() + r.at, packed_size, state.data(), raw_size)) {
-            log_line("[net] the snapshot did not unpack");
+        snap_base = ClientBase{};
+        snap_base.busy = true;
+        const auto send_hashes = [](bool good, uint32_t at, std::vector<uint8_t>&& state) {
+            Writer w(SnapHashes);
+            const uint32_t pages = good ? (uint32_t)((state.size() + page_bytes - 1) / page_bytes) : 0u;
+            w.put(at).put((uint8_t)(good ? 1 : 0)).put((uint32_t)(good ? state.size() : 0)).put(page_bytes).put(pages);
+            for (uint32_t i = 0; i < pages; i++) {
+                const size_t at_byte = (size_t)i * page_bytes;
+                w.put(piece_hash(state.data() + at_byte, std::min<size_t>(page_bytes, state.size() - at_byte)));
+            }
+            std::lock_guard lock{ mtx };
+            snap_base.busy = false;
+            snap_base.have = good;
+            snap_base.at_frame = at;
+            snap_base.state = good ? std::move(state) : std::vector<uint8_t>();
+            if (!peers.empty() && peers[0]->alive) {
+                peers[0]->send_message(w.finish(), 2);
+            }
+            log_line("[net] this machine's copy of frame %u %s: the hashes of its %u pieces went to the host", at, good ? "is taken" : "couldn't be taken", pages);
+        };
+        const bool asked = conker::save_states::net_capture([send_hashes](bool ok, std::vector<uint8_t>&& state) {
+            // (on the game's idle thread: the hashing goes on a thread of its own)
+            uint32_t at;
+            {
+                std::lock_guard lock{ mtx };
+                at = frames_started;
+            }
+            const bool good = ok && !state.empty() && state.size() <= snapshot_max_size;
+            std::thread([send_hashes, good, at, state = std::move(state)]() mutable {
+                send_hashes(good, at, std::move(state));
+            }).detach();
+        });
+        if (!asked) {
+            // (another save-state job is waiting: the host sends a whole snapshot instead)
+            snap_base.busy = false;
+            Writer w(SnapHashes);
+            w.put(frames_started).put((uint8_t)0).put((uint32_t)0).put(page_bytes).put((uint32_t)0);
+            if (!peers.empty() && peers[0]->alive) {
+                peers[0]->send_message(w.finish(), 2);
+            }
+        }
+    }
+
+    // Mutex held: frame f names the players to resync (mask). The host takes its copy; a client named takes its own.
+    void on_snap_order(uint32_t f, uint8_t mask) {
+        if (is_host) {
+            const bool asked = conker::save_states::net_capture([f](bool ok, std::vector<uint8_t>&& state) {
+                if (ok) {
+                    conker::mouse_camera::reset();   // (at the safe point; the machine that loads it does the same)
+                }
+                std::lock_guard lock{ mtx };
+                if (!snap_round.active || snap_round.order_frame != f) {
+                    return;
+                }
+                snap_round.captured = true;
+                snap_round.at_frame = frames_started;
+                if (ok && !state.empty() && state.size() <= snapshot_max_size) {
+                    snap_round.state = std::make_shared<const std::vector<uint8_t>>(std::move(state));
+                }
+                log_line("[net] the host's copy for the resync of frame %u: %s, frame %u", f, snap_round.state ? "taken" : "couldn't be taken", snap_round.at_frame);
+                serve_snap_round();
+            });
+            if (!asked && snap_round.active && snap_round.order_frame == f) {
+                snap_round.captured = true;
+                serve_snap_round();
+            }
+        }
+        else if (mask & (1u << my_slot)) {
+            log_line("[net] f=%u the host resyncs this machine: taking its copy of the game", f);
+            take_snap_base();
+        }
+    }
+
+    // Mutex held (host): a client's hashes of its pieces.
+    void on_snap_hashes(int slot, Reader& r) {
+        const uint32_t at = r.get<uint32_t>();
+        const bool good = r.get<uint8_t>() != 0;
+        const uint32_t size = r.get<uint32_t>();
+        const uint32_t piece = r.get<uint32_t>();
+        const uint32_t pages = r.get<uint32_t>();
+        std::vector<uint32_t> hashes;
+        if (!r.bad && good && piece == page_bytes && pages == (size + page_bytes - 1) / page_bytes && pages <= snapshot_max_size / page_bytes + 1) {
+            hashes.resize(pages);
+            for (uint32_t i = 0; i < pages && !r.bad; i++) {
+                hashes[i] = r.get<uint32_t>();
+            }
+            if (r.bad) {
+                hashes.clear();
+            }
+        }
+        if (slot < 0 || slot >= max_players || !snap_round.active || !(snap_round.waiting & (1u << slot))) {
+            return;
+        }
+        snap_round.hashes[slot] = std::move(hashes);
+        snap_round.hashes_in[slot] = true;
+        snap_round.base_frame[slot] = at;
+        snap_round.base_size[slot] = size;
+        serve_snap_round();
+    }
+
+    // Mutex held (client): loads the host's game of frame at_frame (a snapshot, or this machine's copy with the host's pieces in).
+    void load_host_state(uint32_t at_frame, std::vector<uint8_t>&& state) {
+        if (!late_join && frames_started > at_frame + stale_snapshot_frames) {
+            // (it came too late: loading it would take this machine back too far for the host to wait; a new one is asked for)
+            log_line("[net] the snapshot of frame %u came with this machine at frame %u: too old, not loaded", at_frame, frames_started);
             resync_in_flight = false;
             return;
         }
@@ -3320,6 +3891,7 @@ namespace {
                 late_synced = true;
             }
             // The game goes on from the state: it was in the frame before at_frame.
+            const uint32_t was = frames_started;
             frames_started = at_frame;
             current_frame = at_frame > 0 ? at_frame - 1 : 0;
             const auto it = ready.find(current_frame);
@@ -3329,29 +3901,103 @@ namespace {
             last_port = 99;
             mine_history.clear();
             pending_checks.clear();
-            // The host needs this machine's input for every frame from at_frame on. The game goes back to at_frame
-            // and then sends the one for at_frame + delay, so those in between are sent again (the host keeps the
-            // first it got for a frame), or, if this machine never got to them, made up from the last it sent.
-            if (!is_host && !peers.empty()) {
-                PlayerInput last;
-                last.plugged = 1;
-                if (!sent_inputs.empty()) {
-                    last = sent_inputs.rbegin()->second;
-                }
-                for (uint32_t g = at_frame; g < at_frame + delay; g++) {
-                    const auto sent = sent_inputs.find(g);
-                    const PlayerInput& in = sent != sent_inputs.end() ? sent->second : last;
-                    Writer w(Input);
-                    w.put(g).put_input(in);
-                    peers[0]->send_message(w.finish());
-                }
+            // The host has (or will have) this machine's inputs up to last_target; going back in time, the frames up to there are
+            // played again with them (what is read meanwhile has no frame of its own), and after that the inputs go in as before. One
+            // that never got to at_frame (a late joiner) starts there.
+            if (!have_target || last_target + 1 < at_frame) {
+                last_target = at_frame > 0 ? at_frame - 1 : 0;
+                have_target = at_frame > 0;
             }
+            carry = PlayerInput{};
             obj_bad_run = 0;
-            log_line("[net] resynced, going on from frame %u", at_frame);
+            log_line("[net] resynced, going on from frame %u (it was at %u)", at_frame, was);
             cv.notify_all();
         })) {
             resync_in_flight = false;
         }
+    }
+
+    // Mutex held (client): the host's snapshot has come (a whole one: unpacked on a thread of its own, then loaded).
+    void on_snapshot_message(const std::vector<uint8_t>& payload) {
+        Reader r{ payload.data(), payload.size() };
+        const uint32_t at_frame = r.get<uint32_t>();
+        const uint32_t raw_size = r.get<uint32_t>();
+        const uint32_t packed_size = r.get<uint32_t>();
+        if (r.bad || raw_size == 0 || raw_size > snapshot_max_size || r.at + packed_size > payload.size()) {
+            resync_in_flight = false;
+            return;
+        }
+        const bool base_busy = snap_base.busy;
+        snap_base = ClientBase{};
+        snap_base.busy = base_busy;
+        std::vector<uint8_t> packed(payload.begin() + r.at, payload.begin() + r.at + packed_size);
+        std::thread([at_frame, raw_size, packed = std::move(packed)]() {
+            std::vector<uint8_t> state(raw_size);
+            const bool ok = lz_decompress(packed.data(), packed.size(), state.data(), raw_size);
+            std::lock_guard lock{ mtx };
+            if (!ok) {
+                log_line("[net] the snapshot did not unpack");
+                resync_in_flight = false;
+                return;
+            }
+            load_host_state(at_frame, std::move(state));
+        }).detach();
+    }
+
+    // Mutex held (client): the host's pieces that differ from this machine's copy.
+    void on_snap_diff(const std::vector<uint8_t>& payload) {
+        Reader r{ payload.data(), payload.size() };
+        const uint32_t at_frame = r.get<uint32_t>();
+        const uint32_t base_frame = r.get<uint32_t>();
+        const uint32_t size = r.get<uint32_t>();
+        const uint32_t piece = r.get<uint32_t>();
+        const uint64_t hash = r.get<uint64_t>();
+        const uint32_t count = r.get<uint32_t>();
+        const uint32_t body_size = r.get<uint32_t>();
+        const uint32_t packed_size = r.get<uint32_t>();
+        if (r.bad || r.at + packed_size > payload.size() || piece != page_bytes || body_size > snapshot_max_size + count * 4ull ||
+            size == 0 || size > snapshot_max_size || !snap_base.have || snap_base.at_frame != base_frame) {
+            log_line("[net] the host's pieces for frame %u don't fit this machine's copy (of frame %u, %s): a whole snapshot is asked for", at_frame,
+                snap_base.at_frame, snap_base.have ? "taken" : "not there");
+            want_full = true;
+            resync_in_flight = false;
+            return;
+        }
+        std::vector<uint8_t> state = std::move(snap_base.state);
+        state.resize(size);   // (the host's size, see serve_snap_round)
+        snap_base = ClientBase{};
+        std::vector<uint8_t> packed(payload.begin() + r.at, payload.begin() + r.at + packed_size);
+        std::thread([at_frame, count, body_size, hash, state = std::move(state), packed = std::move(packed)]() mutable {
+            std::vector<uint8_t> body(body_size);
+            bool ok = lz_decompress(packed.data(), packed.size(), body.data(), body_size) && body_size >= (size_t)count * 4;
+            size_t at = (size_t)count * 4;
+            for (uint32_t k = 0; k < count && ok; k++) {
+                uint32_t i;
+                std::memcpy(&i, body.data() + (size_t)k * 4, 4);
+                const size_t at_byte = (size_t)i * page_bytes;
+                if (at_byte >= state.size()) {
+                    ok = false;
+                    break;
+                }
+                const size_t n = std::min<size_t>(page_bytes, state.size() - at_byte);
+                if (at + n > body.size()) {
+                    ok = false;
+                    break;
+                }
+                std::memcpy(state.data() + at_byte, body.data() + at, n);
+                at += n;
+            }
+            ok = ok && at == body.size() && whole_hash(state) == hash;
+            std::lock_guard lock{ mtx };
+            if (!ok) {
+                log_line("[net] the host's %u pieces for frame %u didn't check out: a whole snapshot is asked for", count, at_frame);
+                want_full = true;
+                resync_in_flight = false;
+                return;
+            }
+            log_line("[net] the host's %u pieces for frame %u are in this machine's copy (%u bytes came)", count, at_frame, (unsigned)packed.size());
+            load_host_state(at_frame, std::move(state));
+        }).detach();
     }
 }
 
@@ -3441,6 +4087,15 @@ namespace {
 
     // Mutex held (client): ask the host for its memory around frame f, to compare it with this machine's.
     void begin_diag(uint32_t f, const char* why) {
+        if (!diag_dumps_on()) {
+            // (each one is seven copies of the game's memory, about 10 MB: in the 0.9.41 test they filled the connection for seconds at a
+            // time, the round trip went from 110 to 200 ms, and the resync's snapshot waited 13 s behind one; CONKER_NET_DIAG=1 asks for them)
+            static int said = 0;
+            if (said++ < 20) {
+                log_line("[net] DIAG: %s (no memory comparison: CONKER_NET_DIAG isn't set)", why);
+            }
+            return;
+        }
         if (is_host || diag_pending.active || resync_in_flight || peers.empty() || !peers[0]->alive) {
             return;
         }

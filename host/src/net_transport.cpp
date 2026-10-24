@@ -46,6 +46,12 @@ namespace conker::transport {
         size_t bulk_offset = 0;
         bool close_requested = false;
         std::vector<uint8_t> assembling;    // (the receiving side, network thread's only)
+        // How much bulk may be on its way unacknowledged (network thread's only). A snapshot sent as fast as ENet's window allows filled
+        // the link's queue: the round trip went from 110 to 200 ms while it went (0.9.41 test), and every input waited in that queue too.
+        // So the amount follows the round trip: smaller while it is well above the best seen, larger again while it is near it.
+        size_t bulk_cap = 64 * 1024;
+        enet_uint32 best_rtt = 0xFFFFFFFFu;
+        clock::time_point cap_changed{};
     };
 
     class Loop : public std::enable_shared_from_this<Loop> {
@@ -196,11 +202,33 @@ namespace conker::transport {
                 for (auto& entry : by_peer) {
                     Conn::State& st = *entry.second;
                     ENetPeer* peer = entry.first;
+                    if ((!st.bulk.empty() || !st.bulk_urgent.empty()) && !st.gone) {
+                        if (peer->roundTripTime > 0 && peer->roundTripTime < st.best_rtt) {
+                            st.best_rtt = peer->roundTripTime;
+                        }
+                        const auto now = clock::now();
+                        if (now - st.cap_changed > std::chrono::milliseconds(100)) {
+                            st.cap_changed = now;
+                            const long long over = (long long)peer->roundTripTime - (long long)st.best_rtt;
+                            if (over > 40) {
+                                st.bulk_cap = std::max<size_t>(8 * 1024, st.bulk_cap * 3 / 4);
+                            }
+                            else if (over < 20) {
+                                st.bulk_cap = std::min<size_t>(64 * 1024, st.bulk_cap + 4 * 1024);
+                            }
+                        }
+                    }
                     while ((!st.bulk.empty() || !st.bulk_urgent.empty()) && !st.gone) {
-                        size_t queued = 0;
-                        for (ENetListIterator i = enet_list_begin(&peer->outgoingCommands); i != enet_list_end(&peer->outgoingCommands) && queued <= bulk_queue_limit; i = enet_list_next(i)) queued++;
-                        for (ENetListIterator i = enet_list_begin(&peer->outgoingSendReliableCommands); i != enet_list_end(&peer->outgoingSendReliableCommands) && queued <= bulk_queue_limit; i = enet_list_next(i)) queued++;
-                        if (queued > bulk_queue_limit) {
+                        size_t queued = 0, queued_bytes = 0;
+                        for (ENetListIterator i = enet_list_begin(&peer->outgoingCommands); i != enet_list_end(&peer->outgoingCommands) && queued <= bulk_queue_limit; i = enet_list_next(i)) {
+                            queued++;
+                            queued_bytes += reinterpret_cast<ENetOutgoingCommand*>(i)->fragmentLength;
+                        }
+                        for (ENetListIterator i = enet_list_begin(&peer->outgoingSendReliableCommands); i != enet_list_end(&peer->outgoingSendReliableCommands) && queued <= bulk_queue_limit; i = enet_list_next(i)) {
+                            queued++;
+                            queued_bytes += reinterpret_cast<ENetOutgoingCommand*>(i)->fragmentLength;
+                        }
+                        if (queued > bulk_queue_limit || (size_t)peer->reliableDataInTransit + queued_bytes >= st.bulk_cap) {
                             break;
                         }
                         // a message once begun is finished first (the other end puts the chunks together in order); between messages
@@ -210,7 +238,7 @@ namespace conker::transport {
                         }
                         std::deque<std::vector<uint8_t>>& queue = st.sending_urgent ? st.bulk_urgent : st.bulk;
                         const std::vector<uint8_t>& message = queue.front();
-                        const size_t n = std::min(bulk_chunk, message.size() - st.bulk_offset);
+                        const size_t n = std::min(std::min(bulk_chunk, std::max<size_t>(4096, st.bulk_cap / 2)), message.size() - st.bulk_offset);
                         const bool last = st.bulk_offset + n >= message.size();
                         std::vector<uint8_t> wire(n + 1);
                         wire[0] = last ? 1 : 0;
@@ -256,10 +284,10 @@ namespace conker::transport {
                     st.rtt = (double)it->first->roundTripTime;
                     if (update_stats) {
                         const ENetPeer* p = it->first;
-                        char text[256];
-                        std::snprintf(text, sizeof(text), "udp: %u packets sent, %u lost (now %.1f%%), round trip %u ms (+-%u, best %u), %u bytes waiting for an ack, network thread's longest gap %lld ms",
+                        char text[320];
+                        std::snprintf(text, sizeof(text), "udp: %u packets sent, %u lost (now %.1f%%), round trip %u ms (+-%u, best %u), %u bytes waiting for an ack, network thread's longest gap %lld ms, bulk allowance %u KB",
                             (unsigned)p->packetsSent, (unsigned)p->packetsLost, (double)p->packetLoss * 100.0 / (double)ENET_PEER_PACKET_LOSS_SCALE, (unsigned)p->roundTripTime,
-                            (unsigned)p->roundTripTimeVariance, (unsigned)p->lowestRoundTripTime, (unsigned)p->reliableDataInTransit, max_gap_ms);
+                            (unsigned)p->roundTripTimeVariance, (unsigned)p->lowestRoundTripTime, (unsigned)p->reliableDataInTransit, max_gap_ms, (unsigned)(st.bulk_cap / 1024));
                         std::lock_guard lock{ st.stats_mutex };
                         st.stats_text = text;
                     }

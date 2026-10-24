@@ -304,7 +304,7 @@ namespace conker {
             std::string nickname;    // how this player is called on the screen (empty: Player N)
             int port = 47000;
             int players = 2;         // the host's: how many play (2 to 4)
-            int delay = 3;           // the host's: frames of input delay
+            int delay = 0;           // the host's: frames of input delay (0: Auto, from the round trips, changed during the game)
             int input = 0;           // 0 = keyboard and gamepad, 1 = keyboard only, 2 = gamepad only
         };
         struct LobbyStatus {
@@ -313,6 +313,7 @@ namespace conker {
             int slot = 0;
             int expected = 2;
             int delay = 3;
+            bool auto_delay = false; // the delay is worked out from the round trips (delay: what it is now)
             int mask = 0;            // a bit for each player slot that is in
             std::array<std::string, 4> names;   // their nicknames (empty: none chosen)
             std::string log_path;    // the log file the session writes (netplay_host.txt or netplay_join.txt), once open
