@@ -14,13 +14,14 @@
 // (func_150AD770's syscall, called at 0x10003DD8), on one machine or both.
 //
 // Online now:
-//   - those allocations, and any allocation from a thread that isn't the game's, come from a pool of their own outside the game's
-//     8 MB (0x80C00000-0x80D00000), so the game's heap is only the game thread's, the same on every machine;
-//   - an allocation the heap can't give (where the game would stop) comes from a second pool (0x80D00000-0x80F00000), only the
+//   - those allocations, and any allocation from a thread that isn't the game's, come from a pool of their own in the memory the
+//     game leaves unused (it uses the first 4 MB: 0x80400000-0x80600000), so the game's heap is only the game thread's, the same on every machine;
+//   - an allocation the heap can't give (where the game would stop) comes from a second pool (0x80600000-0x807F0000), only the
 //     game thread's; its blocks follow func_10004250 and func_10004308 like the heap's;
 //   - a heap block freed from another thread is freed by the game thread at its next frame.
 // A pool's block looks like the heap's to the game (a header before it with the owner and size: func_100043B4 changes the owner
-// there). Both pools are below 16 MB (what the RSP and RT64 reach) and above the game's own memory.
+// there). Both pools are within the first 8 MB: the audio library stops the game for sample data past it (func_100214F0 at
+// 0x100215BC, 0.9.36's pools at 0x80C00000 had it stop as the first music played).
 //
 // The heap is also walked every 15 seconds online and logged (what is in use and free, the largest free block, each owner's bytes
 // that changed), with the pools'.
@@ -157,8 +158,8 @@ namespace {
     };
 
     std::mutex pool_mutex;
-    Pool audio_pool{ 0x80C00000u, 0x80D00000u, "audio" };
-    Pool spare_pool{ 0x80D00000u, 0x80F00000u, "spare" };
+    Pool audio_pool{ 0x80400000u, 0x80600000u, "audio" };
+    Pool spare_pool{ 0x80600000u, 0x807F0000u, "spare" };
     std::vector<uint32_t> deferred_frees;   // heap blocks freed from another thread, for the game thread
     unsigned spare_used = 0;
 
