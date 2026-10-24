@@ -543,6 +543,8 @@ bool conker::look_aim::online_swap_enabled() {
 // game's own strafe; the way pressed is kept (walk_dx, walk_dy) and conker_look_targets sets his moving angle to it from the view,
 // as with a gun. Everything it goes by is in the game's memory and the frame's agreed buttons.
 std::atomic<int> walk_dx[4], walk_dy[4];
+// A player holding a grenade that Z started in the no weapon R-look (C-Down held for it, below), from the frame's agreed buttons.
+std::atomic<bool> grenade_held[4];
 
 void conker::look_aim::no_weapon_walk(uint8_t* rdram, int port, uint16_t* buttons) {
 #if defined(CONKER_RT64)
@@ -563,12 +565,14 @@ void conker::look_aim::no_weapon_walk(uint8_t* rdram, int port, uint16_t* button
     const bool z_now = (*buttons & 0x2000) != 0;
     const bool z_edge = z_now && !prev_z[port];
     prev_z[port] = z_now;
+    grenade_held[port] = grenade_on[port];
     if (grenade_on[port]) {
         if (z_now) {
             *buttons = (uint16_t)((*buttons & ~(c_buttons | 0x2000)) | 0x0010 | 0x0004);
             return;
         }
         grenade_on[port] = false;
+        grenade_held[port] = false;
         *buttons &= (uint16_t)~c_buttons;
     }
     const uint32_t base = (uint32_t)MEM_W(0, (gpr)(int32_t)0x800DBFF0);
@@ -596,6 +600,7 @@ void conker::look_aim::no_weapon_walk(uint8_t* rdram, int port, uint16_t* button
         }
         if (z_edge && (*buttons & 0x0010) != 0) {
             grenade_on[port] = true;
+            grenade_held[port] = true;
             *buttons = (uint16_t)((*buttons & ~(c_buttons | 0x2000)) | 0x0010 | 0x0004);
             return;
         }
@@ -820,9 +825,6 @@ extern "C" void conker_camera_turn_invert(uint8_t* rdram, recomp_context* ctx) {
 
 #if defined(CONKER_RT64)
 float conker::look_aim::camera_turn_speed() {
-    if (conker::netsession::active()) {
-        return 1.0f;   // (online the game's own, the same on every machine: the setting is for single player)
-    }
     return (float)(number_option(options::camera_turn_speed, 100.0) / 100.0);
 }
 #endif
@@ -832,12 +834,19 @@ float conker::look_aim::camera_turn_speed() {
 // Only the turn applied is scaled, not the speed the game keeps, so it eases in and out as before.
 extern "C" void conker_camera_turn_speed_held(uint8_t* rdram, recomp_context* ctx) {
 #if defined(CONKER_RT64)
+    if (conker::netsession::active()) {
+        return;   // (online the game's own, the same on every machine: the setting is for single player; the free camera's turn, which
+                  // goes with the input, keeps it)
+    }
     ctx->f18.fl *= conker::look_aim::camera_turn_speed();
 #endif
 }
 
 extern "C" void conker_camera_turn_speed_released(uint8_t* rdram, recomp_context* ctx) {
 #if defined(CONKER_RT64)
+    if (conker::netsession::active()) {
+        return;
+    }
     ctx->f4.fl *= conker::look_aim::camera_turn_speed();
 #endif
 }
@@ -957,7 +966,12 @@ extern "C" void conker_look_targets(uint8_t* rdram, recomp_context* ctx) {
     // mouse turning the aim held at its limit on the turn's side, so he went the wrong way or ran on the spot.
     // (Not in the grenade's look, kind 0x26: C-Down is held for it (Z, no_weapon_walk), and walking back turned his facing, and the view
     // with it, every frame.)
-    if ((units_per_degree != 0.0f) && swap_state(camera_player(rdram, ctx->r16)) && MEM_BU(0x23E, ctx->r16) != 0x26) {
+    // The grenade's look is 0x26 in War and 0x14 in The Vault: there, with no weapon, R and Z had Conker spin on the spot. Whatever its
+    // kind, not while a grenade Z started is held.
+    const int look_player = camera_player(rdram, ctx->r16);
+    const bool holding_grenade = look_player >= 0 && look_player < 4 && grenade_held[look_player].load();
+    const uint8_t look_kind = MEM_BU(0x23E, ctx->r16);
+    if ((units_per_degree != 0.0f) && swap_state(look_player) && look_kind != 0x26 && look_kind != 0x14 && !holding_grenade) {
         constexpr uint32_t c_up = 0x0008, c_down = 0x0004, c_left = 0x0002, c_right = 0x0001;
         // The buttons this camera's player holds (+0x36C points at them).
         const uint32_t held = (uint32_t)MEM_HU(0, (gpr)(int32_t)MEM_W(0x36C, ctx->r16));
