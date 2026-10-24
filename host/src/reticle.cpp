@@ -189,108 +189,11 @@ namespace {
     }
 }
 
-namespace {
-    // Online: the game's own cross (the M4's in War: yellow bars and dots, the bars from 3.5 to 7 of the N64's pixels from the
-    // middle and the dots at 10.5, each a pixel thick) for the guns that draw none of their own while aimed: the tommy gun's
-    // R-Look (look kinds 0x38 and 0x39) and the crossbow's (0x18, the second aiming mode). Drawn over the game like the reticle,
-    // in the middle of the screen, where the full-screen view puts the camera's aim (net_view.cpp). Not a setting.
-    std::atomic<int64_t> last_cross_ticks = 0;
-    bool cross_created = false;
-    recompui::ContextId cross_context = recompui::ContextId::null();
-    recompui::Element* cross_holder = nullptr;
-    float cross_aspect = 0.0f;
-
-    bool cross_kind(uint32_t kind, bool second_mode) {
-        return second_mode ? kind == 0x18 : (kind == 0x38 || kind == 0x39);
-    }
-
-    void cross_frame(uint8_t* rdram, gpr camera, bool second_mode) {
-        if (!conker::netsession::active() || MEM_BU(0x23D, camera) != (uint32_t)conker::netsession::local_slot() || !cross_kind(MEM_BU(0x23E, camera), second_mode)) {
-            return;
-        }
-        last_cross_ticks = clock::now().time_since_epoch().count();
-    }
-
-    // The holder is 22 of the N64's pixels square (216 of them the screen's height), the cross's middle at its middle.
-    void create_cross() {
-        const recompui::Color yellow{ 222, 180, 34, 215 };
-        cross_context = recompui::create_context();
-        cross_context.open();
-        cross_context.set_captures_input(false);
-        cross_context.set_captures_mouse(false);
-        cross_holder = cross_context.create_element<recompui::Element>(cross_context.get_root_element());
-        cross_holder->set_position(recompui::Position::Absolute);
-        const auto piece = [&](float left, float top, float width, float height) {
-            constexpr float unit = 1.0f / 22.0f;
-            recompui::Element* e = cross_context.create_element<recompui::Element>(cross_holder);
-            e->set_position(recompui::Position::Absolute);
-            e->set_left(left * unit * 100.0f, recompui::Unit::Percent);
-            e->set_top(top * unit * 100.0f, recompui::Unit::Percent);
-            e->set_width(width * unit * 100.0f, recompui::Unit::Percent);
-            e->set_height(height * unit * 100.0f, recompui::Unit::Percent);
-            e->set_background_color(yellow);
-        };
-        constexpr float mid = 11.0f, thick = 0.9f, bar_from = 3.5f, bar_to = 7.0f, dot_at = 10.5f, dot = 0.8f;
-        // the bars: left, right, top, bottom
-        piece(mid - bar_to, mid - thick / 2, bar_to - bar_from, thick);
-        piece(mid + bar_from, mid - thick / 2, bar_to - bar_from, thick);
-        piece(mid - thick / 2, mid - bar_to, thick, bar_to - bar_from);
-        piece(mid - thick / 2, mid + bar_from, thick, bar_to - bar_from);
-        // the dots
-        piece(mid - dot_at - dot / 2, mid - dot / 2, dot, dot);
-        piece(mid + dot_at - dot / 2, mid - dot / 2, dot, dot);
-        piece(mid - dot / 2, mid - dot_at - dot / 2, dot, dot);
-        piece(mid - dot / 2, mid + dot_at - dot / 2, dot, dot);
-        cross_context.close();
-        cross_created = true;
-    }
-
-    void place_cross() {
-        int width = 0, height = 0;
-        if (window != nullptr) {
-            SDL_GetWindowSize(window, &width, &height);
-        }
-        const float aspect = (width > 0 && height > 0) ? (float)width / (float)height : 16.0f / 9.0f;
-        if (aspect == cross_aspect) {
-            return;
-        }
-        cross_aspect = aspect;
-        const float h = 22.0f / 216.0f * 100.0f;
-        const float w = h / aspect;
-        cross_context.open();
-        cross_holder->set_width(w, recompui::Unit::Percent);
-        cross_holder->set_height(h, recompui::Unit::Percent);
-        cross_holder->set_left(50.0f - w / 2, recompui::Unit::Percent);
-        cross_holder->set_top(50.0f - h / 2, recompui::Unit::Percent);
-        cross_context.close();
-    }
-
-    void update_cross() {
-        const int64_t since = clock::now().time_since_epoch().count() - last_cross_ticks.load();
-        const bool wanted = ui_ready && ultramodern::is_game_started() && since >= 0 && clock::duration(since) < linger;
-        if (!wanted) {
-            if (cross_created && recompui::is_context_shown(cross_context)) {
-                recompui::hide_context(cross_context);
-            }
-            return;
-        }
-        if (!cross_created) {
-            create_cross();
-        }
-        place_cross();
-        if (!recompui::is_context_shown(cross_context)) {
-            recompui::show_context(cross_context, "");
-        }
-    }
-}
-
 void conker::reticle::aim_frame(uint8_t* rdram, gpr camera) {
-    cross_frame(rdram, camera, true);
     aiming_frame(rdram, camera, no_state);
 }
 
 void conker::reticle::look_frame(uint8_t* rdram, gpr camera, uint32_t state) {
-    cross_frame(rdram, camera, false);
     // The slingshot and the throwing knives; plain R-Look (0x0) and the rest aren't aiming anything.
     constexpr uint32_t slingshot = 0x2, throwing_knives = 0xA;
     constexpr uint32_t online_guns[] = { 0x39, 0x09 };   // the SMG and the M4
@@ -307,7 +210,6 @@ void conker::reticle::on_ui_ready() {
 }
 
 void conker::reticle::update() {
-    update_cross();
     const int64_t since = clock::now().time_since_epoch().count() - last_aim_ticks.load();
     const bool aiming = since >= 0 && clock::duration(since) < linger && last_aim_shown.load();
     const bool wanted = ui_ready && conker::reticle::enabled() && ultramodern::is_game_started() && aiming;
