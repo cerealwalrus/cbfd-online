@@ -843,7 +843,30 @@ namespace {
                 // their own after the cameras' (marked for no camera), with the same projection and the same viewport, and a
                 // viewport made full-screen needs the projection widened with it or what is drawn there doesn't fit the rest.
                 // the projection matrix in this machine's camera's record, loaded by its 3D pass: a copy, widened
-                const uint32_t projection = scaled_matrix_copy(rdram, w1, scale_x, scale_y);
+                // 0.9.86: no taller than 90 degrees. The view is widened to the split screen's pixels per angle (for the aim), which makes it
+                // about twice as tall as the camera's own: right for the cameras in play (50 degrees up, 84 on the full view), but the race's
+                // start (112 x 80 degrees, for the short wide half) came out 117 degrees tall, a fish-eye that bent the walls about and
+                // showed past what the game draws. Past 90 degrees both axes are narrowed together (the shape stays), so only such wide
+                // cameras change: there is no aiming in them.
+                float sx = scale_x, sy = scale_y;
+                {
+                    const uint32_t i1 = (uint32_t)MEM_W(8, (gpr)(int32_t)w1), f1 = (uint32_t)MEM_W(40, (gpr)(int32_t)w1);
+                    const double m11 = (double)(int32_t)((i1 << 16) | (f1 & 0xFFFFu)) / 65536.0;
+                    constexpr double tallest = 1.0;   // tan(45 degrees): 90 degrees from the top to the bottom
+                    if (m11 > 0.05 && sy > 0.0f && 1.0 / (m11 * (double)sy) > tallest) {
+                        const float k = (float)(1.0 / (m11 * tallest) / (double)sy);
+                        sx *= k;
+                        sy *= k;
+                        static int narrowed_logged = 0;
+                        if (narrowed_logged < 10) {
+                            char line[160];
+                            std::snprintf(line, sizeof(line), "[net view] a wide camera (y scale %.3f): the full view's projection narrowed %.3f times, to 90 degrees tall", m11, k);
+                            conker::netsession::log(line);
+                            narrowed_logged++;
+                        }
+                    }
+                }
+                const uint32_t projection = scaled_matrix_copy(rdram, w1, sx, sy);
                 MEM_W(4, (gpr)(int32_t)address) = (int32_t)projection;
                 // (0.9.72 moved this projection's near plane out to 32 with the crossbow out, for its model seen through the sight: the
                 // game's is 55 already, so it did nothing: gone in 0.9.79. What showed the model was conker_player_visibility's override, 0.9.77.)
