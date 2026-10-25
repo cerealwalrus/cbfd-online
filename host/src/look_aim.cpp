@@ -1338,13 +1338,18 @@ extern "C" void conker_look_currents(uint8_t* rdram, recomp_context* ctx) {
         }
         settle = look_settle[player];
     }
-    if (swap_state(player) && settle > 0.0f) {
+    // 0.9.65: Swap Sticks' view on the aim from the second stage's first frame (up and down still waits for the settle): R-Look's first stage
+    // ends with the view following the aim now (conker_look_stage_one), so nothing is stopped dead. Waiting for it to settle, a player whose
+    // Stick: Aiming Response was Smooth kept turning and it never did: the view trailed the aim by 50 to 90 degrees for most of a second,
+    // his body facing the aim and seen turned aside (0.9.64's player 2; player 1, Direct, had the view on the aim anyway).
+    const float yaw_settle = (conker::netsession::active() && player >= 0) ? 1.0f : settle;
+    if (swap_state(player) && yaw_settle > 0.0f) {
         const float target = read_float(rdram, targets, target_yaw);
         const float current = read_float(rdram, state, current_yaw);
-        const float yaw = settle >= 1.0f ? target : current + angle_difference(target, current) * settle;
+        const float yaw = yaw_settle >= 1.0f ? target : current + angle_difference(target, current) * yaw_settle;
         write_float(rdram, state, current_yaw, yaw);
-        write_float(rdram, targets, yaw_velocity, read_float(rdram, targets, yaw_velocity) * (1.0f - settle));
-        if (settle >= 1.0f) {
+        write_float(rdram, targets, yaw_velocity, read_float(rdram, targets, yaw_velocity) * (1.0f - yaw_settle));
+        if (yaw_settle >= 1.0f) {
             swap_view_yaw[player] = yaw;
             swap_view_yaw_set[player] = true;
         }
