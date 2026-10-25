@@ -323,6 +323,7 @@ namespace {
         // is sensitive to: 1 viewports, 2 scissors, 4 fills of the camera's rectangle, 8 projection matrices, 16 the HUD.
         static const unsigned mask = []() { const char* text = SDL_getenv("CONKER_NET_VIEWMASK"); return text != nullptr ? (unsigned)std::strtoul(text, nullptr, 0) : 31u; }();
         static const bool hud_layout = [&]() { const char* text = SDL_getenv("CONKER_NET_HUD"); return (text == nullptr || std::string(text) != "old") && (mask & 16u) != 0; }();
+        std::string projection_notes;
         int redirected = 0, shown = 0, hidden = 0, matrices = 0, fills = 0, logged = 0, rects_logged = 0, rects_moved = 0, rects_hidden = 0;
         // where this machine's camera's 3D passes and its HUD passes are (each ends where the next pass starts)
         std::vector<std::pair<uint32_t, uint32_t>> segments, hud_segments;
@@ -810,7 +811,34 @@ namespace {
                     }
                     fills++;
                 }
-            } else if ((mask & 8u) != 0 && chain_op == 0xDA && (w0 & 0x04u) != 0 && (scale_x != 1.0f || scale_y != 1.0f) && w1 >= own && w1 < own + camera_size) {
+            }
+            if (chain_op == 0xDA && (w0 & 0x04u) != 0 && (w1 >> 24) == 0x80 && (w1 & 0x7FFFFFu) < 0x7FFFC0u && projection_notes.size() < 600) {
+                // (0.9.85: every projection loaded by the frame, with which pass, for the race's start: see projection_notes)
+                int pass_camera = -1, pass_kind = -1;
+                for (size_t i = 0; i < frame.size(); i++) {
+                    if (frame[i].gfx <= address) {
+                        pass_camera = frame[i].camera;
+                        pass_kind = frame[i].kind;
+                    }
+                }
+                const auto element = [&](uint32_t at, bool high) {
+                    const uint32_t i0 = (uint32_t)MEM_W(at, (gpr)(int32_t)w1), f0 = (uint32_t)MEM_W(32 + at, (gpr)(int32_t)w1);
+                    const int32_t v = high ? (int32_t)((i0 & 0xFFFF0000u) | (f0 >> 16)) : (int32_t)((i0 << 16) | (f0 & 0xFFFFu));
+                    return (double)v / 65536.0;
+                };
+                int owner = -1;
+                for (int k = 0; k <= players; k++) {
+                    const uint32_t record = base + (uint32_t)k * camera_size;
+                    if (w1 >= record && w1 < record + camera_size) {
+                        owner = k;
+                    }
+                }
+                char note[96];
+                std::snprintf(note, sizeof(note), " [pass %d/%d, record %d, %.3f %.3f%s]", pass_camera, pass_kind, owner, element(0, true), element(8, false),
+                    ((mask & 8u) != 0 && (scale_x != 1.0f || scale_y != 1.0f) && w1 >= own && w1 < own + camera_size) ? " scaled" : "");
+                projection_notes += note;
+            }
+            if ((mask & 8u) != 0 && chain_op == 0xDA && (w0 & 0x04u) != 0 && (scale_x != 1.0f || scale_y != 1.0f) && w1 >= own && w1 < own + camera_size) {
                 // Every load of this machine's camera's projection, in whatever pass: the game draws its characters in passes of
                 // their own after the cameras' (marked for no camera), with the same projection and the same viewport, and a
                 // viewport made full-screen needs the projection widened with it or what is drawn there doesn't fit the rest.
@@ -851,8 +879,11 @@ namespace {
                 }
                 // The radar (a grey circle, 32 x 32 in the game's screen, and its dot) at each camera's top right: with two
                 // players only this machine's player's is shown, at the full view's top right.
+                // (0.9.85: and the race's track map, a 64 x 64 picture in the same corner, the dots of the karts on it being the radar's: with
+                // the radar's size only it was left where the split screen has it, each camera's, so two maps showed, the dots apart from them)
                 int radar_camera = -1;
-                if (bar && players >= 2 && width <= 34.5f && height <= 34.5f) {
+                const bool radar_size = (width <= 34.5f && height <= 34.5f) || (!menu_open && width <= 66.5f && height <= 66.5f);
+                if (bar && players >= 2 && radar_size) {
                     for (int k = 0; k < players; k++) {
                         const uint32_t record = base + k * camera_size;
                         const float r_right = get_float(rdram, record, field_right), r_top = get_float(rdram, record, field_top);
@@ -908,6 +939,12 @@ namespace {
                         dx = (int32_t)((cx < middle ? 120.0f : -120.0f) * 4.0f);
                         kind_name = "score";
                     }
+                } else if (!bar && in_rect(own_l, own_t, own_r, own_b) && cy < own_t + 32.0f && cx < own_l + 64.0f) {
+                    // 0.9.85: the top left corner of the camera's rectangle, with the race's lap ("LAP" and its "1/3", the digits a little in
+                    // from the edge, taken for a sprite of the world below and moved down with the view): to the full view's corner
+                    dx = (int32_t)((left - own_l) * 4.0f);
+                    dy = (int32_t)((top - own_t) * 4.0f);
+                    kind_name = "own";
                 } else if (!bar && cx >= own_l + 30.0f && cx <= own_r - 30.0f && cy >= own_t + 8.0f && cy <= own_b - 8.0f) {
                     // inside the camera's rectangle and away from its edges (the rocket's explosion): placed by the game in the rectangle's
                     // pixels, at the view's middle with the aim, so it moves down with the aim and not out to a corner
@@ -1166,6 +1203,22 @@ namespace {
                 std::snprintf(line, sizeof(line), "[net view]   %08X: %08X %08X", address, w0, w1);
                 conker::netsession::log(line);
                 logged++;
+            }
+        }
+        {
+            // 0.9.85: the race's start showed the view flicking between two fields of view, a frame here and there: each frame's projections
+            // (the pass's camera and kind, the camera record the matrix is in, its x and y scale, and whether it was widened), with this
+            // machine's camera's fields of view, logged when they change, the first 300 times
+            static std::string last_notes;
+            static int notes_logged = 0;
+            char fov[64];
+            std::snprintf(fov, sizeof(fov), " fov %.2f %.2f", get_float(rdram, own, 0x74), get_float(rdram, own, 0x78));
+            projection_notes += fov;
+            if (projection_notes != last_notes && notes_logged < 300) {
+                last_notes = projection_notes;
+                notes_logged++;
+                const std::string line = "[net view] projections f=" + std::to_string(conker::netsession::frame()) + ":" + projection_notes;
+                conker::netsession::log(line.c_str());
             }
         }
         if (log_it) {
