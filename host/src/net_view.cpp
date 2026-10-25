@@ -1021,8 +1021,9 @@ namespace {
                     if (race_frame && std::fabs(cx - 0.5f * (left + right)) < 40.0f) {
                         // 0.9.92: the race's timer (its digits from 16 left of the middle, 13 above the middle row), right under the lap
                         // ("LAP 1/3", at the full view's top left from 9 in and 21 down): from 9 in and 34 down, at the left edge with it
-                        // (0.9.94: 1.75 further left: its first digit stood that far right of the lap's L and the lap times' first digits)
-                        dx = (int32_t)std::lround(((left + 7.25f) - (0.5f * (left + right) - 16.0f)) * 4.0f);
+                        // (0.9.94: 1.75 further left: its first digit stood that far right of the lap's L and the lap times' first digits;
+                        // 0.9.95: and 0.75 more, measured on the screen: its 0 a pixel right of the lap times' 0s)
+                        dx = (int32_t)std::lround(((left + 6.5f) - (0.5f * (left + right) - 16.0f)) * 4.0f);
                         dy = (int32_t)std::lround(((top + 34.0f) - (0.5f * (top + bottom) - 13.0f)) * 4.0f);
                         kind_name = "race timer";
                     }
@@ -1037,7 +1038,8 @@ namespace {
                     // edge, a row a lap): taken for a sprite of the world past the lap's first digits, half of one went down to the middle
                     // of the view, and the rest lay under the race's timer, moved under the lap. With the lap, to the full view's corner, and
                     // a row lower, under the race's timer
-                    dx = (int32_t)((left - own_l) * 4.0f);
+                    // (0.9.95: a quarter pixel right, with the L of the lap and the timer's 0, measured on the screen)
+                    dx = (int32_t)((left - own_l) * 4.0f) + 1;
                     dy = (int32_t)((top - own_t + 13.0f) * 4.0f);
                     kind_name = "own";
                     static int lap_times_logged = 0;
