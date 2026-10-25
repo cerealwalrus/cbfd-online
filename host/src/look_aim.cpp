@@ -611,6 +611,49 @@ extern "C" void conker_look_view(uint8_t* rdram, recomp_context* ctx) {
         previous_stage = look_stage_seen[player];
         look_stage_seen[player] = (int)MEM_H(0x73C, camera);
     }
+    // 0.10.1: knocked out of the look by a hit, R still held. The game then turns Conker, 0xC00 a frame, until he faces away from his
+    // moving angle (+0x76 of his object; facing +0x7A): logged three times, the turn ending at the moving angle + 0x8000. Walking in the
+    // look his moving angle is where he walks (Swap Sticks' strafe sets it from the view, conker_look_targets), so he spun round, nearly
+    // half a turn; standing still he didn't turn. From the frame the look ends until it is back (or R is let go), his facing is kept
+    // as it was and his moving angle is set away from it, so the turn has nowhere to go: as standing still. Each look record on its own
+    // (a player can have two), by the game's memory and the frame's agreed buttons, on every machine.
+    if (conker::netsession::active() && player >= 0 && player < 4) {
+        const uint32_t looks = (uint32_t)MEM_W(0, (gpr)(int32_t)0x800DBFF0);
+        const uint32_t at = (uint32_t)camera;
+        if ((looks >> 24) == 0x80 && at >= looks && (at - looks) % 0x9A0u == 0 && (at - looks) / 0x9A0u < 4) {
+            const uint32_t record = (at - looks) / 0x9A0u;
+            static bool armed[4] = {};
+            static bool holding[4] = {};
+            static uint16_t kept_face[4] = {};
+            const int stage_now = (int)MEM_H(0x73C, camera);
+            bool plugged = false;
+            uint16_t agreed = 0;
+            float ax = 0.0f, ay = 0.0f;
+            const bool r_held = conker::netsession::input(player, &plugged, &agreed, &ax, &ay) && (agreed & 0x0010) != 0;
+            const gpr knocked = (gpr)(int32_t)MEM_W(0x3D0, camera);
+            const bool knocked_ok = ((uint32_t)knocked & 0xFF000000u) == 0x80000000u;
+            if (!r_held || stage_now == 1) {
+                armed[record] = false;
+                holding[record] = false;
+            } else if (stage_now == 2) {
+                armed[record] = true;
+                holding[record] = false;
+            } else if (stage_now == 0 && armed[record] && knocked_ok) {
+                if (!holding[record]) {
+                    holding[record] = true;
+                    kept_face[record] = (uint16_t)MEM_HU(0x7A, knocked);
+                    if (player == conker::netsession::local_slot()) {
+                        char line[140];
+                        std::snprintf(line, sizeof(line), "[look] f=%u knocked out of the look, R held: facing kept at %04X (it was moving at %04X)",
+                            conker::netsession::frame(), (unsigned)kept_face[record], (unsigned)MEM_HU(0x76, knocked));
+                        conker::netsession::log(line);
+                    }
+                }
+                MEM_H(0x7A, knocked) = (int16_t)kept_face[record];
+                MEM_H(0x76, knocked) = (int16_t)(uint16_t)(kept_face[record] + 0x8000u);
+            }
+        }
+    }
     // 0.9.62: online, R-Look's handover from its first stage to its second, for every player's camera on every machine (the view is built
     // from the game's memory alike on all of them). The eye (+0x2F8, and the view's copy of it, +0x2EC: its x and y are copied already,
     // its z after this):
