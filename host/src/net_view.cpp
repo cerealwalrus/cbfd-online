@@ -952,6 +952,23 @@ namespace {
                     } else if (race_piece) {
                         hide = true;
                         kind_name = "menu: race HUD hidden";
+                    } else if (race_menu && !bar) {
+                        // 0.9.90: the race's pause screen (PAUSED, QUIT, the stick, CONT.), laid out by the game in the top camera's half
+                        // on every machine, high up on the full view: moved from that half's middle to the full view's, as the game's pieces
+                        // in the middle of the view are moved in play (the frame or two the game still draws it after the menu has closed,
+                        // where it was drawn lower, flickering)
+                        kind_name = "menu: left alone";
+                        for (int k = 0; k < players; k++) {
+                            const uint32_t record = base + k * camera_size;
+                            const float l = get_float(rdram, record, field_left), r = get_float(rdram, record, field_right);
+                            const float t = get_float(rdram, record, field_top), b = get_float(rdram, record, field_bottom);
+                            if (in_rect(l, t, r, b)) {
+                                dx = (int32_t)std::lround((0.5f * (left + right) - 0.5f * (l + r)) * 4.0f);
+                                dy = (int32_t)std::lround((0.5f * (top + bottom) - 0.5f * (t + b)) * 4.0f);
+                                kind_name = "menu: pause moved to the middle";
+                                break;
+                            }
+                        }
                     } else {
                         kind_name = "menu: left alone";
                     }
