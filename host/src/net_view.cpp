@@ -631,6 +631,7 @@ namespace {
         uint32_t skip_to = 0;                    // the words of an extended rectangle written over the game's, not looked at again
         int edge_rects = 0;
         bool race_menu = false;   // 0.9.89: the race's track map has been seen in this frame, with the pause menu open
+        bool race_frame = false;  // 0.9.91: the race's track map has been seen in this frame (it is drawn before its dots and the HUD's passes)
         for (const Range& range : ranges)
         for (uint32_t address = range.from; address < range.to; address += 8) {
             if (address < skip_to) {
@@ -913,10 +914,15 @@ namespace {
                     for (int k = 0; k < players; k++) {
                         const uint32_t record = base + k * camera_size;
                         const float r_right = get_float(rdram, record, field_right), r_top = get_float(rdram, record, field_top);
-                        if (cx >= r_right - 72.0f && cx <= r_right && (cy >= r_top && cy <= r_top + 62.0f)) {
+                        // (0.9.91: in the race, down to the map's bottom, 78 below the camera's top: the karts' dots in its lower part were
+                        // left where the split screen has them, two stray dots on the view)
+                        if (cx >= r_right - 72.0f && cx <= r_right && (cy >= r_top && cy <= r_top + (race_frame ? 80.0f : 62.0f))) {
                             radar_camera = k;
                         }
                     }
+                }
+                if (bar && radar_camera >= 0 && width >= 56.0f) {
+                    race_frame = true;
                 }
                 // (with limited lives each camera's count, a digit 5 x 7 to the left of its health bar, is drawn here too: it goes with its
                 // health bar, to this machine's corner, or away with another camera's)
@@ -1035,6 +1041,13 @@ namespace {
                         conker::netsession::log(line);
                         world_logged++;
                     }
+                } else if (race_frame && !bar && in_rect(own_l, own_t, own_r, own_b) && std::fabs(cx - (own_l + own_r) * 0.5f) < 40.0f && cy > own_b - 14.0f &&
+                        own_b > 0.5f * (top + bottom) + 20.0f) {
+                    // 0.9.91: the race's timer along the bottom of a camera that isn't the top one (player 2's): the top camera's, the same
+                    // time, is the one shown along the full view's bottom (the shared row's); this one, taken for corner pieces, came out
+                    // split in two at the bottom corners
+                    hide = true;
+                    kind_name = "race timer (the shared row's is shown)";
                 } else if (in_rect(own_l, own_t, own_r, own_b)) {
                     dx = (int32_t)(((cx < (own_l + own_r) * 0.5f) ? (left - own_l) : (right - own_r)) * 4.0f);
                     dy = (int32_t)(((cy < (own_t + own_b) * 0.5f) ? (top - own_t) : (bottom - own_b)) * 4.0f);
