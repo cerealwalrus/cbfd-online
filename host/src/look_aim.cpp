@@ -114,6 +114,20 @@ namespace {
     std::atomic<int64_t> last_aim_ticks[aim_players] = {};
     // The aim's yaw for each player's view this frame, from the look mode (conker_look_currents), while swapped.
     std::atomic<int> look_stage_seen[aim_players] = {};
+    std::atomic<int> look_kind_seen[aim_players] = {};
+    // Online, the lift of the view's eye at the start of R-Look's second stage (0.9.57's [look] lines: the eye's height over the look-at
+    // point's went +8.3, 10.9, 10.4, 8.4, 6.0, 3.8, 2.1, 0.9, 0.2 and back to where it was in the 9 frames after the first stage ended,
+    // the same in every look that had it, nothing moved by the stick: the dip in the view at the end of the swing in). Taken off the eye
+    // as it's built, scaled to the lift's first frame.
+    constexpr float stage_two_lift[] = { 8.3f, 10.9f, 10.4f, 8.4f, 6.0f, 3.8f, 2.1f, 0.9f, 0.2f };
+    struct LiftState {
+        int stage_two_frames = 0;
+        int step = -1;          // the lift's frame being taken off (-1: none)
+        float scale = 1.0f;
+        float last_height = 0.0f;
+        bool have_last = false;
+    };
+    LiftState lift_state[aim_players];
     // Online, how far each player's look has settled from its start (0 swinging in, 1 settled): what Swap Sticks' view on the aim
     // (conker_look_currents) and the guns' up and down at once (gun_aim_online) are mixed in by. They put the view on the aim every
     // frame, so from the look's second stage its swing in had stopped dead: 0.9.56's snap, and 0.9.53's when the stick was held.
@@ -164,7 +178,9 @@ namespace {
     // drunk. So online the stick's pitch is scaled to the yaw's rate, and the view takes the pitch at once. Not a setting:
     // the game's state has to be the same on every machine, so every machine does it, for every player, from the
     // game's own memory.
-    constexpr float gun_pitch_scale = 4.06f / 1.9f;
+    // (0.9.58: 2.75, from 4.06 / 1.9: with the stick's curve and easing now up and down as well as across, frontend.cpp, near the
+    // speed across, 1.5 times the game's 4.06, as the test asked up and down to feel like across)
+    constexpr float gun_pitch_scale = 2.75f;
     bool gun_aim_online(uint8_t* rdram, gpr camera) {
         // On again (0.9.57: up and down as before 0.9.53, which the test liked better), but only for up and down: the view's left and
         // right is no longer put on the aim here, and up and down only once the look has settled (look_settle), so R-Look's start
@@ -546,6 +562,38 @@ extern "C" void conker_look_view(uint8_t* rdram, recomp_context* ctx) {
     const int player = camera_player(rdram, camera);
     if (player >= 0) {
         look_stage_seen[player] = (int)MEM_H(0x73C, camera);
+        look_kind_seen[player] = (int)MEM_BU(0x23E, camera);
+    }
+    // Online, the second stage's lift of the eye (stage_two_lift), for every player's camera on every machine (the view is built from the
+    // game's memory alike on all of them). The eye (+0x2F8, its height +0x2FC) and the view's copy of it (+0x2EC, +0x2F0).
+    if (conker::netsession::active() && player >= 0) {
+        LiftState& lift = lift_state[player];
+        const int stage = (int)MEM_H(0x73C, camera);
+        const float height = read_float(rdram, camera, 0x2FC) - read_float(rdram, camera, 0x2E4);
+        if (stage != 2) {
+            lift.stage_two_frames = 0;
+            lift.step = -1;
+        } else {
+            lift.stage_two_frames++;
+            if (lift.step < 0 && lift.stage_two_frames <= 3 && lift.have_last) {
+                const float jump = height - lift.last_height;
+                if (jump > 6.5f && jump < 10.0f) {
+                    lift.step = 0;
+                    lift.scale = jump / stage_two_lift[0];
+                }
+            }
+        }
+        lift.last_height = height;
+        lift.have_last = true;
+        if (lift.step >= 0) {
+            const float off = stage_two_lift[lift.step] * lift.scale;
+            write_float(rdram, camera, 0x2FC, read_float(rdram, camera, 0x2FC) - off);
+            write_float(rdram, camera, 0x2F0, read_float(rdram, camera, 0x2F0) - off);
+            lift.step++;
+            if (lift.step >= (int)(sizeof(stage_two_lift) / sizeof(stage_two_lift[0]))) {
+                lift.step = -1;
+            }
+        }
     }
     // Online, this machine's player's look, its first 45 frames each time (the view's movement after R, for the logs).
     if (conker::netsession::active() && player >= 0 && player == conker::netsession::local_slot()) {
@@ -697,6 +745,10 @@ void conker::look_aim::no_weapon_walk(uint8_t* rdram, int port, uint16_t* button
 
 int conker::look_aim::look_stage(int player) {
     return (player >= 0 && player < aim_players) ? look_stage_seen[player].load() : 0;
+}
+
+int conker::look_aim::look_kind(int player) {
+    return (player >= 0 && player < aim_players) ? look_kind_seen[player].load() : -1;
 }
 
 bool conker::look_aim::aiming_recently(int player) {

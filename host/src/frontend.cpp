@@ -802,22 +802,25 @@ namespace {
         std::chrono::steady_clock::time_point last;
     } aim_ease;
     // Seconds for the eased value to cover about two thirds of the way: coming up (across, up and down), going back.
-    constexpr float aim_rise_across = 0.09f, aim_fall = 0.045f;
+    constexpr float aim_rise_across = 0.09f, aim_rise_up = 0.08f, aim_fall = 0.045f;
 
     float aim_curve(float tilt) {
         return 0.3f * tilt + 0.7f * tilt * tilt;
     }
 
-    void shape_online_aim(bool aiming, float* x, float* y) {
+    void shape_online_aim(bool aiming, bool vertical_too, float* x, float* y) {
         const auto now = std::chrono::steady_clock::now();
         if (!aiming) {
             aim_ease.on = false;
             return;
         }
-        // (across only: up and down the game's spring eases already, and 0.9.55's curve and easing on it made it slow)
-        float tx = *x;
-        const float ty = *y;
+        // (across, and up and down only where it's quick and taken at once, the SMG's and the M4's: elsewhere the game's spring eases it
+        // already, and 0.9.55's curve and easing on it there made it slow)
+        float tx = *x, ty = *y;
         tx = std::copysign(aim_curve(std::min(std::fabs(tx), 1.0f)), tx);
+        if (vertical_too) {
+            ty = std::copysign(aim_curve(std::min(std::fabs(ty), 1.0f)), ty);
+        }
         if (!aim_ease.on) {
             aim_ease = AimEase{ true, 0.0f, 0.0f, now };
         }
@@ -832,9 +835,13 @@ namespace {
             }
         };
         step(aim_ease.x, tx, aim_rise_across);
-        aim_ease.y = ty;
+        if (vertical_too) {
+            step(aim_ease.y, ty, aim_rise_up);
+        } else {
+            aim_ease.y = ty;
+        }
         *x = aim_ease.x;
-        *y = ty;
+        *y = aim_ease.y;
     }
 
     // (the game thread's: the sampler, and what asks for it, run there)
@@ -976,7 +983,9 @@ namespace {
             }
             // (the aim stick's curve and easing, above: while aiming, swapped or not, and not held still for the look's start)
             if (online_game && port == 0) {
-                shape_online_aim(pad != nullptr && !entry_hold && (swapped || conker::look_aim::aiming_recently(aim_player)), x, y);
+                const int kind = conker::look_aim::look_kind(aim_player);
+                shape_online_aim(pad != nullptr && !entry_hold && (swapped || conker::look_aim::aiming_recently(aim_player)),
+                    kind == 0x39 || kind == 0x09, x, y);
             }
             if (port == 0) {
                 conker::look_aim::set_sampled_swap(online_game && swapped);
