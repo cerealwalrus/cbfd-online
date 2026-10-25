@@ -682,7 +682,23 @@ extern "C" void conker_look_view(uint8_t* rdram, recomp_context* ctx) {
     // Online, this machine's player's look, its first 45 frames each time (the view's movement after R, for the logs).
     if (conker::netsession::active() && player >= 0 && player == conker::netsession::local_slot()) {
         static int frames_logged = -1;
+        static int after_logged = 99;   // 0.9.99: the 30 frames after the look ends, to see a hit knock it out (Conker's facing and moving angle)
+        static int last_stage = 0;
         const int stage = (int)MEM_H(0x73C, camera);
+        if (stage == 0 && last_stage != 0) {
+            after_logged = 0;
+        }
+        last_stage = stage;
+        if (stage == 0 && after_logged < 30) {
+            after_logged++;
+            const gpr after_conker = (gpr)(int32_t)MEM_W(0x3D0, camera);
+            if (((uint32_t)after_conker & 0xFF000000u) == 0x80000000u) {
+                char line[160];
+                std::snprintf(line, sizeof(line), "[look] f=%u after the look %d: kind=%02X face=%04X move=%04X yaw=%.2f", conker::netsession::frame(), after_logged,
+                    (unsigned)MEM_BU(0x23E, camera), (unsigned)MEM_HU(0x7A, after_conker), (unsigned)MEM_HU(0x76, after_conker), read_float(rdram, camera, current_yaw));
+                conker::netsession::log(line);
+            }
+        }
         if (stage == 0) {
             frames_logged = -1;
         } else if (frames_logged < 45) {
