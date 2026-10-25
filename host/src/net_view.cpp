@@ -1017,6 +1017,13 @@ namespace {
                     dy = (int32_t)((top + 0.946f * (bottom - top) - 0.5f * (top + bottom)) * 4.0f);
                     dx = 0;
                     kind_name = "shared";
+                    if (race_frame && std::fabs(cx - 0.5f * (left + right)) < 40.0f) {
+                        // 0.9.92: the race's timer (its digits from 16 left of the middle, 13 above the middle row), right under the lap
+                        // ("LAP 1/3", at the full view's top left from 9 in and 21 down): from 9 in and 34 down, at the left edge with it
+                        dx = (int32_t)std::lround(((left + 9.0f) - (0.5f * (left + right) - 16.0f)) * 4.0f);
+                        dy = (int32_t)std::lround(((top + 34.0f) - (0.5f * (top + bottom) - 13.0f)) * 4.0f);
+                        kind_name = "race timer";
+                    }
                     const float middle = 0.5f * (left + right);
                     if (players == 2 && local == 1 && score_swap && (cx < middle - 36.0f || cx > middle + 36.0f)) {
                         dx = (int32_t)((cx < middle ? 120.0f : -120.0f) * 4.0f);
@@ -1083,6 +1090,8 @@ namespace {
                             edge = 2;
                         } else if (std::strcmp(kind_name, "own") == 0) {
                             edge = cx < (own_l + own_r) * 0.5f ? 1 : 2;
+                        } else if (std::strcmp(kind_name, "race timer") == 0) {
+                            edge = 1;   // (with the lap, at the left edge)
                         }
                     }
                     bool extended = false;
