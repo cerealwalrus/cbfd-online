@@ -628,6 +628,13 @@ func = "func_15063A38"
 before_vram = 0x15063A80
 text = "{ extern void conker_aim_lock_on(uint8_t*, recomp_context*); conker_aim_lock_on(rdram, ctx); }"
 
+# Online, a gun's aim across turns 1.5 times as fast (host/src/look_aim.cpp, conker_gun_aim_turn): $t5, the
+# frame's turn, before it's added to the aim.
+[[patches.hook]]
+func = "func_15063A38"
+before_vram = 0x15063AE0
+text = "{ extern void conker_gun_aim_turn(uint8_t*, recomp_context*); conker_gun_aim_turn(rdram, ctx); }"
+
 # Online, the look mode's first stage (host/src/look_aim.cpp, conker_look_stage_one): the camera's yaw goes
 # to the aim at once, at the start of func_15120158 ($a0 the camera).
 [[patches.hook]]

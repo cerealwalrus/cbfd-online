@@ -390,6 +390,19 @@ extern "C" void conker_aim_lock_on(uint8_t* rdram, recomp_context* ctx) {
 #endif
 }
 
+// Online, a gun's aim across turns 1.5 times as fast (as R-Look's up and down, conker_look_stick_pitch): func_15063A38 adds the
+// stick's X times 200, times D_800CC264, over 2000 to the aim (+0x12 of +0x31C) each frame, $t5 at 0x15063AE0. 0.9.54 sped up the
+// look's own targets only, which the guns' looks don't turn across (their yaw is worked out from the aim). Whole numbers, the same on
+// every machine for every player, from the frame's agreed stick.
+extern "C" void conker_gun_aim_turn(uint8_t* rdram, recomp_context* ctx) {
+    (void)rdram;
+    if (!conker::netsession::active()) {
+        return;
+    }
+    const int32_t turn = (int32_t)ctx->r13;
+    ctx->r13 = (gpr)(int32_t)(turn * 3 / 2);
+}
+
 // Online, the look mode's first stage (+0x73C of the camera is 1: the camera moves in for 30 frames, a timer of +0x84A) at the
 // start of func_15120158 ($a0 the camera). The camera's yaw there eases toward a target worked out once, when the mode starts
 // (func_1511FC60), while Conker turns with the stick: the head turned and the view lagged behind (view_log: the camera still at

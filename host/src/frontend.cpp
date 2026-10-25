@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -784,6 +786,59 @@ namespace {
 
     bool get_port_input_live(int port, uint16_t* buttons, float* x, float* y);
 
+    // Online, the aim stick while aiming (R-Look and the other aiming modes), on the machine it's read on, before it
+    // travels: every machine plays the value sent, so the game's state stays the same on all of them. Measured from
+    // two recordings (0.9.54 and a Nintendo 64's, the view's movement frame by frame): on the PC the aim turned left and
+    // right in a square wave, from still to full speed in a frame and back, as the game turns a gun's aim by the stick
+    // with no easing across and a modern stick goes to the edge at once; the Nintendo 64's turned in smooth curves, its
+    // stick moved through on the way. So:
+    // - a curve: half tilt turns a third as fast as full, for small corrections, full tilt as fast as before;
+    // - easing: the stick's value comes up to where it's pushed over about a fifth of a second and back down in about a
+    //   tenth, so the aim speeds up and settles instead of jumping, and a flick still turns at once.
+    struct AimEase {
+        bool on = false;
+        float x = 0.0f, y = 0.0f;
+        std::chrono::steady_clock::time_point last;
+    } aim_ease;
+    // Seconds for the eased value to cover about two thirds of the way: coming up (across, up and down), going back.
+    constexpr float aim_rise_across = 0.09f, aim_rise_up = 0.06f, aim_fall = 0.045f;
+
+    float aim_curve(float tilt) {
+        return 0.3f * tilt + 0.7f * tilt * tilt;
+    }
+
+    void shape_online_aim(bool aiming, float* x, float* y) {
+        const auto now = std::chrono::steady_clock::now();
+        if (!aiming) {
+            aim_ease.on = false;
+            return;
+        }
+        float tx = *x, ty = *y;
+        const float tilt = std::sqrt(tx * tx + ty * ty);
+        if (tilt > 1e-4f) {
+            const float scale = aim_curve(std::min(tilt, 1.0f)) / tilt;
+            tx *= scale;
+            ty *= scale;
+        }
+        if (!aim_ease.on) {
+            aim_ease = AimEase{ true, 0.0f, 0.0f, now };
+        }
+        const float dt = std::clamp(std::chrono::duration<float>(now - aim_ease.last).count(), 0.0f, 0.1f);
+        aim_ease.last = now;
+        const auto step = [dt](float& eased, float wanted, float rise) {
+            const bool speeding_up = std::fabs(wanted) > std::fabs(eased) && wanted * eased >= 0.0f;
+            const float seconds = speeding_up ? rise : aim_fall;
+            eased += (wanted - eased) * (1.0f - std::exp(-dt / seconds));
+            if (std::fabs(eased) < 0.002f && wanted == 0.0f) {
+                eased = 0.0f;
+            }
+        };
+        step(aim_ease.x, tx, aim_rise_across);
+        step(aim_ease.y, ty, aim_rise_up);
+        *x = aim_ease.x;
+        *y = aim_ease.y;
+    }
+
     // (the game thread's: the sampler, and what asks for it, run there)
     SDL_GameController* local_pad_used = nullptr;
 
@@ -921,6 +976,10 @@ namespace {
                 } else {
                     read_port(pad, keys, true, false, conker::look_aim::z_turns_aim(aim_player), buttons, x, y);
                 }
+            }
+            // (the aim stick's curve and easing, above: while aiming, swapped or not, and not held still for the look's start)
+            if (online_game && port == 0) {
+                shape_online_aim(pad != nullptr && !entry_hold && (swapped || conker::look_aim::aiming_recently(aim_player)), x, y);
             }
             if (port == 0) {
                 conker::look_aim::set_sampled_swap(online_game && swapped);
