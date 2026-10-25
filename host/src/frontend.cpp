@@ -414,7 +414,7 @@ namespace {
         }
     }
 
-    // The launcher's options: RecompFrontend's usual ones, with Version and Add ROM after Start Game.
+    // The launcher's options: RecompFrontend's usual ones, with Online after Start Game and Version and Add ROM after Exit.
     void init_launcher(recompui::LauncherMenu* menu) {
         const recomp::GameEntry& game = supported_games[0];
         // Here rather than at startup, so a ROM given with --rom is already the one stored.
@@ -436,12 +436,14 @@ namespace {
         conker::reticle::on_ui_ready();
         options->add_start_game_or_load_rom_option("Load ROM", "Single Player");   // (recompui's is "Start Game")
         options->add_option("Online", []() { conker::netlobby::show(); });
-        version_option = options->add_option("Version", on_version_selected);
-        add_rom_option = options->add_option("Add ROM", on_add_rom_selected);
         options->add_setup_controls_option();
         options->add_settings_option();
         options->add_mods_option();
         options->add_exit_option();
+        // (0.9.98: Version and Add ROM last, as they are in the corner: a controller goes down the column in the order the options
+        // are added, so with them after Online the d-pad went from Online to Add ROM; now Exit is followed by them)
+        version_option = options->add_option("Version", on_version_selected);
+        add_rom_option = options->add_option("Add ROM", on_add_rom_selected);
         if (conker_theme_on()) {
             int index = 0;
             for (recompui::GameOption* option : options->get_options()) {
