@@ -792,6 +792,7 @@ namespace {
     // right in a square wave, from still to full speed in a frame and back, as the game turns a gun's aim by the stick
     // with no easing across and a modern stick goes to the edge at once; the Nintendo 64's turned in smooth curves, its
     // stick moved through on the way. So:
+    // Across only (0.9.56): up and down is the stick as it is, the game's spring easing it.
     // - a curve: half tilt turns a third as fast as full, for small corrections, full tilt as fast as before;
     // - easing: the stick's value comes up to where it's pushed over about a fifth of a second and back down in about a
     //   tenth, so the aim speeds up and settles instead of jumping, and a flick still turns at once.
@@ -801,7 +802,7 @@ namespace {
         std::chrono::steady_clock::time_point last;
     } aim_ease;
     // Seconds for the eased value to cover about two thirds of the way: coming up (across, up and down), going back.
-    constexpr float aim_rise_across = 0.09f, aim_rise_up = 0.06f, aim_fall = 0.045f;
+    constexpr float aim_rise_across = 0.09f, aim_fall = 0.045f;
 
     float aim_curve(float tilt) {
         return 0.3f * tilt + 0.7f * tilt * tilt;
@@ -813,13 +814,10 @@ namespace {
             aim_ease.on = false;
             return;
         }
-        float tx = *x, ty = *y;
-        const float tilt = std::sqrt(tx * tx + ty * ty);
-        if (tilt > 1e-4f) {
-            const float scale = aim_curve(std::min(tilt, 1.0f)) / tilt;
-            tx *= scale;
-            ty *= scale;
-        }
+        // (across only: up and down the game's spring eases already, and 0.9.55's curve and easing on it made it slow)
+        float tx = *x;
+        const float ty = *y;
+        tx = std::copysign(aim_curve(std::min(std::fabs(tx), 1.0f)), tx);
         if (!aim_ease.on) {
             aim_ease = AimEase{ true, 0.0f, 0.0f, now };
         }
@@ -834,9 +832,9 @@ namespace {
             }
         };
         step(aim_ease.x, tx, aim_rise_across);
-        step(aim_ease.y, ty, aim_rise_up);
+        aim_ease.y = ty;
         *x = aim_ease.x;
-        *y = aim_ease.y;
+        *y = ty;
     }
 
     // (the game thread's: the sampler, and what asks for it, run there)

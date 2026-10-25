@@ -412,9 +412,14 @@ extern "C" void conker_gun_aim_turn(uint8_t* rdram, recomp_context* ctx) {
 // (kind 0: gone straight to the second stage instead). Here the target and the current yaw are both set to it each frame, so the view is on the aim from the first frame.
 extern "C" void conker_look_stage_one(uint8_t* rdram, recomp_context* ctx) {
 #if defined(CONKER_RT64)
-    // (off, as gun_aim_online: on a Nintendo 64 the camera swings round onto the aim over the first stage, and online it does the same now)
+    // 0.9.56: online the first stage is skipped, as the game itself does when the look's +0x4D is clear (0x15120510), and as the plain
+    // R-Look did here: the second stage at once (the stage's timer at its end, so the game's own end of the stage runs at
+    // once, 0x151203FC: +0x198 of +0x3D4 and the stage set, the target where the view is). Its springs swing the camera round onto the aim and in, as smoothly, and the stick aims from the start. The
+    // first stage held the view on a target worked out when R was pressed for 30 frames, and its end moved the camera in two frames,
+    // which then eased back (measured in a 0.9.55 recording: every time, the stick held or not: the dip in the view after R).
+    // Every machine does it for every player, from the game's memory.
     constexpr bool snappy = false;
-    if (!snappy || !conker::netsession::active()) {
+    if (!conker::netsession::active()) {
         return;
     }
     const gpr camera = (gpr)(int32_t)ctx->r4;
@@ -427,8 +432,17 @@ extern "C" void conker_look_stage_one(uint8_t* rdram, recomp_context* ctx) {
         return;
     }
     const uint8_t kind = MEM_BU(0x23E, camera);
+    const bool gun_kind = kind == 0x09 || kind == 0x38 || kind == 0x39 || kind == 0x37 || kind == 0x3B || kind == 0x15 || kind == 0x26 || kind == 0x3A;
+    if (!snappy) {
+        // The stage's timer (+0x84A, counted down by the frame's ticks at 0x151203E8) at its last tick: the game's own end of the stage
+        // runs this frame, as it does after the 30.
+        if ((gun_kind || kind == 0x00) && MEM_H(0x84A, camera) > 1) {
+            MEM_H(0x84A, camera) = 1;
+        }
+        return;
+    }
     float yaw;
-    if (kind == 0x09 || kind == 0x38 || kind == 0x39 || kind == 0x37 || kind == 0x3B || kind == 0x15 || kind == 0x26 || kind == 0x3A) {
+    if (gun_kind) {
         const int32_t units = (int32_t)MEM_HU(0x7A, conker) - (int32_t)MEM_H(0x12, aim) + 0xC000;
         yaw = (float)units * 0.005493164f;
     } else if (kind == 0x00) {
@@ -512,6 +526,27 @@ extern "C" void conker_look_view(uint8_t* rdram, recomp_context* ctx) {
     const int player = camera_player(rdram, camera);
     if (player >= 0) {
         look_stage_seen[player] = (int)MEM_H(0x73C, camera);
+    }
+    // Online, this machine's player's look, its first 45 frames each time (the view's movement after R, for the logs).
+    if (conker::netsession::active() && player >= 0 && player == conker::netsession::local_slot()) {
+        static int frames_logged = -1;
+        const int stage = (int)MEM_H(0x73C, camera);
+        if (stage == 0) {
+            frames_logged = -1;
+        } else if (frames_logged < 45) {
+            frames_logged = frames_logged < 0 ? 1 : frames_logged + 1;
+            const gpr t0 = camera + 0x740;
+            char line[400];
+            std::snprintf(line, sizeof(line),
+                "[look] f=%u n=%d stage=%d kind=%02X 23C=%u yaw=%.2f->%.2f pitch=%.2f->%.2f a=%.1f->%.1f b=%.1f->%.1f eye=%.1f,%.1f,%.1f at=%.1f,%.1f,%.1f",
+                conker::netsession::frame(), frames_logged, stage, (unsigned)MEM_BU(0x23E, camera), (unsigned)MEM_BU(0x23C, camera),
+                read_float(rdram, camera, current_yaw), read_float(rdram, t0, target_yaw),
+                read_float(rdram, t0, current_pitch), read_float(rdram, t0, target_pitch),
+                read_float(rdram, camera, 0x18C), read_float(rdram, camera, 0x190), read_float(rdram, camera, 0x194), read_float(rdram, camera, 0x198),
+                read_float(rdram, camera, 0x2F8), read_float(rdram, camera, 0x2FC), read_float(rdram, camera, 0x300),
+                read_float(rdram, camera, 0x2E0), read_float(rdram, camera, 0x2E4), read_float(rdram, camera, 0x2E8));
+            conker::netsession::log(line);
+        }
     }
     if (!swap_state(player)) {
         return;
@@ -807,6 +842,12 @@ namespace {
     float look_speed() {
         return conker::netsession::active() ? online_look_speed : 1.0f;
     }
+    // Up and down, twice the game's (0.9.55's test: 1.5 times felt slow, the stick's curve on it slower still): the game's 1.9 degrees a
+    // frame at full tilt to 3.8, still eased by the spring.
+    constexpr float online_pitch_speed = 2.0f;
+    float pitch_speed() {
+        return conker::netsession::active() ? online_pitch_speed : 1.0f;
+    }
 }
 #endif
 
@@ -831,7 +872,7 @@ extern "C" void conker_look_stick_pitch(uint8_t* rdram, recomp_context* ctx) {
 #if defined(CONKER_RT64)
     {
         // 0x15120A94: add.s $f10, $f6, $f8 (the target plus the stick's turn; turned around, less)
-        const float turn = ctx->f8.fl * look_speed();
+        const float turn = ctx->f8.fl * pitch_speed();
         ctx->f10.fl = look_flag(rdram, ctx->r16, look_turn_y) ? ctx->f6.fl - turn : ctx->f6.fl + turn;
     }
     if (gun_aim_online(rdram, ctx->r16)) {
