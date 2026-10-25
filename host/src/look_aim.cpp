@@ -688,10 +688,16 @@ extern "C" void conker_look_view(uint8_t* rdram, recomp_context* ctx) {
         } else if (frames_logged < 45) {
             frames_logged = frames_logged < 0 ? 1 : frames_logged + 1;
             const gpr t0 = camera + 0x740;
-            char line[400];
+            const gpr look_conker = (gpr)(int32_t)MEM_W(0x3D0, camera);
+            const gpr look_aim_state = (gpr)(int32_t)MEM_W(0x3D4, camera);
+            const bool look_conker_ok = ((uint32_t)look_conker & 0xFF000000u) == 0x80000000u;
+            const bool look_aim_ok = ((uint32_t)look_aim_state & 0xFF000000u) == 0x80000000u;
+            char line[460];
             std::snprintf(line, sizeof(line),
-                "[look] f=%u n=%d stage=%d kind=%02X 23C=%u yaw=%.2f->%.2f pitch=%.2f->%.2f a=%.1f->%.1f b=%.1f->%.1f eye=%.1f,%.1f,%.1f at=%.1f,%.1f,%.1f",
+                "[look] f=%u n=%d stage=%d kind=%02X 23C=%u face=%04X aim=%d move=%04X yaw=%.2f->%.2f pitch=%.2f->%.2f a=%.1f->%.1f b=%.1f->%.1f eye=%.1f,%.1f,%.1f at=%.1f,%.1f,%.1f",
                 conker::netsession::frame(), frames_logged, stage, (unsigned)MEM_BU(0x23E, camera), (unsigned)MEM_BU(0x23C, camera),
+                look_conker_ok ? (unsigned)MEM_HU(0x7A, look_conker) : 0u, look_aim_ok ? (int)MEM_H(0x12, look_aim_state) : 0,
+                look_conker_ok ? (unsigned)MEM_HU(0x76, look_conker) : 0u,
                 read_float(rdram, camera, current_yaw), read_float(rdram, t0, target_yaw),
                 read_float(rdram, t0, current_pitch), read_float(rdram, t0, target_pitch),
                 read_float(rdram, camera, 0x18C), read_float(rdram, camera, 0x190), read_float(rdram, camera, 0x194), read_float(rdram, camera, 0x198),
@@ -1222,8 +1228,17 @@ extern "C" void conker_look_targets(uint8_t* rdram, recomp_context* ctx) {
             const int32_t angle = (int32_t)MEM_H(0x12, aim);
             const uint16_t view = (uint16_t)((uint32_t)MEM_HU(0x7A, conker) - (uint32_t)std::lround(angle * facing_per_angle));
             const uint16_t moving = (uint16_t)((uint32_t)view + (uint32_t)offset);
-            MEM_H(0x7A, conker) = (int16_t)view;
-            MEM_H(0x12, aim) = 0;
+            // 0.9.64: online, at most 14 degrees of the angle a frame goes into his facing, the rest next frame (the view stays put either way:
+            // his facing less what's left of the angle). Through R-Look's first stage the stick turns the angle alone (to +-9000, 49 degrees),
+            // so walking with the stick held the whole of it went into his body the second stage's first frame: he snapped round. A frame's
+            // turn of the stick (8.6 degrees at most) still goes in at once. Whole numbers, the same on every machine.
+            int32_t moved = angle;
+            if (conker::netsession::active()) {
+                const int32_t most = (int32_t)std::lround(14.0 * (double)units_per_degree);
+                moved = std::clamp(angle, -most, most);
+            }
+            MEM_H(0x7A, conker) = (int16_t)(uint16_t)((uint32_t)MEM_HU(0x7A, conker) - (uint32_t)std::lround(moved * facing_per_angle));
+            MEM_H(0x12, aim) = (int16_t)(angle - moved);
             MEM_H(0x76, conker) = (int16_t)moving;
             aim_remainder = 0.0f;
         }
