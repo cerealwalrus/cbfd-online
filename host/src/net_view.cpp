@@ -632,6 +632,52 @@ namespace {
         int edge_rects = 0;
         bool race_menu = false;   // 0.9.89: the race's track map has been seen in this frame, with the pause menu open
         bool race_frame = false;  // 0.9.91: the race's track map has been seen in this frame (it is drawn before its dots and the HUD's passes)
+        // 0.9.96: the race's timer and lap times, each row's left edge (quarter pixels), found before anything is moved: the game places
+        // them by their width (a 1 is narrower), so the rows' first digits came out a pixel or more apart wherever they were moved to.
+        // Each row is now moved so that its left edge is at the same place, under the lap's L.
+        int32_t race_timer_left = 0x7FFFFFFF;
+        std::vector<std::pair<float, int32_t>> race_lap_rows;   // (the row's middle, down; its left edge)
+        if (hud_layout && !menu_open && players >= 2) {
+            const float o_l = get_float(rdram, own, field_left), o_r = get_float(rdram, own, field_right);
+            const float o_t = get_float(rdram, own, field_top), o_b = get_float(rdram, own, field_bottom);
+            for (const Range& range : ranges) {
+                for (uint32_t a = range.from; a < range.to; a += 8) {
+                    const uint32_t c0 = (uint32_t)MEM_W(0, (gpr)(int32_t)a), c1 = (uint32_t)MEM_W(4, (gpr)(int32_t)a);
+                    const uint32_t o = c0 >> 24;
+                    if (o != 0xE4 && o != 0xE5) {
+                        continue;
+                    }
+                    const bool in_hud = range.nested || inside(any_hud_segments, a);
+                    if (!in_hud) {
+                        continue;
+                    }
+                    const int32_t r_yl = (int32_t)(c0 & 0xFFFu), r_yh = (int32_t)(c1 & 0xFFFu);
+                    const int32_t r_xl = (int32_t)((c0 >> 12) & 0xFFFu), r_xh = (int32_t)((c1 >> 12) & 0xFFFu);
+                    const float rcx = (float)(r_xl + r_xh) * 0.125f, rcy = (float)(r_yl + r_yh) * 0.125f;
+                    const float rw = (float)std::abs(r_xl - r_xh) * 0.25f, rh = (float)std::abs(r_yl - r_yh) * 0.25f;
+                    if (rw > 16.5f || rh > 12.5f) {
+                        continue;
+                    }
+                    if (rcy >= 0.5f * (top + bottom) - 10.0f && rcy <= 0.5f * (top + bottom) + 8.0f && std::fabs(rcx - 0.5f * (left + right)) < 40.0f) {
+                        race_timer_left = std::min(race_timer_left, std::min(r_xl, r_xh));
+                    } else if (rcx >= o_l && rcx <= o_r && rcy >= o_t + 32.0f && rcy < o_t + 72.0f && rcx < o_l + 90.0f && rcy <= o_b) {
+                        bool found = false;
+                        for (auto& row : race_lap_rows) {
+                            if (std::fabs(row.first - rcy) <= 3.0f) {
+                                row.second = std::min(row.second, std::min(r_xl, r_xh));
+                                found = true;
+                                break;
+                            }
+                        }
+                        if (!found && race_lap_rows.size() < 8) {
+                            race_lap_rows.push_back({ rcy, std::min(r_xl, r_xh) });
+                        }
+                    }
+                }
+            }
+        }
+        // where every row's left edge goes: 6.75 in from the full view's left (the timer's 0 there stood 2 screen pixels left of the L)
+        const int32_t race_rows_left = (int32_t)std::lround((left + 6.75f) * 4.0f);
         for (const Range& range : ranges)
         for (uint32_t address = range.from; address < range.to; address += 8) {
             if (address < skip_to) {
@@ -1024,6 +1070,9 @@ namespace {
                         // (0.9.94: 1.75 further left: its first digit stood that far right of the lap's L and the lap times' first digits;
                         // 0.9.95: and 0.75 more, measured on the screen: its 0 a pixel right of the lap times' 0s)
                         dx = (int32_t)std::lround(((left + 6.5f) - (0.5f * (left + right) - 16.0f)) * 4.0f);
+                        if (race_timer_left != 0x7FFFFFFF) {
+                            dx = race_rows_left - race_timer_left;   // (0.9.96: the row's own left edge, wherever its width put it)
+                        }
                         dy = (int32_t)std::lround(((top + 34.0f) - (0.5f * (top + bottom) - 13.0f)) * 4.0f);
                         kind_name = "race timer";
                     }
@@ -1040,6 +1089,12 @@ namespace {
                     // a row lower, under the race's timer
                     // (0.9.95: a quarter pixel right, with the L of the lap and the timer's 0, measured on the screen)
                     dx = (int32_t)((left - own_l) * 4.0f) + 1;
+                    for (const auto& row : race_lap_rows) {
+                        if (std::fabs(row.first - cy) <= 3.0f) {
+                            dx = race_rows_left - row.second;   // (0.9.96: the row's own left edge, as the timer's)
+                            break;
+                        }
+                    }
                     dy = (int32_t)((top - own_t + 13.0f) * 4.0f);
                     kind_name = "own";
                     static int lap_times_logged = 0;
