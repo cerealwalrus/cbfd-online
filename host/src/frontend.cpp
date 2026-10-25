@@ -798,6 +798,25 @@ namespace {
             static int last_r = -1;
             static int r_logged = 0;
             const int r_now = (cur_buttons & 0x0010) != 0 ? 1 : 0;
+            // 0.10.3: and the controller as read the last 12 times before R went up (each read: ms ago, the triggers, the left stick),
+            // to see whether the trigger eased off or the pad read all at once as let go
+            struct Read { int64_t ms; int16_t lt, rt, lx, ly; };
+            static Read reads[12] = {};
+            static int read_at = 0;
+            const int64_t now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+            reads[read_at % 12] = { now_ms, SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_TRIGGERLEFT), SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_TRIGGERRIGHT),
+                SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_LEFTX), SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_LEFTY) };
+            read_at++;
+            if (r_now != last_r && r_logged < 400 && !r_now && last_r == 1) {
+                std::string text = "[input] before R up (ms ago LT/RT LX,LY):";
+                for (int k = 11; k >= 0; k--) {
+                    const Read& r = reads[(read_at - 1 - k + 12 * 4) % 12];
+                    char piece[64];
+                    std::snprintf(piece, sizeof(piece), " %lld:%d/%d %d,%d", (long long)(now_ms - r.ms), (int)r.lt, (int)r.rt, (int)r.lx, (int)r.ly);
+                    text += piece;
+                }
+                conker::netsession::log(text.c_str());
+            }
             if (r_now != last_r && r_logged < 400) {
                 last_r = r_now;
                 r_logged++;
