@@ -32,6 +32,7 @@
 #include "recompinput/input_state.h"
 #include "recompinput/players.h"
 #include "recompinput/profiles.h"
+#include "recompui/config.h"
 #include "recompui/program_config.h"
 #include "recompui/recompui.h"
 #include "recompui/renderer.h"
@@ -891,6 +892,9 @@ namespace {
 
     // (the game thread's: the sampler, and what asks for it, run there)
     SDL_GameController* local_pad_used = nullptr;
+    // (online, the sampler's: since when the game has aimed with R up, 0 while it hasn't, and whether R was held at the last read)
+    int64_t online_aim_without_r_since = 0;
+    bool online_last_r = false;
 
     // The online session's own player is whoever holds this machine's first port.
     bool online_local_sampler(uint16_t* buttons, float* x, float* y) {
@@ -937,7 +941,11 @@ namespace {
         }
         // (online with CONKER_NET_INPUT set, two windows on one PC: the window that isn't in front still plays, with its own
         // controller, so the game's "input disabled" is not asked)
-        if (!recompinput::game_input_disabled() || conker::netsession::input_filter() != 0) {
+        // 0.10.6: Background Input Mode off, the window not in front: no input at all (it read the controller anyway, a stick
+        // held to the side still walked Conker). (Not with CONKER_NET_INPUT's two windows on one PC, above.)
+        const bool unfocused = !recompui::config::general::get_background_input_mode_enabled() && window != nullptr
+            && (SDL_GetWindowFlags(window) & SDL_WINDOW_INPUT_FOCUS) == 0 && conker::netsession::input_filter() == 0;
+        if (!unfocused && (!recompinput::game_input_disabled() || conker::netsession::input_filter() != 0)) {
             // Port 1 has the keyboard, and its controller once one has pressed a button.
             // An online game on one PC (two windows) can give one window the keyboard and the other the gamepad
             // (CONKER_NET_INPUT=keyboard or gamepad, net_session.cpp); otherwise both feed this port.
@@ -1004,12 +1012,33 @@ namespace {
             const bool online_game = conker::netsession::active();
             const int aim_player = online_game ? conker::netsession::local_slot() : port;
             const bool online_swap = online_game && port == 0 && pad != nullptr && conker::look_aim::online_swap_enabled();
-            bool swapped = online_game ? (online_swap && conker::look_aim::aiming_recently(aim_player)) : conker::look_aim::swap_sticks_now(port);
+            // 0.10.6: with R up the sticks are swapped only for an aim that has gone on without R for half a second (an aiming mode
+            // R doesn't hold). Before, they stayed swapped while the game had aimed in the last 80 ms, and it aims a few frames on
+            // after R is let go (the input delay, and the look's last frames): with no weapon Conker stood still a moment after the
+            // release (logged: 5 frames of the left stick as C-buttons, held back), and an aim seen just after the swap had ended
+            // turned it back on for 2 frames with R up, the left stick held down pressing C-Down: a grenade (logged). Now R let go
+            // gives the left stick back at once, as it did with a gun.
+            bool swapped = false;
+            if (online_game) {
+                const int64_t now_ticks = std::chrono::steady_clock::now().time_since_epoch().count();
+                if (!online_swap || online_last_r || !conker::look_aim::aiming_recently(aim_player)) {
+                    online_aim_without_r_since = 0;
+                } else if (online_aim_without_r_since == 0) {
+                    online_aim_without_r_since = now_ticks;
+                }
+                swapped = online_swap && online_aim_without_r_since != 0
+                    && std::chrono::steady_clock::duration(now_ticks - online_aim_without_r_since) >= std::chrono::milliseconds(500);
+            } else {
+                swapped = conker::look_aim::swap_sticks_now(port);
+            }
             // (while the sticks are swapped the right stick is the aim's, not the camera's: no free camera then)
             read_port(pad, keys, free_stick && !swapped, swapped, conker::look_aim::z_turns_aim(aim_player), buttons, x, y);
             if (online_swap && !swapped && (*buttons & 0x0010) != 0) {
                 swapped = true;
                 read_port(pad, keys, false, true, conker::look_aim::z_turns_aim(aim_player), buttons, x, y);
+            }
+            if (online_game && port == 0) {
+                online_last_r = (*buttons & 0x0010) != 0;
             }
             // Online, from R pressed until the game's look mode starts (its stage, +0x73C of the camera, is 0 until then; it
             // moves in at once, but not always) the right stick does nothing: the camera turned (or the head did) ahead of the aim and then
@@ -1028,7 +1057,7 @@ namespace {
             }
             // (the aim stick's curve and easing, above: while aiming, swapped or not, and not held still for the look's start)
             if (online_game && port == 0) {
-                shape_online_aim(pad != nullptr && !entry_hold && (swapped || conker::look_aim::aiming_recently(aim_player)), x, y);
+                shape_online_aim(pad != nullptr && !entry_hold && (swapped || (!online_swap && conker::look_aim::aiming_recently(aim_player))), x, y);
             }
             // (0.9.99 held both sticks still here with R held and the look off; 0.10.0 does it where the game reads its input, net_session.cpp)
             if (port == 0) {

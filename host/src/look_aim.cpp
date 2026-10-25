@@ -872,6 +872,20 @@ void conker::look_aim::no_weapon_walk(uint8_t* rdram, int port, uint16_t* button
         if (MEM_BU(0x23E, camera) != 0x00) {
             return;
         }
+        // 0.10.6: the look's first stage (about a second, as it zooms in), R held: he walks as in the second (below), the game given
+        // C-Left or C-Right and his moving angle set from the way pressed (conker_look_targets), so the look doesn't stop him as he
+        // goes into it (logged: he slowed to a stop and stood until the second stage; with a gun he walks on). His facing is left
+        // as it is: the view is still turning in behind it. C-Down never goes to the game here (with R held it starts a grenade).
+        if (MEM_H(0x73C, camera) == 1 && (*buttons & 0x0010) != 0) {
+            if (dx == 0 && dy == 0) {
+                *buttons &= (uint16_t)~c_buttons;
+                return;
+            }
+            walk_dx[port] = dx;
+            walk_dy[port] = dy;
+            *buttons = (uint16_t)((*buttons & ~c_buttons) | (dx > 0 ? 0x0001 : 0x0002));
+            return;
+        }
         if (MEM_H(0x73C, camera) != 2) {
             // Not in the look yet (or leaving it): the left stick's C-Down with R held starts a grenade, so none is passed on.
             if ((*buttons & 0x0010) != 0) {
@@ -1351,7 +1365,9 @@ extern "C" void conker_look_targets(uint8_t* rdram, recomp_context* ctx) {
 #endif
 #if defined(CONKER_RT64)
     // The no weapon walking's other half (see no_weapon_walk): his moving angle is the way pressed from the view, as with a gun.
-    if (conker::netsession::active() && swap_state(camera_player(rdram, ctx->r16)) && MEM_BU(0x23E, ctx->r16) == 0x00 && MEM_H(0x73C, ctx->r16) == 2) {
+    // (0.10.6: in the look's first stage too, from his facing as it is)
+    if (conker::netsession::active() && swap_state(camera_player(rdram, ctx->r16)) && MEM_BU(0x23E, ctx->r16) == 0x00
+        && (MEM_H(0x73C, ctx->r16) == 1 || MEM_H(0x73C, ctx->r16) == 2)) {
         const int player = camera_player(rdram, ctx->r16);
         const int dx = player >= 0 && player < 4 ? walk_dx[player].load() : 0;
         const int dy = player >= 0 && player < 4 ? walk_dy[player].load() : 0;
