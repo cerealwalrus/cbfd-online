@@ -946,9 +946,42 @@ namespace {
                             edge_rects++;
                         }
                     }
-                    if (!extended && a1 >= 0 && b1 >= 0 && a0 <= 0xFFF && b0 <= 0xFFF) {
-                        MEM_W(0, (gpr)(int32_t)address) = (int32_t)((w0 & 0xFF000000u) | ((uint32_t)std::min(a0, 0xFFF) << 12) | (uint32_t)std::min(b0, 0xFFF));
-                        MEM_W(4, (gpr)(int32_t)address) = (int32_t)((w1 & 0xFF000000u) | ((uint32_t)std::max(a1, 0) << 12) | (uint32_t)std::max(b1, 0));
+                    // 0.9.67: the sniper scope's pieces (in the sniper's look, kind 0x24, the HUD's rectangles around the middle: the circle's four
+                    // quarters, its 12 dots, the zoom bar), drawn at the size of the whole view instead of the split screen's half: twice as large
+                    // with two players, about the view's middle, their texture steps halved. The game draws them squeezed for the half (the quarters
+                    // 1.29 texels a pixel, the dots 2.5: 0.9.66's log), which drops the thin middle lines and the ticks; at this size they show
+                    // whole, as the Nintendo 64's one-player scope does.
+                    int32_t s0 = a0, s1 = a1, t0 = b0, t1 = b1;
+                    const bool scope_piece = local_kind == 0x24 && !menu_open && std::strcmp(kind_name, "aim") == 0 && (op == 0xE4 || op == 0xE5) &&
+                        address + 16 < range.to && ((uint32_t)MEM_W(8, (gpr)(int32_t)address) >> 24) == 0xE1 && ((uint32_t)MEM_W(16, (gpr)(int32_t)address) >> 24) == 0xF1;
+                    if (scope_piece) {
+                        const float own_h = own_b - own_t, full_h = bottom - top;
+                        const float k = (own_h > 1.0f && full_h > own_h) ? full_h / own_h : 1.0f;
+                        if (k > 1.0f) {
+                            const float ocx = (own_l + own_r) * 2.0f, ocy = (own_t + own_b) * 2.0f;   // the camera's middle, in quarter pixels
+                            const auto across = [&](int32_t v) { return (int32_t)std::lround(ocx + (float)dx + ((float)v - ocx) * k); };
+                            const auto down = [&](int32_t v) { return (int32_t)std::lround(ocy + (float)dy + ((float)v - ocy) * k); };
+                            s0 = across(xl);
+                            s1 = across(xh);
+                            t0 = down(yl);
+                            t1 = down(yh);
+                            const uint32_t steps = (uint32_t)MEM_W(20, (gpr)(int32_t)address);
+                            const int32_t dsdx = (int32_t)(int16_t)(steps >> 16), dtdy = (int32_t)(int16_t)(steps & 0xFFFFu);
+                            const int32_t nsdx = (int32_t)std::lround((float)dsdx / k), ntdy = (int32_t)std::lround((float)dtdy / k);
+                            MEM_W(20, (gpr)(int32_t)address) = (int32_t)(((uint32_t)(uint16_t)(int16_t)nsdx << 16) | (uint32_t)(uint16_t)(int16_t)ntdy);
+                            static int scope_logged = 0;
+                            if (scope_logged < 40) {
+                                char line[200];
+                                std::snprintf(line, sizeof(line), "[net view] scope piece %08X: %08X %08X steps %08X -> corners %d,%d %d,%d (quarter pixels) steps %08X, x%.2f",
+                                    address, w0, w1, steps, s1, t1, s0, t0, (uint32_t)MEM_W(20, (gpr)(int32_t)address), k);
+                                conker::netsession::log(line);
+                                scope_logged++;
+                            }
+                        }
+                    }
+                    if (!extended && s1 >= 0 && t1 >= 0 && s0 <= 0xFFF && t0 <= 0xFFF) {
+                        MEM_W(0, (gpr)(int32_t)address) = (int32_t)((w0 & 0xFF000000u) | ((uint32_t)std::min(s0, 0xFFF) << 12) | (uint32_t)std::min(t0, 0xFFF));
+                        MEM_W(4, (gpr)(int32_t)address) = (int32_t)((w1 & 0xFF000000u) | ((uint32_t)std::max(s1, 0) << 12) | (uint32_t)std::max(t1, 0));
                         rects_moved++;
                     }
                 }
