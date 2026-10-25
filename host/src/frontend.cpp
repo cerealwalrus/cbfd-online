@@ -12,6 +12,7 @@
 #include <fstream>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #define SDL_MAIN_HANDLED
@@ -157,6 +158,32 @@ namespace {
     // Watches controllers connecting: each is printed, opened into the list above, and its C-buttons
     // remapped if they need it (pad_mappings.cpp). SDL calls this on the thread that announces the
     // device, the main one, as it pumps events, so the devices are listed there.
+    // 0.10.2: closing the window (its X, the taskbar's Close window, Steam's close) quits at once: no "Are you sure you want to quit?"
+    // prompt in game (Steam, closing it as a non-Steam game, waited on the prompt and hung), and if the game hasn't gone 1.5 seconds
+    // later (its threads held up, an online frame waiting on the others) the process ends there and then.
+    std::atomic<bool> quit_watchdog_started = false;
+    void start_quit_watchdog() {
+        if (quit_watchdog_started.exchange(true)) {
+            return;
+        }
+        std::thread([]() {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+            std::fflush(stdout);
+            std::_Exit(0);
+        }).detach();
+    }
+
+    int SDLCALL quit_at_once(void*, SDL_Event* event) {
+        if (event->type == SDL_QUIT) {
+            start_quit_watchdog();
+            if (ultramodern::is_game_started()) {
+                ultramodern::quit();
+                return 0;   // (not on to recompinput, which would ask first)
+            }
+        }
+        return 1;
+    }
+
     int SDLCALL watch_controllers(void*, SDL_Event* event) {
         switch (event->type) {
         case SDL_JOYDEVICEADDED:
@@ -216,6 +243,7 @@ namespace {
             std::printf("[frontend] controller mappings: %d added\n", controller_mappings);
         }
         SDL_AddEventWatch(watch_controllers, nullptr);
+        SDL_SetEventFilter(quit_at_once, nullptr);
         // The controllers connected at start were announced before the watch.
         for (int index = 0; index < SDL_NumJoysticks(); index++) {
             print_controller(index);
@@ -613,6 +641,13 @@ namespace {
 
     bool controller_field_digital(SDL_GameController* controller, const recompinput::InputField& field, bool swap = false) {
         if (field.input_type == recompinput::InputType::ControllerAnalog) {
+            // 0.10.2: a trigger counts as pressed from a quarter of the way down (the sticks' half way, recompinput's, is kept for them).
+            // R on the right trigger (the default) held part way, and eased off a little in the hand as a hit shakes the pad, went
+            // under half way: online the input had R let go for a few frames, the look ended, and Conker walked off with the stick.
+            const int axis = std::abs(field.input_id) - 1;
+            if (axis == SDL_CONTROLLER_AXIS_TRIGGERLEFT || axis == SDL_CONTROLLER_AXIS_TRIGGERRIGHT) {
+                return controller_field_analog(controller, field, swap) >= 0.25f;
+            }
             return controller_field_analog(controller, field, swap) >= recompinput::axis_digital_threshold;
         }
         return controller_field_analog(controller, field, swap) > 0.0f;
@@ -758,6 +793,21 @@ namespace {
             conker::look_aim::leap_stick(cur_x, cur_y);
         }
         *buttons = cur_buttons;
+        // 0.10.2: online, each change of R on this machine's controller, with how far down its right trigger is (to see R let go in a hit)
+        if (controller != nullptr && conker::netsession::active()) {
+            static int last_r = -1;
+            static int r_logged = 0;
+            const int r_now = (cur_buttons & 0x0010) != 0 ? 1 : 0;
+            if (r_now != last_r && r_logged < 400) {
+                last_r = r_now;
+                r_logged++;
+                char line[120];
+                std::snprintf(line, sizeof(line), "[input] f=%u R %s (right trigger %.2f, left %.2f, right shoulder %d)", conker::netsession::frame(), r_now ? "down" : "up",
+                    SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) / 32767.0f, SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_TRIGGERLEFT) / 32767.0f,
+                    (int)SDL_GameControllerGetButton(controller, SDL_CONTROLLER_BUTTON_RIGHTSHOULDER));
+                conker::netsession::log(line);
+            }
+        }
         *x = std::clamp(cur_x, -1.0f, 1.0f);
         *y = std::clamp(cur_y, -1.0f, 1.0f);
     }
