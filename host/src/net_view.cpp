@@ -395,7 +395,7 @@ namespace {
             static int scope_frames = 0;
             static bool scope_dumped = false;
             scope_frames = local_kind == 0x24 ? scope_frames + 1 : 0;
-            if (!scope_dumped && scope_frames == 20) {
+            if (!scope_dumped && scope_frames == 75) {
                 scope_dumped = true;
                 dump_scope = true;
                 conker::netsession::log("[net view] scope dump begins");
@@ -409,6 +409,7 @@ namespace {
             }
         }
         int scope_lines = 0;
+        uint32_t scope_segments[16] = {};   // the segments set so far in the dumped frame (G_MOVEWORD's segment, 0xDB06), to follow calls by them
         if (dump_look) {
             for (size_t i = 0; i < frame.size(); i++) {
                 const uint32_t to = i + 1 < frame.size() ? frame[i + 1].gfx : 0;
@@ -586,6 +587,7 @@ namespace {
                 std::snprintf(line, sizeof(line), "[net view] scope cmd %08X%s: %08X %08X", address, nested ? " (called)" : "", w0, w1);
                 conker::netsession::log(line);
                 scope_lines++;
+                // (0.9.63: the 75th frame of the scope, as it may not be up by the 20th, and calls by segment followed)
                 // (0.9.61: and what the commands point at, in this machine's passes (0.9.62: all of them, the 3D one too: the scope wasn't in
                 // the ones after it): their vertices, the matrices loaded, the texture's first bytes, and the lists called, one level down)
                 const bool local_late = [&]() {
@@ -597,6 +599,16 @@ namespace {
                     }
                     return false;
                 }();
+                if (op == 0xDB && (w0 & 0x00FF0000u) == 0x00060000u && (w0 & 0xFFFFu) < 64u) {
+                    scope_segments[(w0 & 0xFFFFu) / 4u] = w1;
+                }
+                const auto resolve = [&](uint32_t a) {
+                    const uint32_t segment = (a >> 24) & 0xFu;
+                    if ((a >> 24) < 0x10u && scope_segments[segment] != 0) {
+                        return (scope_segments[segment] & 0x00FFFFFFu) + (a & 0x00FFFFFFu) + 0x80000000u;
+                    }
+                    return a;
+                };
                 const auto valid = [](uint32_t a) { return (a >> 24) == 0x80 && (a & 0xFFFFFFu) < 0x7FFFF0u; };
                 const auto dump_words = [&](const char* what, uint32_t at, int words) {
                     if (!valid(at)) {
@@ -611,8 +623,9 @@ namespace {
                         scope_lines++;
                     }
                 };
-                const auto dump_pointed = [&](uint32_t c0, uint32_t c1) {
+                const auto dump_pointed = [&](uint32_t c0, uint32_t c1_raw) {
                     const uint32_t o = c0 >> 24;
+                    const uint32_t c1 = resolve(c1_raw);
                     if (o == 0x01) {
                         dump_words("vertices", c1, (int)((c0 >> 12) & 0xFFu) * 4);
                     } else if (o == 0xDA) {
@@ -625,8 +638,8 @@ namespace {
                 };
                 if (local_late) {
                     dump_pointed(w0, w1);
-                    if (op == 0xDE && valid(w1)) {
-                        for (uint32_t at = w1, n = 0; n < 160 && scope_lines < 12000; at += 8, n++) {
+                    if (op == 0xDE && valid(resolve(w1))) {
+                        for (uint32_t at = resolve(w1), n = 0; n < 160 && scope_lines < 12000; at += 8, n++) {
                             const uint32_t c0 = (uint32_t)MEM_W(0, (gpr)(int32_t)at), c1 = (uint32_t)MEM_W(4, (gpr)(int32_t)at);
                             char text[96];
                             std::snprintf(text, sizeof(text), "[net view] scope called %08X: %08X %08X", at, c0, c1);

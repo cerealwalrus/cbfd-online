@@ -137,6 +137,15 @@ namespace {
         bool have = false;
     };
     EyeTrack eye_track[aim_players];
+    // The game's own eye (+0x2F8) before conker_look_view changed it for the view, put back at the next frame's look (conker_look_stage_one):
+    // the game works the next eye out from it, and changed it fed back (0.9.62: walking, taking the lift off made the eye drop 25 below,
+    // the view tilting up, the upward jolt; 0.9.58 too). Only the view is drawn from the changed one.
+    struct EyeRestore {
+        bool pending = false;
+        uint32_t frame = 0;
+        float eye[3] = {};
+    };
+    EyeRestore eye_restore[aim_players];
     // The lift of the eye at the start of R-Look's second stage (0.9.60 and 0.9.61's [look] lines: the eye's height over the look-at point's
     // went +8.3, 10.9, 10.4, 8.4, 6.0, 3.8, 2.1, 0.9, 0.2 and back in the 9 frames after the first stage ended, the same each time, nothing
     // moved by the stick). Taken off the eye as it's built, scaled to its first frame.
@@ -463,6 +472,15 @@ extern "C" void conker_look_stage_one(uint8_t* rdram, recomp_context* ctx) {
     const gpr camera = (gpr)(int32_t)ctx->r4;
     {
         const int player = camera_player(rdram, camera);
+        if (player >= 0 && eye_restore[player].pending) {
+            EyeRestore& restore = eye_restore[player];
+            restore.pending = false;
+            if (conker::netsession::frame() == restore.frame + 1) {
+                write_float(rdram, camera, 0x2F8, restore.eye[0]);
+                write_float(rdram, camera, 0x2FC, restore.eye[1]);
+                write_float(rdram, camera, 0x300, restore.eye[2]);
+            }
+        }
         if (player >= 0 && MEM_H(0x73C, camera) != 2) {
             look_settle[player] = 0.0f;
             look_stage_two_frames[player] = 0;
@@ -638,6 +656,12 @@ extern "C" void conker_look_view(uint8_t* rdram, recomp_context* ctx) {
             }
         }
         if (changed) {
+            EyeRestore& restore = eye_restore[player];
+            restore.pending = true;
+            restore.frame = frame_now;
+            restore.eye[0] = read_float(rdram, camera, 0x2F8);
+            restore.eye[1] = read_float(rdram, camera, 0x2FC);
+            restore.eye[2] = read_float(rdram, camera, 0x300);
             write_float(rdram, camera, 0x2F8, eye[0]);
             write_float(rdram, camera, 0x2FC, eye[1]);
             write_float(rdram, camera, 0x300, eye[2]);
