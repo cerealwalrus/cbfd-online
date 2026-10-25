@@ -409,6 +409,13 @@ namespace {
             }
         }
         int scope_lines = 0;
+        // (0.9.66: every rectangle and screen sprite of three frames of the sniper's look, the 40th to the 42nd, with where it is, the texture
+        // it was loaded from and its steps, to find the scope's pieces: the dumps above had none near the middle)
+        static int sniper_frames = 0;
+        sniper_frames = local_kind == 0x24 ? sniper_frames + 1 : 0;
+        static int sniper_rects_logged = 0;
+        const bool log_sniper_rects = sniper_frames >= 40 && sniper_frames <= 42 && sniper_rects_logged < 600;
+        uint32_t last_texture = 0, last_tile = 0;
         uint32_t scope_segments[16] = {};   // the segments set so far in the dumped frame (G_MOVEWORD's segment, 0xDB06), to follow calls by them
         if (dump_look) {
             for (size_t i = 0; i < frame.size(); i++) {
@@ -582,6 +589,36 @@ namespace {
             const uint32_t w1 = (uint32_t)MEM_W(4, (gpr)(int32_t)address);
             const uint32_t op = w0 >> 24;
             const uint32_t chain_op = nested ? 0u : op;
+            if (log_sniper_rects) {
+                if (op == 0xFD) {
+                    last_texture = w1;
+                } else if (op == 0xF5) {
+                    last_tile = w0;
+                }
+                const bool texrect = (op == 0xE4 || op == 0xE5) && address + 16 < range.to;
+                const bool sprite = op == 0x64 && (w0 & 0x00FFFFFFu) == 0x000002u && address + 24 < range.to;
+                if (texrect || sprite) {
+                    int pass = -1;
+                    for (size_t i = 0; i < frame.size(); i++) {
+                        if (frame[i].gfx <= address) {
+                            pass = (int)i;
+                        }
+                    }
+                    char line[240];
+                    if (texrect) {
+                        std::snprintf(line, sizeof(line), "[net view] sniper %d rect %08X%s pass %d cam %d kind %d: %08X %08X st %08X steps %08X tex %08X tile %08X",
+                            sniper_frames, address, nested ? " (called)" : "", pass, pass >= 0 ? frame[pass].camera : -1, pass >= 0 ? frame[pass].kind : -1, w0, w1,
+                            (uint32_t)MEM_W(12, (gpr)(int32_t)address), (uint32_t)MEM_W(20, (gpr)(int32_t)address), last_texture, last_tile);
+                    } else {
+                        std::snprintf(line, sizeof(line), "[net view] sniper %d sprite %08X%s pass %d cam %d kind %d: %08X corners %08X %08X tex words %08X %08X tex %08X tile %08X",
+                            sniper_frames, address, nested ? " (called)" : "", pass, pass >= 0 ? frame[pass].camera : -1, pass >= 0 ? frame[pass].kind : -1, w1,
+                            (uint32_t)MEM_W(8, (gpr)(int32_t)address), (uint32_t)MEM_W(12, (gpr)(int32_t)address),
+                            (uint32_t)MEM_W(16, (gpr)(int32_t)address), (uint32_t)MEM_W(20, (gpr)(int32_t)address), last_texture, last_tile);
+                    }
+                    conker::netsession::log(line);
+                    sniper_rects_logged++;
+                }
+            }
             if (dump_scope && scope_lines < 12000) {
                 char line[96];
                 std::snprintf(line, sizeof(line), "[net view] scope cmd %08X%s: %08X %08X", address, nested ? " (called)" : "", w0, w1);
