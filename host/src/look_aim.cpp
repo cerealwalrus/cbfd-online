@@ -130,6 +130,25 @@ namespace {
         bool have = false;
     };
     ViewTurn view_turn[aim_players];
+    // Each player's eye (+0x2F8) as their view was last built, and its move from the frame before (conker_look_view).
+    struct EyeTrack {
+        float eye[3] = {}, step[3] = {};
+        uint32_t frame = 0;
+        bool have = false;
+    };
+    EyeTrack eye_track[aim_players];
+    // The lift of the eye at the start of R-Look's second stage (0.9.60 and 0.9.61's [look] lines: the eye's height over the look-at point's
+    // went +8.3, 10.9, 10.4, 8.4, 6.0, 3.8, 2.1, 0.9, 0.2 and back in the 9 frames after the first stage ended, the same each time, nothing
+    // moved by the stick). Taken off the eye as it's built, scaled to its first frame.
+    constexpr float stage_two_lift[] = { 8.3f, 10.9f, 10.4f, 8.4f, 6.0f, 3.8f, 2.1f, 0.9f, 0.2f };
+    struct LiftState {
+        int stage_two_frames = 0;
+        int step = -1;          // the lift's frame being taken off (-1: none)
+        float scale = 1.0f;
+        float last_height = 0.0f;
+        bool have_last = false;
+    };
+    LiftState lift_state[aim_players];
     int look_stage_two_frames[aim_players] = {};
     // An angle's difference, -180 to 180.
     float angle_difference(float to, float from) {
@@ -573,6 +592,68 @@ extern "C" void conker_look_view(uint8_t* rdram, recomp_context* ctx) {
     if (player >= 0) {
         previous_stage = look_stage_seen[player];
         look_stage_seen[player] = (int)MEM_H(0x73C, camera);
+    }
+    // 0.9.62: online, R-Look's handover from its first stage to its second, for every player's camera on every machine (the view is built
+    // from the game's memory alike on all of them). The eye (+0x2F8, and the view's copy of it, +0x2EC: its x and y are copied already,
+    // its z after this):
+    // - the frame the first stage ends, with Swap Sticks, it goes on moving as it did the frame before (the game skips the look's update
+    //   that frame: the eye stood still, then moved twice as far the next, 0.9.61's [look] lines; the view's turn is carried on below);
+    // - its lift after (stage_two_lift) is taken off.
+    if (conker::netsession::active() && player >= 0) {
+        const int stage = (int)MEM_H(0x73C, camera);
+        float eye[3] = { read_float(rdram, camera, 0x2F8), read_float(rdram, camera, 0x2FC), read_float(rdram, camera, 0x300) };
+        const float raw_height = eye[1] - read_float(rdram, camera, 0x2E4);
+        EyeTrack& track = eye_track[player];
+        const uint32_t frame_now = conker::netsession::frame();
+        const bool continuing = track.have && frame_now == track.frame + 1;
+        bool changed = false;
+        if (continuing && previous_stage == 1 && stage == 2 && swap_state(player)) {
+            for (int k = 0; k < 3; k++) {
+                eye[k] = track.eye[k] + track.step[k];
+            }
+            changed = true;
+        }
+        LiftState& lift = lift_state[player];
+        if (stage != 2) {
+            lift.stage_two_frames = 0;
+            lift.step = -1;
+        } else {
+            lift.stage_two_frames++;
+            if (lift.step < 0 && lift.stage_two_frames <= 3 && lift.have_last) {
+                const float jump = raw_height - lift.last_height;
+                if (jump > 6.5f && jump < 10.0f) {
+                    lift.step = 0;
+                    lift.scale = jump / stage_two_lift[0];
+                }
+            }
+        }
+        lift.last_height = raw_height;
+        lift.have_last = true;
+        if (lift.step >= 0) {
+            eye[1] -= stage_two_lift[lift.step] * lift.scale;
+            changed = true;
+            lift.step++;
+            if (lift.step >= (int)(sizeof(stage_two_lift) / sizeof(stage_two_lift[0]))) {
+                lift.step = -1;
+            }
+        }
+        if (changed) {
+            write_float(rdram, camera, 0x2F8, eye[0]);
+            write_float(rdram, camera, 0x2FC, eye[1]);
+            write_float(rdram, camera, 0x300, eye[2]);
+            write_float(rdram, camera, 0x2EC, eye[0]);
+            write_float(rdram, camera, 0x2F0, eye[1]);
+            // (the view's z is stored from $at in the branch's delay slot after this, loaded from +0x300 before)
+            uint32_t z_bits;
+            std::memcpy(&z_bits, &eye[2], sizeof(z_bits));
+            ctx->r1 = (gpr)(int32_t)z_bits;
+        }
+        for (int k = 0; k < 3; k++) {
+            track.step[k] = continuing ? eye[k] - track.eye[k] : 0.0f;
+            track.eye[k] = eye[k];
+        }
+        track.frame = frame_now;
+        track.have = true;
     }
     // Online, this machine's player's look, its first 45 frames each time (the view's movement after R, for the logs).
     if (conker::netsession::active() && player >= 0 && player == conker::netsession::local_slot()) {

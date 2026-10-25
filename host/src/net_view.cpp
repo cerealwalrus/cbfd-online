@@ -581,18 +581,18 @@ namespace {
             const uint32_t w1 = (uint32_t)MEM_W(4, (gpr)(int32_t)address);
             const uint32_t op = w0 >> 24;
             const uint32_t chain_op = nested ? 0u : op;
-            if (dump_scope && scope_lines < 5000) {
+            if (dump_scope && scope_lines < 12000) {
                 char line[96];
                 std::snprintf(line, sizeof(line), "[net view] scope cmd %08X%s: %08X %08X", address, nested ? " (called)" : "", w0, w1);
                 conker::netsession::log(line);
                 scope_lines++;
-                // (0.9.61: and what the commands point at, in this machine's passes after its 3D one: the scope is two textured squares of 4
-                // vertices each, so their vertices, the matrices loaded, the texture's first bytes, and the lists called, one level down)
+                // (0.9.61: and what the commands point at, in this machine's passes (0.9.62: all of them, the 3D one too: the scope wasn't in
+                // the ones after it): their vertices, the matrices loaded, the texture's first bytes, and the lists called, one level down)
                 const bool local_late = [&]() {
                     for (size_t i = 0; i < frame.size(); i++) {
                         const uint32_t to = i + 1 < frame.size() ? frame[i + 1].gfx : end;
                         if (address >= frame[i].gfx && address < to) {
-                            return frame[i].camera == local && to - frame[i].gfx < 4000u && i > 3;
+                            return frame[i].camera == local;
                         }
                     }
                     return false;
@@ -626,7 +626,7 @@ namespace {
                 if (local_late) {
                     dump_pointed(w0, w1);
                     if (op == 0xDE && valid(w1)) {
-                        for (uint32_t at = w1, n = 0; n < 160 && scope_lines < 5000; at += 8, n++) {
+                        for (uint32_t at = w1, n = 0; n < 160 && scope_lines < 12000; at += 8, n++) {
                             const uint32_t c0 = (uint32_t)MEM_W(0, (gpr)(int32_t)at), c1 = (uint32_t)MEM_W(4, (gpr)(int32_t)at);
                             char text[96];
                             std::snprintf(text, sizeof(text), "[net view] scope called %08X: %08X %08X", at, c0, c1);
