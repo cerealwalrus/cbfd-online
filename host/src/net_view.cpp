@@ -92,6 +92,52 @@ namespace {
     constexpr uint32_t edge_fill_slot = 0x20;
     constexpr uint32_t edge_fill_slots = 128;
     uint32_t edge_fill_next = 0;
+    // The sniper scope's crosshair, online (0.9.68): with two players or more the game draws the scope's four quarters from a coarse picture
+    // of its own (32 x 32, its lines stopping short of the middle, arrow ticks), not the one-player scope's (thin lines through the middle,
+    // small ticks). Ours, drawn here in the one-player scope's likeness (64 x 64 intensities, a quarter of the scope with the middle at its
+    // lower right corner), is drawn in their place, from little lists of ours each quarter's rectangle calls, a ring of 16 of 256 bytes.
+    // (local_audio.cpp's stack ends at 0x00F4C000, its words at 0x00F4C800; nothing else is here.)
+    constexpr uint32_t scope_texture = 0x00F4D000;
+    constexpr int scope_size = 64;
+    constexpr uint32_t scope_list_start = 0x00F4E000;
+    constexpr uint32_t scope_list_slot = 0x100;
+    constexpr uint32_t scope_list_slots = 16;
+    uint32_t scope_list_next = 0;
+    int scope_texture_level = -1;   // the intensity it was drawn with (the game's picture's brightest), -1: not drawn yet
+
+    void draw_scope_texture(uint8_t* rdram, int level) {
+        const gpr base = (gpr)(int32_t)(0x80000000u | scope_texture);
+        // In texels from the middle (the lower right corner): across, px, and up, py. Measured from the Nintendo 64's one-player scope:
+        // the ring at the edge, the lines' blocks from 0.78 to 0.98 of the radius, ticks at 0.2, 0.4 and 0.6.
+        const auto inside = [](float px, float py) {
+            const float r = std::sqrt(px * px + py * py);
+            if (std::fabs(r - 62.4f) <= 0.8f) return true;
+            const auto arm = [](float along, float off) {
+                if (along < 1.2f || along > 63.0f) return false;
+                if (off <= 0.9f) return true;                                    // the line
+                if (along >= 49.5f && along <= 62.8f && off <= 2.5f) return true; // its block at the ring
+                for (const float tick : { 12.8f, 25.6f, 38.4f }) {
+                    if (std::fabs(along - tick) <= 0.55f && off <= 1.9f) return true;
+                }
+                return false;
+            };
+            return arm(px, py) || arm(py, px);
+        };
+        for (int v = 0; v < scope_size; v++) {
+            for (int u = 0; u < scope_size; u++) {
+                int hits = 0;
+                for (int sy = 0; sy < 4; sy++) {
+                    for (int sx = 0; sx < 4; sx++) {
+                        const float px = (float)scope_size - ((float)u + (sx + 0.5f) * 0.25f);
+                        const float py = (float)scope_size - ((float)v + (sy + 0.5f) * 0.25f);
+                        hits += inside(px, py) ? 1 : 0;
+                    }
+                }
+                MEM_B(v * scope_size + u, base) = (int8_t)(uint8_t)((level * hits + 8) / 16);
+            }
+        }
+    }
+
     constexpr uint32_t list_start = 0x00F50000;       // copies of the lists the HUD calls (a ring of 32 slots of 1024 commands)
     constexpr uint32_t list_slot = 0x2000;
     constexpr uint32_t list_slots = 32;
@@ -416,6 +462,10 @@ namespace {
         static int sniper_rects_logged = 0;
         const bool log_sniper_rects = sniper_frames >= 40 && sniper_frames <= 42 && sniper_rects_logged < 600;
         uint32_t last_texture = 0, last_tile = 0;
+        // The texture commands since the last texture image (G_SETTIMG and the tile, load and size commands after it), to load the game's
+        // texture again after one of the scope's quarters is drawn with ours.
+        uint32_t texture_words[12][2] = {};
+        int texture_count = 0;
         uint32_t scope_segments[16] = {};   // the segments set so far in the dumped frame (G_MOVEWORD's segment, 0xDB06), to follow calls by them
         if (dump_look) {
             for (size_t i = 0; i < frame.size(); i++) {
@@ -589,6 +639,14 @@ namespace {
             const uint32_t w1 = (uint32_t)MEM_W(4, (gpr)(int32_t)address);
             const uint32_t op = w0 >> 24;
             const uint32_t chain_op = nested ? 0u : op;
+            if (op == 0xFD) {
+                texture_count = 0;
+            }
+            if ((op == 0xFD || op == 0xF5 || op == 0xF3 || op == 0xF4 || op == 0xF2 || op == 0xE6 || op == 0xE8) && texture_count < 12) {
+                texture_words[texture_count][0] = w0;
+                texture_words[texture_count][1] = w1;
+                texture_count++;
+            }
             if (log_sniper_rects) {
                 if (op == 0xFD) {
                     last_texture = w1;
@@ -979,7 +1037,69 @@ namespace {
                             }
                         }
                     }
-                    if (!extended && s1 >= 0 && t1 >= 0 && s0 <= 0xFFF && t0 <= 0xFFF) {
+                    // (0.9.68: and the scope's quarters, the rectangles of 31 or 32 texels square (the dots are 7, the bar 1 wide), drawn from our
+                    // picture of the one-player scope's: see scope_texture)
+                    bool replaced = false;
+                    if (scope_piece && !extended && texture_count > 0 && (texture_words[0][0] >> 24) == 0xFD && s1 >= 0 && t1 >= 0 && s0 <= 0xFFF && t0 <= 0xFFF) {
+                        const uint32_t steps = (uint32_t)MEM_W(20, (gpr)(int32_t)address);   // as scaled above
+                        const int32_t dsdx = (int32_t)(int16_t)(steps >> 16), dtdy = (int32_t)(int16_t)(steps & 0xFFFFu);
+                        const float span_x = std::fabs((float)(s0 - s1) * 0.25f * (float)dsdx / 1024.0f);
+                        const float span_y = std::fabs((float)(t0 - t1) * 0.25f * (float)dtdy / 1024.0f);
+                        if (span_x >= 24.0f && span_x <= 40.0f && span_y >= 24.0f && span_y <= 40.0f) {
+                            const uint32_t game_texture = texture_words[0][1];
+                            if (scope_texture_level < 0 && (game_texture >> 24) == 0x80 && (game_texture & 0xFFFFFFu) < 0x7FF000u) {
+                                int level = 0;
+                                for (int i = 0; i < 32 * 32; i++) {
+                                    level = std::max(level, (int)MEM_BU(i, (gpr)(int32_t)game_texture));
+                                }
+                                scope_texture_level = level > 0 ? level : 0xFF;
+                                draw_scope_texture(rdram, scope_texture_level);
+                                char line[120];
+                                std::snprintf(line, sizeof(line), "[net view] scope: our crosshair drawn, brightest %d (the game's picture at %08X)", scope_texture_level, game_texture);
+                                conker::netsession::log(line);
+                            }
+                            if (scope_texture_level >= 0) {
+                                const uint32_t list = 0x80000000u | (scope_list_start + (scope_list_next++ % scope_list_slots) * scope_list_slot);
+                                uint32_t at = 0;
+                                const auto put = [&](uint32_t c0, uint32_t c1) {
+                                    MEM_W(at, (gpr)(int32_t)list) = (int32_t)c0;
+                                    MEM_W(at + 4, (gpr)(int32_t)list) = (int32_t)c1;
+                                    at += 8;
+                                };
+                                // our picture: an intensity, 8 bits, 64 x 64, loaded as a block, then tile 0 clamped
+                                put(0xE7000000u, 0);
+                                put(0xFD900000u, 0x80000000u | scope_texture);
+                                put(0xF5900000u, 0x07000000u);
+                                put(0xE6000000u, 0);
+                                put(0xF3000000u, 0x077FF100u);
+                                put(0xE7000000u, 0);
+                                put(0xF5881000u, 0x00080200u);
+                                put(0xF2000000u, 0x000FC0FCu);
+                                // the quarter's rectangle, as the game's (scaled above), from the same corner of ours: its texels doubled
+                                const uint32_t st = (uint32_t)MEM_W(12, (gpr)(int32_t)address);
+                                const auto twice = [](uint32_t v) { return (uint32_t)(uint16_t)((v & 0xFFFFu) * 2u + ((v & 0xFFFFu) > 0 ? 32u : 0u)); };
+                                put((w0 & 0xFF000000u) | ((uint32_t)std::min(s0, 0xFFF) << 12) | (uint32_t)std::min(t0, 0xFFF),
+                                    ((uint32_t)std::max(s1, 0) << 12) | (uint32_t)std::max(t1, 0));
+                                put(0xE1000000u, (twice(st >> 16) << 16) | twice(st));
+                                put(0xF1000000u, ((uint32_t)(uint16_t)(int16_t)(dsdx * 2) << 16) | (uint32_t)(uint16_t)(int16_t)(dtdy * 2));
+                                // the game's texture again, for what follows (the zoom bar's mark draws from it)
+                                put(0xE7000000u, 0);
+                                for (int i = 0; i < texture_count && at < scope_list_slot - 16; i++) {
+                                    put(texture_words[i][0], texture_words[i][1]);
+                                }
+                                put(0xDF000000u, 0);
+                                MEM_W(0, (gpr)(int32_t)address) = (int32_t)0xDE000000u;
+                                MEM_W(4, (gpr)(int32_t)address) = (int32_t)(list & 0x00FFFFFFu);
+                                for (uint32_t k = 8; k < 24; k += 4) {
+                                    MEM_W(k, (gpr)(int32_t)address) = 0;   // the rectangle's two G_RDPHALFs: G_NOOPs
+                                }
+                                skip_to = address + 24;
+                                replaced = true;
+                                rects_moved++;
+                            }
+                        }
+                    }
+                    if (!replaced && !extended && s1 >= 0 && t1 >= 0 && s0 <= 0xFFF && t0 <= 0xFFF) {
                         MEM_W(0, (gpr)(int32_t)address) = (int32_t)((w0 & 0xFF000000u) | ((uint32_t)std::min(s0, 0xFFF) << 12) | (uint32_t)std::min(t0, 0xFFF));
                         MEM_W(4, (gpr)(int32_t)address) = (int32_t)((w1 & 0xFF000000u) | ((uint32_t)std::max(s1, 0) << 12) | (uint32_t)std::max(t1, 0));
                         rects_moved++;
