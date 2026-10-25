@@ -458,7 +458,7 @@ namespace {
         conker::notices::on_ui_ready();
         conker::local_achievements::init();
         conker::reticle::on_ui_ready();
-        options->add_start_game_or_load_rom_option();
+        options->add_start_game_or_load_rom_option("Load ROM", "Single Player");   // (recompui's is "Start Game")
         options->add_option("Online", []() { conker::netlobby::show(); });
         version_option = options->add_option("Version", on_version_selected);
         add_rom_option = options->add_option("Add ROM", on_add_rom_selected);
