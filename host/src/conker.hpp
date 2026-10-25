@@ -166,8 +166,6 @@ namespace conker {
         bool aiming_recently(int player);
         // The stage of a player's look mode (+0x73C of the camera: 0 not started, 1 moving in, 2 aiming, 3 leaving), as of the last view.
         int look_stage(int player);
-        // The kind of that player's look mode (+0x23E of their camera) as their view was last built.
-        int look_kind(int player);
         // Swap Sticks online, no weapon: the C-buttons the left stick pressed (buttons, as agreed) turned into the game's own strafe,
         // facing set so it goes the way pressed from the view. Called for the game's read of the controller only.
         void no_weapon_walk(uint8_t* rdram, int port, uint16_t* buttons);
