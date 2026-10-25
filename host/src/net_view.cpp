@@ -948,6 +948,7 @@ namespace {
                             }
                             const float middle = 0.5f * (l + r);
                             race_piece = (cx < l + 64.0f && cy < t + 32.0f) ||                         // the lap and the bricks
+                                (cx < l + 90.0f && cy < t + 72.0f && width <= 16.5f && height <= 12.5f) ||   // the laps' times under it (0.9.93)
                                 (std::fabs(cx - middle) < 16.0f && cy < t + 14.0f) ||                  // the place
                                 (std::fabs(cx - middle) < 40.0f && cy > b - 14.0f);                    // the timer
                         }
@@ -1028,6 +1029,22 @@ namespace {
                     if (players == 2 && local == 1 && score_swap && (cx < middle - 36.0f || cx > middle + 36.0f)) {
                         dx = (int32_t)((cx < middle ? 120.0f : -120.0f) * 4.0f);
                         kind_name = "score";
+                    }
+                } else if (race_frame && !bar && in_rect(own_l, own_t, own_r, own_b) && cy >= own_t + 32.0f && cy < own_t + 72.0f && cx < own_l + 90.0f &&
+                        width <= 16.5f && height <= 12.5f) {
+                    // 0.9.93: the race's lap times, which the game writes under the lap once a lap is done ("0:24:33", from the lap's left
+                    // edge, a row a lap): taken for a sprite of the world past the lap's first digits, half of one went down to the middle
+                    // of the view, and the rest lay under the race's timer, moved under the lap. With the lap, to the full view's corner, and
+                    // a row lower, under the race's timer
+                    dx = (int32_t)((left - own_l) * 4.0f);
+                    dy = (int32_t)((top - own_t + 13.0f) * 4.0f);
+                    kind_name = "own";
+                    static int lap_times_logged = 0;
+                    if (lap_times_logged < 40) {
+                        char line[160];
+                        std::snprintf(line, sizeof(line), "[net view] race lap time piece %08X: %08X %08X (centre %g,%g, %gx%g)", address, w0, w1, cx, cy, width, height);
+                        conker::netsession::log(line);
+                        lap_times_logged++;
                     }
                 } else if (!bar && in_rect(own_l, own_t, own_r, own_b) && cy < own_t + 32.0f && cx < own_l + 64.0f) {
                     // 0.9.85: the top left corner of the camera's rectangle, with the race's lap ("LAP" and its "1/3", the digits a little in
