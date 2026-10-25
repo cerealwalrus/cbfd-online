@@ -1064,3 +1064,8 @@ text = "{ extern void conker_online_boot_scene(uint8_t*, recomp_context*); conke
 func = "func_151DE8F0"
 before_vram = 0x151DE8F0
 text = "{ extern void conker_online_boot_multi(uint8_t*, recomp_context*); conker_online_boot_multi(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_151DE8F0"
+before_vram = 0x151DF1B4
+text = "{ extern void conker_online_boot_black(uint8_t*, recomp_context*); conker_online_boot_black(rdram, ctx); }"

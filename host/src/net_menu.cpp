@@ -118,7 +118,10 @@ namespace {
     bool boot_bar_set_up = false;
 }
 
+extern "C" void conker_online_boot_black(uint8_t* rdram, recomp_context* ctx);
+
 extern "C" void conker_online_boot_logos(uint8_t* rdram, recomp_context* ctx) {
+    conker_online_boot_black(rdram, ctx);
     if (!conker::netsession::active() || boot_bar_requested) {
         return;
     }
@@ -241,4 +244,45 @@ extern "C" void conker_online_boot_multi(uint8_t* rdram, recomp_context* ctx) {
     std::snprintf(line, sizeof(line), "[boot] online: on to the multiplayer menu (zoom %.3f, speed %.4f, music %u after %u)", zoom, speed,
         (unsigned)track, (unsigned)playing);
     conker::netsession::log(line);
+}
+
+// 0.9.80: the way there under a black screen. 0.9.78 showed the logos' first frames, the bar, and the zoom out of the MULTI barrel
+// (about two seconds): the screen's fade (D_800E0B96, 0xFF black, which the game takes down a step each frame) is held at black from
+// the logos (func_151DE6D4's return) and through the bar (func_151DE8F0's return, after the game's own step of the fade) until the
+// multiplayer barrels are up and still (gs+0x3E 1, gs+0x2A 0, zoomed out and not moving: gs+0, +4, +8, +0xC, +0x10 0), and then
+// left to the game, which fades in from black as it does after the logos. At most 900 frames of the bar (15 seconds), whatever
+// happens. Game memory, the same frame on every machine.
+namespace {
+    bool boot_black_released = false;
+    int boot_black_bar_frames = 0;
+}
+
+extern "C" void conker_online_boot_black(uint8_t* rdram, recomp_context* ctx) {
+    (void)ctx;
+    if (!conker::netsession::active() || boot_black_released) {
+        return;
+    }
+    const bool bar = (int32_t)MEM_W(0, (gpr)(int32_t)0x800BE9F0) == 0x1D && (uint8_t)MEM_BU(0, (gpr)(int32_t)0x800E0B94) == 3;
+    if (bar && boot_multi_done) {
+        const uint32_t state = (uint32_t)MEM_W(0, (gpr)(int32_t)0x8008FDD4);
+        if ((state >> 24) == 0x80) {
+            const gpr gs = (gpr)(int32_t)state;
+            const bool up = MEM_B(0x3E, gs) == 1 && MEM_B(0x2A, gs) == 0 && boot_float(rdram, state + 0x0) == 0.0f &&
+                boot_float(rdram, state + 0x4) == 0.0f && boot_float(rdram, state + 0x8) == 0.0f && boot_float(rdram, state + 0xC) == 0.0f &&
+                boot_float(rdram, state + 0x10) == 0.0f;
+            if (up) {
+                boot_black_released = true;
+                char line[120];
+                std::snprintf(line, sizeof(line), "[boot] online: the multiplayer menu is up, the screen fades in (barrel %d)", (int)MEM_B(0x2B, gs));
+                conker::netsession::log(line);
+                return;
+            }
+        }
+    }
+    if (bar && ++boot_black_bar_frames > 900) {
+        boot_black_released = true;
+        conker::netsession::log("[boot] online: the multiplayer menu didn't come up in 900 frames: the screen is left to the game");
+        return;
+    }
+    MEM_B(0, (gpr)(int32_t)0x800E0B96) = (int8_t)0xFF;
 }
