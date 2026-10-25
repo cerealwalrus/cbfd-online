@@ -10,10 +10,7 @@ namespace conker {
 {
  "background_input_mode": "On",
  "debug_mode": false,
- "joystick_deadzone": 5,
- "rumble_motor": "Small",
- "rumble_strength": 0,
- "rumble_style": "Smooth"
+ "joystick_deadzone": 5
 }
 )CONKERJSON";
 

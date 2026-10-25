@@ -128,11 +128,10 @@ namespace conker {
 
     // rumble.cpp: the Rumble Pak, sent to each port's controller.
     namespace rumble {
-        // Its settings (motor, style), on the General tab.
-        void add_options(recomp::config::Config& config);
-        // The runtime's rumble callback: the game turning a port's Rumble Pak on or off.
+        // The runtime's rumble callback: the game turning a port's Rumble Pak on or off. (0.10.4: rumble is off for good: nothing is
+        // sent to the controllers.)
         void set(int port, bool on);
-        // Every VI: sends each port's rumble to its controller.
+        // Every VI: nothing (0.10.4).
         void update();
     }
 
