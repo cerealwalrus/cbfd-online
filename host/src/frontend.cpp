@@ -962,11 +962,10 @@ namespace {
             // Online, from R pressed until the game's look mode starts (its stage, +0x73C of the camera, is 0 until then; it
             // moves in at once, but not always) the right stick does nothing: the camera turned (or the head did) ahead of the aim and then
             // the view jerked in. Swapped, the stick is the aim's (x, y); else it's the camera's, C-buttons or free.
-            // And through the look's first stage (1: the camera swings round onto the aim, about a second, as on a Nintendo 64): held
-            // in a direction, the stick turned the head ahead of the camera, which then jumped onto the aim as the stage ended.
+            // (0.9.57: not through the look's first stage any more: the view now follows the aim there, look_aim.cpp's conker_look_stage_one.)
             const int stage = conker::look_aim::look_stage(aim_player);
             const bool entry_hold = online_game && port == 0 && pad != nullptr && (*buttons & 0x0010) != 0
-                && ((stage == 0 && !conker::look_aim::aiming_recently(aim_player)) || stage == 1);
+                && stage == 0 && !conker::look_aim::aiming_recently(aim_player);
             if (entry_hold) {
                 if (swapped) {
                     *x = 0.0f;

@@ -114,6 +114,21 @@ namespace {
     std::atomic<int64_t> last_aim_ticks[aim_players] = {};
     // The aim's yaw for each player's view this frame, from the look mode (conker_look_currents), while swapped.
     std::atomic<int> look_stage_seen[aim_players] = {};
+    // Online, how far each player's look has settled from its start (0 swinging in, 1 settled): what Swap Sticks' view on the aim
+    // (conker_look_currents) and the guns' up and down at once (gun_aim_online) are mixed in by. They put the view on the aim every
+    // frame, so from the look's second stage its swing in had stopped dead: 0.9.56's snap, and 0.9.53's when the stick was held.
+    // Now the game's springs swing the view in, and once it's within a degree of the aim (or 20 frames into the second stage, over
+    // the next 10) the view is on the aim again. Worked out from the game's memory on every machine for every player's camera, frame
+    // by frame, so the same on all of them.
+    float look_settle[aim_players] = {};
+    int look_stage_two_frames[aim_players] = {};
+    // An angle's difference, -180 to 180.
+    float angle_difference(float to, float from) {
+        float d = std::fmod(to - from, 360.0f);
+        if (d > 180.0f) d -= 360.0f;
+        if (d < -180.0f) d += 360.0f;
+        return d;
+    }
     float swap_view_yaw[aim_players] = {};
     bool swap_view_yaw_set[aim_players] = {};
     constexpr auto aim_linger = std::chrono::milliseconds(80);
@@ -151,10 +166,10 @@ namespace {
     // game's own memory.
     constexpr float gun_pitch_scale = 4.06f / 1.9f;
     bool gun_aim_online(uint8_t* rdram, gpr camera) {
-        // Off: online R-Look is the game's own, as on a Nintendo 64 (0.9.53: the view eases onto the aim and turns up and down at the
-        // game's speed, as it does there). Every machine has to do the same for every player, so it's not a setting.
-        constexpr bool snappy = false;
-        if (!snappy || !conker::netsession::active()) {
+        // On again (0.9.57: up and down as before 0.9.53, which the test liked better), but only for up and down: the view's left and
+        // right is no longer put on the aim here, and up and down only once the look has settled (look_settle), so R-Look's start
+        // swings in as on a Nintendo 64.
+        if (!conker::netsession::active()) {
             return false;
         }
         const uint8_t kind = MEM_BU(0x23E, camera);
@@ -412,17 +427,19 @@ extern "C" void conker_gun_aim_turn(uint8_t* rdram, recomp_context* ctx) {
 // (kind 0: gone straight to the second stage instead). Here the target and the current yaw are both set to it each frame, so the view is on the aim from the first frame.
 extern "C" void conker_look_stage_one(uint8_t* rdram, recomp_context* ctx) {
 #if defined(CONKER_RT64)
-    // 0.9.56: online the first stage is skipped, as the game itself does when the look's +0x4D is clear (0x15120510), and as the plain
-    // R-Look did here: the second stage at once (the stage's timer at its end, so the game's own end of the stage runs at
-    // once, 0x151203FC: +0x198 of +0x3D4 and the stage set, the target where the view is). Its springs swing the camera round onto the aim and in, as smoothly, and the stick aims from the start. The
-    // first stage held the view on a target worked out when R was pressed for 30 frames, and its end moved the camera in two frames,
-    // which then eased back (measured in a 0.9.55 recording: every time, the stick held or not: the dip in the view after R).
-    // Every machine does it for every player, from the game's memory.
+    // Online, for every player on every machine, from the game's memory (see below).
     constexpr bool snappy = false;
     if (!conker::netsession::active()) {
         return;
     }
     const gpr camera = (gpr)(int32_t)ctx->r4;
+    {
+        const int player = camera_player(rdram, camera);
+        if (player >= 0 && MEM_H(0x73C, camera) != 2) {
+            look_settle[player] = 0.0f;
+            look_stage_two_frames[player] = 0;
+        }
+    }
     if (MEM_H(0x73C, camera) != 1) {
         return;
     }
@@ -434,10 +451,13 @@ extern "C" void conker_look_stage_one(uint8_t* rdram, recomp_context* ctx) {
     const uint8_t kind = MEM_BU(0x23E, camera);
     const bool gun_kind = kind == 0x09 || kind == 0x38 || kind == 0x39 || kind == 0x37 || kind == 0x3B || kind == 0x15 || kind == 0x26 || kind == 0x3A;
     if (!snappy) {
-        // The stage's timer (+0x84A, counted down by the frame's ticks at 0x151203E8) at its last tick: the game's own end of the stage
-        // runs this frame, as it does after the 30.
-        if ((gun_kind || kind == 0x00) && MEM_H(0x84A, camera) > 1) {
-            MEM_H(0x84A, camera) = 1;
+        // 0.9.57: the first stage runs as the game's (30 frames, its spring swinging the view in), but its target follows the aim each
+        // frame (the second stage's own sum, 0x15120908: Conker's facing less the aim angle and a quarter turn) instead of staying where
+        // it was when R was pressed: so the stick can aim from the start, the view swinging after it, and nothing is left to catch up
+        // with a jump as the stage ends. Only the target: the view is the game's spring's.
+        if (gun_kind) {
+            const int32_t units = (int32_t)MEM_HU(0x7A, conker) - (int32_t)MEM_H(0x12, aim) + 0xC000;
+            write_float(rdram, camera, 0x740 + target_yaw, (float)units * 0.005493164f);
         }
         return;
     }
@@ -842,12 +862,6 @@ namespace {
     float look_speed() {
         return conker::netsession::active() ? online_look_speed : 1.0f;
     }
-    // Up and down, twice the game's (0.9.55's test: 1.5 times felt slow, the stick's curve on it slower still): the game's 1.9 degrees a
-    // frame at full tilt to 3.8, still eased by the spring.
-    constexpr float online_pitch_speed = 2.0f;
-    float pitch_speed() {
-        return conker::netsession::active() ? online_pitch_speed : 1.0f;
-    }
 }
 #endif
 
@@ -872,7 +886,7 @@ extern "C" void conker_look_stick_pitch(uint8_t* rdram, recomp_context* ctx) {
 #if defined(CONKER_RT64)
     {
         // 0x15120A94: add.s $f10, $f6, $f8 (the target plus the stick's turn; turned around, less)
-        const float turn = ctx->f8.fl * pitch_speed();
+        const float turn = ctx->f8.fl;
         ctx->f10.fl = look_flag(rdram, ctx->r16, look_turn_y) ? ctx->f6.fl - turn : ctx->f6.fl + turn;
     }
     if (gun_aim_online(rdram, ctx->r16)) {
@@ -1147,25 +1161,43 @@ extern "C" void conker_look_currents(uint8_t* rdram, recomp_context* ctx) {
     // The current yaw is set to the target with no speed left, and the target is kept for the view
     // (conker_look_view), which is turned to it whatever moves the current yaw after this.
     const int player = camera_player(rdram, state);
-    if (swap_state(player)) {
-        const float yaw = read_float(rdram, targets, target_yaw);
+    // Online, how far the look has settled (see look_settle): 1 offline.
+    float settle = 1.0f;
+    if (conker::netsession::active() && player >= 0) {
+        if (look_settle[player] < 1.0f) {
+            look_stage_two_frames[player]++;
+            const float off_yaw = std::fabs(angle_difference(read_float(rdram, targets, target_yaw), read_float(rdram, state, current_yaw)));
+            const float off_pitch = std::fabs(angle_difference(read_float(rdram, targets, target_pitch), read_float(rdram, targets, current_pitch)));
+            if (off_yaw < 1.0f && (off_pitch < 1.0f || !gun_aim_online(rdram, state))) {
+                look_settle[player] = 1.0f;
+            } else if (look_stage_two_frames[player] > 20) {
+                look_settle[player] = std::min(1.0f, look_settle[player] + 0.1f);
+            }
+        }
+        settle = look_settle[player];
+    }
+    if (swap_state(player) && settle > 0.0f) {
+        const float target = read_float(rdram, targets, target_yaw);
+        const float current = read_float(rdram, state, current_yaw);
+        const float yaw = settle >= 1.0f ? target : current + angle_difference(target, current) * settle;
         write_float(rdram, state, current_yaw, yaw);
-        write_float(rdram, targets, yaw_velocity, 0.0f);
-        swap_view_yaw[player] = yaw;
-        swap_view_yaw_set[player] = true;
+        write_float(rdram, targets, yaw_velocity, read_float(rdram, targets, yaw_velocity) * (1.0f - settle));
+        if (settle >= 1.0f) {
+            swap_view_yaw[player] = yaw;
+            swap_view_yaw_set[player] = true;
+        }
     }
     // Online, aiming a gun in R-Look (the SMG, the M4): up and down follows the target at once, as left and right does
     // (see gun_aim_online).
-    if (gun_aim_online(rdram, state)) {
+    if (gun_aim_online(rdram, state) && settle > 0.0f) {
         const float pitch_target = read_float(rdram, targets, target_pitch);
+        const float current = read_float(rdram, targets, current_pitch);
+        float pitch = settle >= 1.0f ? pitch_target : current + angle_difference(pitch_target, current) * settle;
         // (the game keeps this angle from 0 to 360 where the target is from -45 to 80)
-        write_float(rdram, targets, current_pitch, pitch_target < 0.0f ? pitch_target + 360.0f : pitch_target);
-        write_float(rdram, targets, pitch_velocity, 0.0f);
-        // And the yaw: the look mode starts with its current yaw off the target (up to 25 degrees, logged) and springs it in over
-        // about a second, while Conker's head and aim follow the stick at once. With the stick held from the first frame the
-        // head turned alone and the view then caught up with a jerk; now the view is on the aim from the first frame.
-        write_float(rdram, state, current_yaw, read_float(rdram, targets, target_yaw));
-        write_float(rdram, targets, yaw_velocity, 0.0f);
+        if (pitch < 0.0f) pitch += 360.0f;
+        if (pitch >= 360.0f) pitch -= 360.0f;
+        write_float(rdram, targets, current_pitch, pitch);
+        write_float(rdram, targets, pitch_velocity, read_float(rdram, targets, pitch_velocity) * (1.0f - settle));
     }
     if (look_flag(rdram, state, look_direct)) {
         // The view is where the targets are, and the spring keeps no speed to overshoot with.
