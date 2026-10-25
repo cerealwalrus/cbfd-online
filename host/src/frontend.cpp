@@ -956,23 +956,7 @@ namespace {
             if (online_game && port == 0) {
                 shape_online_aim(pad != nullptr && !entry_hold && (swapped || conker::look_aim::aiming_recently(aim_player)), x, y);
             }
-            // 0.9.99: online, sticks swapped and R held with the look not on (stage 0: before it starts, or knocked out of it by a hit, the
-            // game ending it while R is still held): neither stick does anything until the look is back. Knocked out of it while walking,
-            // the left stick's C-buttons (its strafe in the look) and the right stick (the aim, but the N64 stick out of the look) went to
-            // the game outside the look, which turned Conker and the camera about; standing still the game just brought the look back.
-            {
-                static bool held_still = false;
-                const bool hold_now = online_game && port == 0 && pad != nullptr && swapped && (*buttons & 0x0010) != 0 && stage == 0;
-                if (hold_now) {
-                    if (!held_still && (*x != 0.0f || *y != 0.0f || (*buttons & 0x000F) != 0)) {
-                        conker::netsession::log("[input] R held with the look off: the sticks held still until it is back");
-                    }
-                    *x = 0.0f;
-                    *y = 0.0f;
-                    *buttons &= (uint16_t)~0x000Fu;
-                }
-                held_still = hold_now;
-            }
+            // (0.9.99 held both sticks still here with R held and the look off; 0.10.0 does it where the game reads its input, net_session.cpp)
             if (port == 0) {
                 conker::look_aim::set_sampled_swap(online_game && swapped);
                 conker::look_aim::set_entry_hold(entry_hold);

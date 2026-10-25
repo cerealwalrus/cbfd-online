@@ -463,3 +463,18 @@ diff --git a/recompui/src/config/ui_config_tab_graphics.cpp b/recompui/src/confi
              );
  
              config.add_enum_option(
+diff --git a/recompui/src/elements/ui_document.cpp b/recompui/src/elements/ui_document.cpp
+index a60c585..9650a6b 100644
+--- a/recompui/src/elements/ui_document.cpp
++++ b/recompui/src/elements/ui_document.cpp
+@@ -198,7 +198,9 @@ namespace recompui {
+ 
+             int cur_element_index = get_element_index(this_element, nav_parent->nav_children);
+             if (cur_element_index == -1) {
+-                throw std::runtime_error("This should never ever ever happen. Element not found in its parent's nav children.");
++                // (CBFD: it did happen, a gamepad press on the launcher while a page was being rebuilt (the online lobby starting
++                // the game) took the launcher down: staying where it is instead.)
++                return this_element;
+             }
+ 
+             // Process grid navigation if retained_grid_index is valid and grid navs are different.

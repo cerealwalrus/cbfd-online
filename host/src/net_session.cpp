@@ -3579,6 +3579,34 @@ bool conker::netsession::input_for_game(int port, bool* plugged, uint16_t* butto
             }
         }
     }
+    // 0.10.0: sticks swapped and R held, with the player's look off (before it starts, or knocked out of it by a hit while R is still
+    // held): neither stick does anything until the look is back. Knocked out of it while walking, the left stick's C-buttons (its
+    // strafe in the look) and the right stick (the aim; out of the look the N64 stick) went to the game outside the look and turned
+    // Conker and the camera about; standing still the game just brought the look back. 0.9.99 did this where the input is sampled,
+    // a few frames ahead of the game: the frames of the input delay right after the hit still had the sticks. Here it goes by the
+    // game's own look (its stage, +0x73C of each of the player's look records) at the frame the input is played, on every machine.
+    if (swapped && rdram != nullptr && port >= 0 && port < 4 && (*buttons & 0x0010) != 0) {
+        const uint32_t looks = (uint32_t)MEM_W(0, (gpr)(int32_t)0x800DBFF0);
+        if ((looks >> 24) == 0x80 && (looks & 0x7FFFFFu) + 4u * 0x9A0u <= 0x800000u) {
+            bool look_on = false;
+            for (uint32_t k = 0; k < 4; k++) {
+                const gpr record = (gpr)(int32_t)(looks + k * 0x9A0u);
+                if ((int)MEM_BU(0x23D, record) == port && MEM_H(0x73C, record) != 0) {
+                    look_on = true;
+                }
+            }
+            static bool held[max_players] = {};
+            if (!look_on) {
+                if (!held[port] && (*x != 0.0f || *y != 0.0f || (*buttons & 0x000F) != 0) && port == local_slot()) {
+                    log("[input] R held with the look off: the sticks held still until it is back");
+                }
+                *x = 0.0f;
+                *y = 0.0f;
+                *buttons &= (uint16_t)~0x000Fu;
+            }
+            held[port] = !look_on;
+        }
+    }
     if (swapped && rdram != nullptr) {
         conker::look_aim::no_weapon_walk(rdram, port, buttons);
         conker::look_aim::gun_side_walk(rdram, port, buttons);
