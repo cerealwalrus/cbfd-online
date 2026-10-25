@@ -586,6 +586,59 @@ namespace {
                 std::snprintf(line, sizeof(line), "[net view] scope cmd %08X%s: %08X %08X", address, nested ? " (called)" : "", w0, w1);
                 conker::netsession::log(line);
                 scope_lines++;
+                // (0.9.61: and what the commands point at, in this machine's passes after its 3D one: the scope is two textured squares of 4
+                // vertices each, so their vertices, the matrices loaded, the texture's first bytes, and the lists called, one level down)
+                const bool local_late = [&]() {
+                    for (size_t i = 0; i < frame.size(); i++) {
+                        const uint32_t to = i + 1 < frame.size() ? frame[i + 1].gfx : end;
+                        if (address >= frame[i].gfx && address < to) {
+                            return frame[i].camera == local && to - frame[i].gfx < 4000u && i > 3;
+                        }
+                    }
+                    return false;
+                }();
+                const auto valid = [](uint32_t a) { return (a >> 24) == 0x80 && (a & 0xFFFFFFu) < 0x7FFFF0u; };
+                const auto dump_words = [&](const char* what, uint32_t at, int words) {
+                    if (!valid(at)) {
+                        return;
+                    }
+                    for (int k = 0; k < words; k += 4) {
+                        char text[160];
+                        std::snprintf(text, sizeof(text), "[net view] scope %s %08X: %08X %08X %08X %08X", what, at + k * 4,
+                            (uint32_t)MEM_W(k * 4, (gpr)(int32_t)at), (uint32_t)MEM_W(k * 4 + 4, (gpr)(int32_t)at),
+                            (uint32_t)MEM_W(k * 4 + 8, (gpr)(int32_t)at), (uint32_t)MEM_W(k * 4 + 12, (gpr)(int32_t)at));
+                        conker::netsession::log(text);
+                        scope_lines++;
+                    }
+                };
+                const auto dump_pointed = [&](uint32_t c0, uint32_t c1) {
+                    const uint32_t o = c0 >> 24;
+                    if (o == 0x01) {
+                        dump_words("vertices", c1, (int)((c0 >> 12) & 0xFFu) * 4);
+                    } else if (o == 0xDA) {
+                        dump_words("matrix", c1, 16);
+                    } else if (o == 0xFD) {
+                        dump_words("texture", c1, 16);
+                    } else if (o == 0xDC) {
+                        dump_words("moved", c1, 4);
+                    }
+                };
+                if (local_late) {
+                    dump_pointed(w0, w1);
+                    if (op == 0xDE && valid(w1)) {
+                        for (uint32_t at = w1, n = 0; n < 160 && scope_lines < 5000; at += 8, n++) {
+                            const uint32_t c0 = (uint32_t)MEM_W(0, (gpr)(int32_t)at), c1 = (uint32_t)MEM_W(4, (gpr)(int32_t)at);
+                            char text[96];
+                            std::snprintf(text, sizeof(text), "[net view] scope called %08X: %08X %08X", at, c0, c1);
+                            conker::netsession::log(text);
+                            scope_lines++;
+                            dump_pointed(c0, c1);
+                            if ((c0 >> 24) == 0xDF || ((c0 >> 24) == 0xDE && (c0 & 0x00FF0000u) != 0)) {
+                                break;
+                            }
+                        }
+                    }
+                }
             }
             if (dump_hud && dumped < 2500 && (nested || inside(any_hud_segments, address))) {
                 char line[80];

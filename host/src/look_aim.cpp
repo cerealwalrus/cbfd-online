@@ -123,6 +123,13 @@ namespace {
     float look_settle[aim_players] = {};
     // Whether the first stage's target has been followed from the aim since the stage began (conker_look_stage_one).
     bool stage_one_followed[aim_players] = {};
+    // Swap Sticks' view yaw as each player's view was last built, the frame, and its turn from the frame before (conker_look_view).
+    struct ViewTurn {
+        float yaw = 0.0f, step = 0.0f;
+        uint32_t frame = 0;
+        bool have = false;
+    };
+    ViewTurn view_turn[aim_players];
     int look_stage_two_frames[aim_players] = {};
     // An angle's difference, -180 to 180.
     float angle_difference(float to, float from) {
@@ -562,7 +569,9 @@ extern "C" void conker_look_view(uint8_t* rdram, recomp_context* ctx) {
 #if defined(CONKER_RT64)
     const gpr camera = ctx->r16;
     const int player = camera_player(rdram, camera);
+    int previous_stage = 0;
     if (player >= 0) {
+        previous_stage = look_stage_seen[player];
         look_stage_seen[player] = (int)MEM_H(0x73C, camera);
     }
     // Online, this machine's player's look, its first 45 frames each time (the view's movement after R, for the logs).
@@ -597,11 +606,26 @@ extern "C" void conker_look_view(uint8_t* rdram, recomp_context* ctx) {
         return;
     }
     constexpr float degrees_to_radians = 3.14159265358979f / 180.0f;
-    const float aim_yaw = swap_view_yaw_set[player] ? swap_view_yaw[player] : read_float(rdram, camera, current_yaw);
+    float aim_yaw = swap_view_yaw_set[player] ? swap_view_yaw[player] : read_float(rdram, camera, current_yaw);
     swap_view_yaw_set[player] = false;
-    const float yaw = (270.0f - aim_yaw) * degrees_to_radians;
     // (online every machine does this for every player's camera, so it has to come out the same on all of them: det_math.hpp)
     const bool online = conker::netsession::active();
+    // 0.9.61: online, the frame R-Look's first stage ends, the view goes on turning as it did the frame before. The game skips the look's
+    // update that frame (0x151203FC), so with the stick held the view stood still or went back about 5 degrees, and the next frame jumped
+    // 20 to 24 to the aim (0.9.60's [look] lines, every look with the stick held). The frame after, it's the game's again.
+    {
+        ViewTurn& turn = view_turn[player];
+        const uint32_t frame_now = conker::netsession::frame();
+        const bool continuing = turn.have && frame_now == turn.frame + 1;
+        if (online && continuing && previous_stage == 1 && (int)MEM_H(0x73C, camera) == 2) {
+            aim_yaw = turn.yaw + turn.step;
+        }
+        turn.step = continuing ? angle_difference(aim_yaw, turn.yaw) : 0.0f;
+        turn.yaw = aim_yaw;
+        turn.frame = frame_now;
+        turn.have = true;
+    }
+    const float yaw = (270.0f - aim_yaw) * degrees_to_radians;
     write_float(rdram, camera, 0x2E0, ex + (online ? conker::det::cos(yaw) : std::cos(yaw)) * across);
     write_float(rdram, camera, 0x2E8, ez + (online ? conker::det::sin(yaw) : std::sin(yaw)) * across);
 #endif
