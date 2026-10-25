@@ -108,7 +108,7 @@ extern "C" void conker_net_pause_hook(uint8_t* rdram, recomp_context* ctx, int w
 // once the logos (scene 0x25, phase 0xB) have run 10 frames, the bar (scene 0x1D) is asked for instead of the chainsaw opening, and once
 // it has loaded, what the opening's end leaves behind is set. Hooks at func_151DE6D4's and func_15007A70's returns (conker.toml). Every
 // machine does it at the same frame (the game's own frame counts), so they stay the same; with the mod as well, the first to ask wins.
-// The host's controller then takes the menus to the multiplayer one (net_session.cpp, the boot's menus).
+// (0.9.75's presses of the host's A in the bar, to go on to the multiplayer menu, are gone in 0.9.76: they started a one-player game.)
 extern "C" void func_1501C730(uint8_t* rdram, recomp_context* ctx);
 
 namespace {

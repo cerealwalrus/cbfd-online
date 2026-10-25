@@ -3185,31 +3185,6 @@ void conker::netsession::on_port_read(int port) {
     else {
         diag_check_frame(f);
     }
-    // 0.9.75: online, the host's controller takes the menus to the multiplayer one after the boot (the intro skipped, net_menu.cpp): in the
-    // bar (scene 0x1D, phase 3), A every 40 frames (6 down) opens the main menu, and on its first item (+0x41 of gGameState 0, the menu
-    // item, +0x42, 0) picks the multiplayer one (0.9.73's log: A there made the item 3, the multiplayer menu's Back). Done once the item is
-    // 3 or more, or if the host presses a button there himself, or after a minute in the bar. What it presses travels as the host's own.
-    if (is_host && ram != nullptr && !dedicated) {
-        static bool auto_menu_done = false;
-        static uint32_t bar_frames = 0;
-        const auto rd8u = [&](uint32_t a) { return (unsigned)ram[(a ^ 3u) & 0x7FFFFFu]; };
-        const auto rd32u = [&](uint32_t a) { return (uint32_t)((rd8u(a) << 24) | (rd8u(a + 1) << 16) | (rd8u(a + 2) << 8) | rd8u(a + 3)); };
-        if (!auto_menu_done && rd8u(0x800BE616u) == 0 && rd32u(0x800BE9F0u) == 0x1Du && rd8u(0x800E0B94u) == 3) {
-            const uint32_t state = rd32u(0x8008FDD4u);
-            bar_frames++;
-            if ((state >> 24) != 0x80) {
-                // (not yet)
-            } else if (rd8u(state + 0x42) >= 3) {
-                auto_menu_done = true;
-                log_line("[boot] f=%u online: at the multiplayer menu", frames_started);
-            } else if ((buttons & 0xFFFFu) != 0 || bar_frames > 1800) {
-                auto_menu_done = true;
-                log_line("[boot] f=%u online: the menus left to the host (%s)", frames_started, bar_frames > 1800 ? "a minute in the bar" : "a button pressed");
-            } else if (rd8u(state + 0x41) == 0 && (bar_frames % 40) < 6) {
-                buttons |= 0x8000;
-            }
-        }
-    }
     PlayerInput mine;
     mine.plugged = plugged ? 1 : 0;
     mine.buttons = buttons;
