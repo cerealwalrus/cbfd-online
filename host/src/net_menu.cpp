@@ -17,6 +17,8 @@
 
 #include <atomic>
 #include <cstdint>
+#include <cstdio>
+#include <cstring>
 
 #include "recomp.h"
 
@@ -159,4 +161,84 @@ extern "C" void conker_online_boot_scene(uint8_t* rdram, recomp_context* ctx) {
         MEM_B(0x2C, (gpr)(int32_t)state) = 5;
     }
     conker::netsession::log("[boot] online: the bar loaded");
+}
+
+
+// 0.9.78: online, on from the bar to the multiplayer menu (the barrels: BACK, RACE, TANK, ...), by the game's own state and no
+// presses. Hook at func_151DE8F0's entry (the bar's phase, 3), on every machine at the same frame of the game, so they stay the same:
+//   1. Conker's walk into the bar is a cutscene (D_800C35EA 1): the bar's own skip of it (D_8008FD84, what any button there sets,
+//      func_1501E05C) is set.
+//   2. Once the menu is up and still (the bar's setup done, D_8008FDA4 5 on; zoomed out, gs+8 0, not zooming, gs+0xC 0, not turning,
+//      gs+4 0; the one-player menu, gs+0x3E 0) for 10 frames: what func_151E6C1C does when the MULTI barrel (item 0) has been zoomed
+//      into (gs+8 1, gs+0x2B 0): gs+0x3E 1, gs+8 D_800ABA88, gs+0xC -D_8008FF90 (zooming out), gs+0x2A 1, and the game zooms out to the
+//      multiplayer barrels on its own. With the music the zoom into MULTI starts (func_1000D96C, D_800AB908's first track,
+//      D_800E0A97 the one playing), as the A on MULTI does.
+// Once a game start; a soft reset or the way back from a match is left to the player.
+extern "C" void func_1000D96C(uint8_t* rdram, recomp_context* ctx);
+
+namespace {
+    bool boot_multi_done = false;
+    bool boot_walk_skipped = false;
+    int boot_menu_still = 0;
+    float boot_float(uint8_t* rdram, uint32_t address) {
+        const uint32_t word = (uint32_t)MEM_W(0, (gpr)(int32_t)address);
+        float value;
+        std::memcpy(&value, &word, 4);
+        return value;
+    }
+}
+
+extern "C" void conker_online_boot_multi(uint8_t* rdram, recomp_context* ctx) {
+    if (!conker::netsession::active() || !boot_bar_set_up || boot_multi_done) {
+        return;
+    }
+    if ((int32_t)MEM_W(0, (gpr)(int32_t)0x800BE9F0) != 0x1D || (uint8_t)MEM_BU(0, (gpr)(int32_t)0x800E0B94) != 3) {
+        return;
+    }
+    const uint32_t state = (uint32_t)MEM_W(0, (gpr)(int32_t)0x8008FDD4);
+    if ((state >> 24) != 0x80) {
+        return;
+    }
+    const gpr gs = (gpr)(int32_t)state;
+    if ((uint8_t)MEM_BU(0, (gpr)(int32_t)0x800C35EA) == 1) {
+        boot_menu_still = 0;
+        if (!boot_walk_skipped && MEM_B(0, (gpr)(int32_t)0x8008FD84) == 0) {
+            boot_walk_skipped = true;
+            MEM_B(0, (gpr)(int32_t)0x8008FD84) = 1;
+            conker::netsession::log("[boot] online: the walk into the bar skipped");
+        }
+        return;
+    }
+    const bool still = (uint8_t)MEM_BU(0, (gpr)(int32_t)0x8008FDA4) >= 5 && MEM_B(0x3E, gs) == 0 &&
+        boot_float(rdram, state + 0x8) == 0.0f && boot_float(rdram, state + 0xC) == 0.0f && boot_float(rdram, state + 0x4) == 0.0f;
+    boot_menu_still = still ? boot_menu_still + 1 : 0;
+    if (boot_menu_still < 10) {
+        return;
+    }
+    boot_multi_done = true;
+    const float zoom = boot_float(rdram, 0x800ABA88);
+    const float speed = boot_float(rdram, 0x8008FF90);
+    uint32_t bits;
+    MEM_B(0x2B, gs) = 0;
+    MEM_B(0x3E, gs) = 1;
+    std::memcpy(&bits, &zoom, 4);
+    MEM_W(0x8, gs) = (int32_t)bits;
+    const float back = -speed;
+    std::memcpy(&bits, &back, 4);
+    MEM_W(0xC, gs) = (int32_t)bits;
+    MEM_B(0x2A, gs) = 1;
+    const uint8_t track = (uint8_t)MEM_BU(0, (gpr)(int32_t)0x800AB908);
+    const uint8_t playing = (uint8_t)MEM_BU(0, (gpr)(int32_t)0x800E0A97);
+    const recomp_context saved = *ctx;
+    ctx->r29 = (gpr)(int32_t)0x80F4C000;   // a stack of ours, as for the bar's request above
+    ctx->r4 = track;
+    ctx->r5 = playing;
+    ctx->r6 = 0;
+    func_1000D96C(rdram, ctx);
+    *ctx = saved;
+    MEM_B(0, (gpr)(int32_t)0x800E0A97) = (int8_t)track;
+    char line[160];
+    std::snprintf(line, sizeof(line), "[boot] online: on to the multiplayer menu (zoom %.3f, speed %.4f, music %u after %u)", zoom, speed,
+        (unsigned)track, (unsigned)playing);
+    conker::netsession::log(line);
 }
