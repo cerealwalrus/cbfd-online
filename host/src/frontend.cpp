@@ -270,6 +270,11 @@ namespace {
 #endif
         const int width = conker::frontend::window_width > 0 ? conker::frontend::window_width : 1600;
         const int height = conker::frontend::window_height > 0 ? conker::frontend::window_height : 900;
+        // 0.10.5: windowed, the window opens maximized (1600 x 900 is its size when it's restored). Not with --window WxH, which asks
+        // for that size; in Fullscreen RT64 makes it full screen once it's up, as before.
+        if (conker::frontend::window_width <= 0 || conker::frontend::window_height <= 0) {
+            flags |= SDL_WINDOW_MAXIMIZED;
+        }
         window = SDL_CreateWindow(conker::window_title, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
             width, height, flags);
         if (window == nullptr) {
