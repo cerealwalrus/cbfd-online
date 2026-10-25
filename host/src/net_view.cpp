@@ -1014,8 +1014,8 @@ namespace {
                         address + 16 < range.to && ((uint32_t)MEM_W(8, (gpr)(int32_t)address) >> 24) == 0xE1 && ((uint32_t)MEM_W(16, (gpr)(int32_t)address) >> 24) == 0xF1;
                     if (scope_piece) {
                         const float own_h = own_b - own_t, full_h = bottom - top;
-                        // (0.9.69: 85% of that, as the test asked: a little smaller than the whole view's size)
-                        constexpr float scope_scale = 0.85f;
+                        // (0.9.69: 85% of that, as the test asked: a little smaller than the whole view's size; 0.9.70: 85% of that again)
+                        constexpr float scope_scale = 0.85f * 0.85f;
                         const float k = (own_h > 1.0f && full_h > own_h) ? full_h / own_h * scope_scale : 1.0f;
                         if (k > 1.0f) {
                             const float ocx = (own_l + own_r) * 2.0f, ocy = (own_t + own_b) * 2.0f;   // the camera's middle, in quarter pixels
