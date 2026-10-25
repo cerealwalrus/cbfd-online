@@ -1021,7 +1021,8 @@ namespace {
                     if (race_frame && std::fabs(cx - 0.5f * (left + right)) < 40.0f) {
                         // 0.9.92: the race's timer (its digits from 16 left of the middle, 13 above the middle row), right under the lap
                         // ("LAP 1/3", at the full view's top left from 9 in and 21 down): from 9 in and 34 down, at the left edge with it
-                        dx = (int32_t)std::lround(((left + 9.0f) - (0.5f * (left + right) - 16.0f)) * 4.0f);
+                        // (0.9.94: 1.75 further left: its first digit stood that far right of the lap's L and the lap times' first digits)
+                        dx = (int32_t)std::lround(((left + 7.25f) - (0.5f * (left + right) - 16.0f)) * 4.0f);
                         dy = (int32_t)std::lround(((top + 34.0f) - (0.5f * (top + bottom) - 13.0f)) * 4.0f);
                         kind_name = "race timer";
                     }
