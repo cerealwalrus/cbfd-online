@@ -630,6 +630,7 @@ namespace {
         uint32_t extended_on_in = 0xFFFFFFFFu;   // the range RT64's extended GBI was enabled in (at a sync before the first rectangle)
         uint32_t skip_to = 0;                    // the words of an extended rectangle written over the game's, not looked at again
         int edge_rects = 0;
+        bool race_menu = false;   // 0.9.89: the race's track map has been seen in this frame, with the pause menu open
         for (const Range& range : ranges)
         for (uint32_t address = range.from; address < range.to; address += 8) {
             if (address < skip_to) {
@@ -905,7 +906,9 @@ namespace {
                 // (0.9.85: and the race's track map, a 64 x 64 picture in the same corner, the dots of the karts on it being the radar's: with
                 // the radar's size only it was left where the split screen has it, each camera's, so two maps showed, the dots apart from them)
                 int radar_camera = -1;
-                const bool radar_size = (width <= 34.5f && height <= 34.5f) || (!menu_open && width <= 66.5f && height <= 66.5f);
+                // (0.9.89: with the pause menu open, only a map of the map's own size, 56 to 66 square)
+                const bool radar_size = (width <= 34.5f && height <= 34.5f) ||
+                    (width <= 66.5f && height <= 66.5f && (!menu_open || (width >= 56.0f && height >= 56.0f)));
                 if (bar && players >= 2 && radar_size) {
                     for (int k = 0; k < players; k++) {
                         const uint32_t record = base + k * camera_size;
@@ -920,11 +923,45 @@ namespace {
                 const bool lives_digit = bar && op != 0xF6 && width <= 8.5f && height <= 9.5f && near_left;
                 const bool leave = bar && radar_camera < 0 && (op == 0xF6 || !(width <= 16.5f && height <= 5.5f && near_left)) && !lives_digit;
                 if (menu_open) {
+                    // 0.9.89: the race's pause. The race's HUD is drawn in the HUD's passes (the war's is drawn after the cameras', with
+                    // the health bars, and the pause hides it there): with the menu open each camera's lap ("LAP 1/3" and the bricks, at
+                    // its top left), place (at its top middle, over PAUSED) and timer (along its bottom, twice) stayed, the two maps too.
+                    // A frame with the race's track map (a 64 x 64 picture at a camera's top right, drawn before the HUD's passes) is the
+                    // race's: there they are hidden, for every camera, as the war's are, and the pause screen is left as it is.
+                    if (bar && radar_camera >= 0 && width >= 56.0f) {
+                        race_menu = true;
+                    }
+                    bool race_piece = false;
+                    if (race_menu && !bar) {
+                        for (int k = 0; k < players && !race_piece; k++) {
+                            const uint32_t record = base + k * camera_size;
+                            const float l = get_float(rdram, record, field_left), r = get_float(rdram, record, field_right);
+                            const float t = get_float(rdram, record, field_top), b = get_float(rdram, record, field_bottom);
+                            if (!in_rect(l, t, r, b)) {
+                                continue;
+                            }
+                            const float middle = 0.5f * (l + r);
+                            race_piece = (cx < l + 64.0f && cy < t + 32.0f) ||                         // the lap and the bricks
+                                (std::fabs(cx - middle) < 16.0f && cy < t + 14.0f) ||                  // the place
+                                (std::fabs(cx - middle) < 40.0f && cy > b - 14.0f);                    // the timer
+                        }
+                    }
                     if (bar && (radar_camera >= 0 || !leave)) {
                         hide = true;
                         kind_name = "menu: HUD hidden";
+                    } else if (race_piece) {
+                        hide = true;
+                        kind_name = "menu: race HUD hidden";
                     } else {
                         kind_name = "menu: left alone";
+                    }
+                    static int race_menu_logged = 0;
+                    if (race_menu && race_menu_logged < 120) {
+                        char line[160];
+                        std::snprintf(line, sizeof(line), "[net view] race pause rect %08X: %08X %08X (centre %g,%g, %gx%g)%s %s", address, w0, w1, cx, cy, width, height,
+                            bar ? " bar" : "", kind_name);
+                        conker::netsession::log(line);
+                        race_menu_logged++;
                     }
                 } else if (radar_camera >= 0) {
                     if (radar_camera == local) {
