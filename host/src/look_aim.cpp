@@ -848,6 +848,47 @@ void conker::look_aim::no_weapon_walk(uint8_t* rdram, int port, uint16_t* button
 }
 
 
+// Aiming: Swap Sticks online, the tommy gun's R-Look (kinds 0x38 and 0x3A, The Vault): of the C-buttons the left stick presses only C-Up
+// and C-Down walk him there, C-Left and C-Right don't (the test: forward and back, never to the side). Pressed to the side, the game
+// gets C-Up instead (with C-Down when pressed back as well), so he walks, and the way pressed is kept (gun_walk_dx, gun_walk_dy) for
+// conker_look_targets, which sets his moving angle to it from the view: he strafes, as with the other guns. From the frame's agreed
+// buttons and the game's memory, the same on every machine.
+std::atomic<int> gun_walk_dx[4], gun_walk_dy[4];
+std::atomic<bool> gun_walk_set[4];
+
+void conker::look_aim::gun_side_walk(uint8_t* rdram, int port, uint16_t* buttons) {
+#if defined(CONKER_RT64)
+    if (port < 0 || port >= 4) {
+        return;
+    }
+    gun_walk_set[port] = false;
+    const int dx = ((*buttons & 0x0001) ? 1 : 0) - ((*buttons & 0x0002) ? 1 : 0);
+    const int dy = ((*buttons & 0x0008) ? 1 : 0) - ((*buttons & 0x0004) ? 1 : 0);
+    if (dx == 0) {
+        return;
+    }
+    const uint32_t base = (uint32_t)MEM_W(0, (gpr)(int32_t)0x800DBFF0);
+    if ((base & 0xFF000000u) != 0x80000000u) {
+        return;
+    }
+    for (uint32_t i = 0; i < 4; i++) {
+        const gpr camera = (gpr)(int32_t)(base + i * 0x9A0);
+        if ((int)MEM_BU(0x23D, camera) != port) {
+            continue;
+        }
+        const uint8_t kind = MEM_BU(0x23E, camera);
+        if ((kind != 0x38 && kind != 0x3A) || MEM_H(0x73C, camera) != 2) {
+            continue;
+        }
+        gun_walk_dx[port] = dx;
+        gun_walk_dy[port] = dy;
+        gun_walk_set[port] = true;
+        *buttons = (uint16_t)((*buttons & ~0x000Fu) | (dy < 0 ? 0x0004u : 0x0008u));
+        return;
+    }
+#endif
+}
+
 int conker::look_aim::look_stage(int player) {
     return (player >= 0 && player < aim_players) ? look_stage_seen[player].load() : 0;
 }
@@ -1215,8 +1256,13 @@ extern "C" void conker_look_targets(uint8_t* rdram, recomp_context* ctx) {
         constexpr uint32_t c_up = 0x0008, c_down = 0x0004, c_left = 0x0002, c_right = 0x0001;
         // The buttons this camera's player holds (+0x36C points at them).
         const uint32_t held = (uint32_t)MEM_HU(0, (gpr)(int32_t)MEM_W(0x36C, ctx->r16));
-        const int dx = ((held & c_right) ? 1 : 0) - ((held & c_left) ? 1 : 0);
-        const int dy = ((held & c_up) ? 1 : 0) - ((held & c_down) ? 1 : 0);
+        int dx = ((held & c_right) ? 1 : 0) - ((held & c_left) ? 1 : 0);
+        int dy = ((held & c_up) ? 1 : 0) - ((held & c_down) ? 1 : 0);
+        // (the tommy gun's: the way pressed, not the C-Up it was turned into, gun_side_walk)
+        if (conker::netsession::active() && look_player >= 0 && look_player < 4 && gun_walk_set[look_player].load()) {
+            dx = gun_walk_dx[look_player].load();
+            dy = gun_walk_dy[look_player].load();
+        }
         if (dx != 0 || dy != 0) {
             // The way pressed from the view's forward, in facing units: 65536 to a turn, growing to the left, as the
             // view's yaw does (45 degrees right of the view is less 8192).

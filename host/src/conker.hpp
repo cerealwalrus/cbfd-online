@@ -169,6 +169,8 @@ namespace conker {
         // Swap Sticks online, no weapon: the C-buttons the left stick pressed (buttons, as agreed) turned into the game's own strafe,
         // facing set so it goes the way pressed from the view. Called for the game's read of the controller only.
         void no_weapon_walk(uint8_t* rdram, int port, uint16_t* buttons);
+        // Swap Sticks online, the tommy gun's R-Look: the left stick to the side walks him (C-Up for the game, the way pressed kept).
+        void gun_side_walk(uint8_t* rdram, int port, uint16_t* buttons);
         // What the last read of this machine's controller did (set by frontend.cpp), for net_session.cpp to send along.
         void set_sampled_swap(bool swapped);
         // R is held online but the game's look mode hasn't started (about a second): the right stick does nothing yet.
