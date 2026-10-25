@@ -227,50 +227,6 @@ namespace {
 
     // A copy of the matrix at `address` (N64 fixed point: 16 integer halves, then 16 fractions) with its first
     // column scaled, in our own memory; returns where the copy is.
-    // A 4 x 4 matrix's element (row, column) in the game's fixed point (16.16: the integer halves in the first 32 bytes, the fractions in
-    // the next 32, two elements to a word, the even column in the high half).
-    int32_t matrix_element(uint8_t* rdram, uint32_t matrix, int row, int column) {
-        const uint32_t at = (uint32_t)(row * 8 + (column / 2) * 4);
-        const uint32_t integer_word = (uint32_t)MEM_W(at, (gpr)(int32_t)matrix), fraction_word = (uint32_t)MEM_W(32 + at, (gpr)(int32_t)matrix);
-        return (column & 1) == 0 ? (int32_t)((integer_word & 0xFFFF0000u) | (fraction_word >> 16)) : (int32_t)((integer_word << 16) | (fraction_word & 0xFFFFu));
-    }
-    void set_matrix_element(uint8_t* rdram, uint32_t matrix, int row, int column, int32_t value) {
-        const uint32_t at = (uint32_t)(row * 8 + (column / 2) * 4);
-        uint32_t integer_word = (uint32_t)MEM_W(at, (gpr)(int32_t)matrix), fraction_word = (uint32_t)MEM_W(32 + at, (gpr)(int32_t)matrix);
-        if ((column & 1) == 0) {
-            integer_word = (integer_word & 0x0000FFFFu) | ((uint32_t)value & 0xFFFF0000u);
-            fraction_word = (fraction_word & 0x0000FFFFu) | ((uint32_t)value << 16);
-        } else {
-            integer_word = (integer_word & 0xFFFF0000u) | ((uint32_t)value >> 16);
-            fraction_word = (fraction_word & 0xFFFF0000u) | ((uint32_t)value & 0xFFFFu);
-        }
-        MEM_W(at, (gpr)(int32_t)matrix) = (int32_t)integer_word;
-        MEM_W(32 + at, (gpr)(int32_t)matrix) = (int32_t)fraction_word;
-    }
-
-    // A perspective projection's near plane moved out to at least `near_at_least` (0.9.72, the crossbow: see below): its z column worked out
-    // again for the new near plane and the same far one (guPerspective's: z' = z (n + f) / (n - f) + 2 n f / (n - f), w' = -z, all times its
-    // scale). Returns the near plane it had (0 if not a perspective projection).
-    float push_near_plane(uint8_t* rdram, uint32_t matrix, float near_at_least) {
-        const double scale = -(double)matrix_element(rdram, matrix, 2, 3) / 65536.0;
-        if (scale <= 0.0 || matrix_element(rdram, matrix, 3, 3) != 0) {
-            return 0.0f;
-        }
-        const double a = (double)matrix_element(rdram, matrix, 2, 2) / 65536.0 / scale, b = (double)matrix_element(rdram, matrix, 3, 2) / 65536.0 / scale;
-        if (std::fabs(a - 1.0) < 1e-9 || std::fabs(a + 1.0) < 1e-9) {
-            return 0.0f;
-        }
-        const double n = b / (a - 1.0), f = b / (a + 1.0);
-        if (!(n > 0.0) || !(f > n) || n >= (double)near_at_least || f <= (double)near_at_least * 2.0) {
-            return (float)n;
-        }
-        const double n2 = (double)near_at_least;
-        const double a2 = (n2 + f) / (n2 - f), b2 = 2.0 * n2 * f / (n2 - f);
-        set_matrix_element(rdram, matrix, 2, 2, (int32_t)std::lround(a2 * scale * 65536.0));
-        set_matrix_element(rdram, matrix, 3, 2, (int32_t)std::lround(b2 * scale * 65536.0));
-        return (float)n;
-    }
-
     uint32_t scaled_matrix_copy(uint8_t* rdram, uint32_t address, float scale_x, float scale_y) {
         const uint32_t copy = 0x80000000u | (matrix_start + (matrix_next % matrix_slots) * matrix_slot);
         matrix_next++;
@@ -861,19 +817,8 @@ namespace {
                 // the projection matrix in this machine's camera's record, loaded by its 3D pass: a copy, widened
                 const uint32_t projection = scaled_matrix_copy(rdram, w1, scale_x, scale_y);
                 MEM_W(4, (gpr)(int32_t)address) = (int32_t)projection;
-                // 0.9.72: with the crossbow (this machine's player's look kind 0x18), its model sits just before and below the eye, out of the
-                // split screen's short half but in the full view's taller one: seen through the sight (and over the view) where a Nintendo 64
-                // shows nothing of it. Nothing nearer than 32 units is drawn then (the third person's camera is 75 from Conker).
-                if (local_kind == 0x18) {
-                    const float near_was = push_near_plane(rdram, projection, 32.0f);
-                    static int near_logged = 0;
-                    if (near_logged < 6) {
-                        char line[120];
-                        std::snprintf(line, sizeof(line), "[net view] crossbow: the projection's near plane was %.2f, now at least 32", near_was);
-                        conker::netsession::log(line);
-                        near_logged++;
-                    }
-                }
+                // (0.9.72 moved this projection's near plane out to 32 with the crossbow out, for its model seen through the sight: the
+                // game's is 55 already, so it did nothing: gone in 0.9.79. What showed the model was conker_player_visibility's override, 0.9.77.)
                 matrices++;
             }
             // The HUD's rectangles (icons, digits, bars, the aiming reticle's brackets) are placed in the game's 292 x 216
