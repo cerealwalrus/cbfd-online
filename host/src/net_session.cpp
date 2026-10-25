@@ -2915,6 +2915,40 @@ void conker::netsession::on_port_read(int port) {
                 log_line("[menu] f=%u menu variables: quit-state(800E0B94)=%d picked(8008FE2C)=%d owner(800E0A98)=%d fd74=%d fd9c=%d arena=%d open=%d", frames_started, rd8(0x800E0B94u), rd8(0x8008FE2Cu), rd8(0x800E0A98u),
                     rd8(0x8008FD74u), rd8(0x8008FD9Cu), rd8(0x800BE616u), (int)open);
             }
+            // (0.9.71: the boot's menus, to take an online game straight to the multiplayer menu: out of a match, whenever the scene, the
+            // phase, the game state's menu bytes (+0x38 to +0x4F of gGameState, D_8008FDD4; +0x42 the menu item) or this machine's buttons
+            // change; and the menu items' table (D_800AB68C, 10 bytes each) once)
+            if (ram != nullptr && rd8(0x800BE616u) == 0) {
+                const auto rd32 = [&](uint32_t a) { return (uint32_t)(((uint32_t)(uint8_t)rd8(a) << 24) | ((uint32_t)(uint8_t)rd8(a + 1) << 16) | ((uint32_t)(uint8_t)rd8(a + 2) << 8) | (uint32_t)(uint8_t)rd8(a + 3)); };
+                static bool table_logged = false;
+                if (!table_logged && rd8(0x800E0B94u) == 3) {
+                    table_logged = true;
+                    for (uint32_t row = 0; row < 120; row++) {
+                        char hex[64];
+                        int at = 0;
+                        for (uint32_t k = 0; k < 10; k++) {
+                            at += std::snprintf(hex + at, sizeof(hex) - at, "%02X ", (unsigned)(uint8_t)rd8(0x800AB68Cu + row * 10 + k));
+                        }
+                        log_line("[boot menu] item %u: %s", row, hex);
+                    }
+                }
+                static std::string last_boot;
+                const uint32_t gs = rd32(0x8008FDD4u);
+                char state[256];
+                int at = std::snprintf(state, sizeof(state), "scene %02X phase %d fd80 %d gs %08X:", rd32(0x800BE9F0u), rd8(0x800E0B94u), rd8(0x8008FD80u), gs);
+                if ((gs >> 24) == 0x80 && (gs & 0xFFFFFFu) < 0x7FFF00u) {
+                    for (uint32_t k = 0x38; k < 0x50; k++) {
+                        at += std::snprintf(state + at, sizeof(state) - at, " %02X", (unsigned)(uint8_t)rd8(gs + k));
+                    }
+                }
+                const std::string now = state;
+                static uint16_t last_buttons = 0;
+                if (now != last_boot || buttons != last_buttons) {
+                    last_boot = now;
+                    last_buttons = buttons;
+                    log_line("[boot menu] f=%u buttons %04X %s", frames_started, (unsigned)buttons, state);
+                }
+            }
             if (ram != nullptr && (pause_flag != last_pause || pause_req != last_req || wait != last_wait)) {
                 log_line("[menu] f=%u game pause=%d request=%d unpause-wait=%d menu-open=%d hold-off=%d start-held=%d", frames_started, pause_flag, pause_req, wait, (int)open, (int)hold_off, (int)start);
                 last_pause = pause_flag;
