@@ -785,27 +785,41 @@ uint8_t conker::look_aim::sampled_look_flags() {
 
 // The stick's yaw: target - stick x * scale, stored at 0x15120A14 (one state, which then goes on
 // through the next one too) and at 0x15120A44 (every state). Turned around, it's a +.
+#if defined(CONKER_RT64)
+namespace {
+    // Online, how much faster the stick turns the aim in R-Look than the game's own (4 degrees a frame across and 1.9 up and down at full
+    // tilt): only the target the stick moves, so the camera still eases after it as on a Nintendo 64. The same for every player on every
+    // machine (the game's state has to be), so it's not a setting.
+    constexpr float online_look_speed = 1.5f;
+    float look_speed() {
+        return conker::netsession::active() ? online_look_speed : 1.0f;
+    }
+}
+#endif
+
 extern "C" void conker_look_stick_yaw_a(uint8_t* rdram, recomp_context* ctx) {
 #if defined(CONKER_RT64)
-    if (look_flag(rdram, ctx->r16, look_turn_x)) {
-        ctx->f6.fl = ctx->f8.fl + ctx->f18.fl;  // 0x15120A10: sub.s $f6, $f8, $f18
-    }
+    // 0x15120A10: sub.s $f6, $f8, $f18 (the target less the stick's turn; turned around, plus)
+    const float turn = ctx->f18.fl * look_speed();
+    ctx->f6.fl = look_flag(rdram, ctx->r16, look_turn_x) ? ctx->f8.fl + turn : ctx->f8.fl - turn;
 #endif
 }
 
 extern "C" void conker_look_stick_yaw_b(uint8_t* rdram, recomp_context* ctx) {
 #if defined(CONKER_RT64)
-    if (look_flag(rdram, ctx->r16, look_turn_x)) {
-        ctx->f18.fl = ctx->f4.fl + ctx->f10.fl;  // 0x15120A40: sub.s $f18, $f4, $f10
-    }
+    // 0x15120A40: sub.s $f18, $f4, $f10
+    const float turn = ctx->f10.fl * look_speed();
+    ctx->f18.fl = look_flag(rdram, ctx->r16, look_turn_x) ? ctx->f4.fl + turn : ctx->f4.fl - turn;
 #endif
 }
 
 // The stick's pitch: target + stick y * scale, stored at 0x15120A98. Turned around, it's a -.
 extern "C" void conker_look_stick_pitch(uint8_t* rdram, recomp_context* ctx) {
 #if defined(CONKER_RT64)
-    if (look_flag(rdram, ctx->r16, look_turn_y)) {
-        ctx->f10.fl = ctx->f6.fl - ctx->f8.fl;  // 0x15120A94: add.s $f10, $f6, $f8
+    {
+        // 0x15120A94: add.s $f10, $f6, $f8 (the target plus the stick's turn; turned around, less)
+        const float turn = ctx->f8.fl * look_speed();
+        ctx->f10.fl = look_flag(rdram, ctx->r16, look_turn_y) ? ctx->f6.fl - turn : ctx->f6.fl + turn;
     }
     if (gun_aim_online(rdram, ctx->r16)) {
         // ($f6 the target before the stick's turn, $f10 after it.)
