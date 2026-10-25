@@ -26,7 +26,7 @@
 #include "conker.hpp"
 
 namespace {
-    enum class Action { Show, Host, Join, Start, Leave, Back, Players, Delay, Input, Update, Server };
+    enum class Action { Show, Host, Join, Start, Leave, Back, Players, Delay, Input, Update };
 
     std::mutex action_mutex;
     std::deque<Action> actions;
@@ -113,8 +113,6 @@ namespace {
     recompui::Button* delay_button = nullptr;
     recompui::Button* input_button = nullptr;
     recompui::Button* start_button = nullptr;
-    recompui::Button* server_button = nullptr;
-    recompui::Label* server_label = nullptr;
     recompui::Label* title_label = nullptr;
     recompui::Label* message_label = nullptr;
     recompui::Label* info_label = nullptr;
@@ -133,10 +131,6 @@ namespace {
         players_button->set_text("Players: " + std::to_string(players));
         delay_button->set_text(delay_frames <= 0 ? std::string("Input delay: Auto") : "Input delay: " + std::to_string(delay_frames) + (delay_frames == 1 ? " frame" : " frames"));
         input_button->set_text(input_name());
-    }
-
-    void refresh_server_button() {
-        server_button->set_text(conker::dserver::running() ? "Stop dedicated server" : "Start dedicated server");
     }
 
     recompui::Label* make_label(recompui::Element* parent, const std::string& text, recompui::LabelStyle style, float margin_bottom = 0.0f) {
@@ -260,11 +254,6 @@ namespace {
         make_button(setup_buttons, "Back", recompui::ButtonStyle::Tertiary, Action::Back);
         context.set_autofocus_element(host_button);
 
-        make_label(setup_page, "Dedicated server: runs the game on this computer with no player, headless. Uses the port, players and delay above; everybody (you too) joins it with Join. It restarts after every session and stays up until you stop it or close the launcher.", recompui::LabelStyle::Annotation);
-        recompui::Container* server_row = make_row(setup_page);
-        server_button = make_button(server_row, "", recompui::ButtonStyle::Secondary, Action::Server);
-        refresh_server_button();
-        server_label = make_label(setup_page, "", recompui::LabelStyle::Small);
 
         // --- the lobby page: the players ---
         lobby_page = context.create_element<recompui::Element>(panel);
@@ -450,28 +439,6 @@ void conker::netlobby::update(const std::u8string& game_id) {
                     conker::netsession::lobby_leave();
                     show_page(false);
                     break;
-                case Action::Server: {
-                    if (conker::dserver::running()) {
-                        conker::dserver::stop();
-                        server_label->set_text("Server stopped.");
-                    }
-                    else {
-                        int server_port = std::atoi(port_text.c_str());
-                        if (server_port < 1 || server_port > 65535) {
-                            server_port = 47000;
-                        }
-                        save_address();
-                        std::string error;
-                        if (conker::dserver::start(conker::roms::stored_rom_path().string(), server_port, players, delay_frames, &error)) {
-                            server_label->set_text("Server starting on port " + std::to_string(server_port) + ". Join it with address 127.0.0.1 (this computer), or your public address for others.");
-                        }
-                        else {
-                            server_label->set_text(error);
-                        }
-                    }
-                    refresh_server_button();
-                    break;
-                }
                 case Action::Update:
                     update_button->set_display(recompui::Display::None);
                     conker::updates::start_install();

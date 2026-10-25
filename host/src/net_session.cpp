@@ -1947,7 +1947,8 @@ bool conker::netsession::init(uint8_t* rdram, bool (*local_sampler)(uint16_t*, f
     }
     const std::string host_port = get_env("CONKER_NET_HOST");
     const std::string join = get_env("CONKER_NET_JOIN");
-    dedicated = !host_port.empty() && !get_env("CONKER_NET_DEDICATED").empty();
+    // (0.9.83: the dedicated server is gone, launcher and --dedicated both; what is left of it here never turns on)
+    dedicated = false;
     if (host_port.empty() && join.empty()) {
         return false;
     }

@@ -414,18 +414,6 @@ namespace conker {
         Status status();
     }
 
-    // dedicated_server.cpp: a headless server (see docs/dedicated-server.md) that restarts after every
-    // session and stays up until it is closed.
-    namespace dserver {
-        // Launcher: starts / stops a server on this computer (stops with the launcher, too).
-        bool start(const std::string& rom_path, int port, int players, int delay, std::string* error);
-        void stop();
-        bool running();
-        // --dedicated from the command line: keeps the game running as a child, restarting it when it ends.
-        // Returns an exit code, or -1 where there is no supervisor (run the game in this process).
-        int supervise();
-    }
-
     // net_lobby.cpp: the launcher's Online screen (the lobby), see net_session.cpp's lobby functions.
     namespace netlobby {
         // The Online option was chosen (from any thread).
