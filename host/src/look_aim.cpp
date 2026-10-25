@@ -602,6 +602,7 @@ extern "C" void conker_shotgun_laser_walk(uint8_t* rdram, recomp_context* ctx) {
 // look-at point is turned about the eye to the aim's direction across the ground: the view's yaw (from the eye
 // toward it, atan2 of z over x) is 270 degrees less the look mode's (+0x37C; measured, within 1.4 degrees
 // standing still). Its distance and height stay, and so does the eye.
+extern std::atomic<int> walk_dx[4], walk_dy[4];
 extern "C" void conker_look_view(uint8_t* rdram, recomp_context* ctx) {
 #if defined(CONKER_RT64)
     const gpr camera = ctx->r16;
@@ -652,6 +653,20 @@ extern "C" void conker_look_view(uint8_t* rdram, recomp_context* ctx) {
                 MEM_H(0x7A, knocked) = (int16_t)kept_face[record];
                 MEM_H(0x76, knocked) = (int16_t)(uint16_t)(kept_face[record] + 0x8000u);
             }
+        }
+    }
+    // 0.10.7: no weapon, the look's first stage, walking (no_weapon_walk gives the game C-Left or C-Right): his moving angle is the way
+    // pressed from his facing. conker_look_targets sets it in the second stage, but the game doesn't run it in the first (0.10.6's
+    // [look] lines: the moving angle turned 0xB00 a frame to the strafe's, a quarter turn left, and he strafed left all through the
+    // stage). Set here, after the game's turn of it, as conker_look_targets is in the second stage. Every player's camera on every
+    // machine, from the game's memory and the frame's agreed buttons.
+    if (conker::netsession::active() && player >= 0 && player < 4 && swap_state(player) && MEM_BU(0x23E, camera) == 0x00 && MEM_H(0x73C, camera) == 1) {
+        const int wdx = walk_dx[player].load();
+        const int wdy = walk_dy[player].load();
+        const gpr walker = (gpr)(int32_t)MEM_W(0x3D0, camera);
+        if ((wdx != 0 || wdy != 0) && ((uint32_t)walker & 0xFF000000u) == 0x80000000u) {
+            const int32_t offset = (int32_t)std::lround(conker::det::atan2_d(-(double)wdx, (double)wdy) * 32768.0 / 3.14159265358979);
+            MEM_H(0x76, walker) = (int16_t)(uint16_t)((uint32_t)MEM_HU(0x7A, walker) + (uint32_t)offset);
         }
     }
     // 0.9.62: online, R-Look's handover from its first stage to its second, for every player's camera on every machine (the view is built
@@ -736,9 +751,10 @@ extern "C" void conker_look_view(uint8_t* rdram, recomp_context* ctx) {
             after_logged++;
             const gpr after_conker = (gpr)(int32_t)MEM_W(0x3D0, camera);
             if (((uint32_t)after_conker & 0xFF000000u) == 0x80000000u) {
-                char line[160];
-                std::snprintf(line, sizeof(line), "[look] f=%u after the look %d: kind=%02X face=%04X move=%04X yaw=%.2f", conker::netsession::frame(), after_logged,
-                    (unsigned)MEM_BU(0x23E, camera), (unsigned)MEM_HU(0x7A, after_conker), (unsigned)MEM_HU(0x76, after_conker), read_float(rdram, camera, current_yaw));
+                char line[200];
+                std::snprintf(line, sizeof(line), "[look] f=%u after the look %d: kind=%02X face=%04X move=%04X yaw=%.2f state=%02X anim=%X", conker::netsession::frame(), after_logged,
+                    (unsigned)MEM_BU(0x23E, camera), (unsigned)MEM_HU(0x7A, after_conker), (unsigned)MEM_HU(0x76, after_conker), read_float(rdram, camera, current_yaw),
+                    (unsigned)MEM_BU(0x4, after_conker), (unsigned)(uint32_t)MEM_W(0x84, after_conker));
                 conker::netsession::log(line);
             }
         }
@@ -751,10 +767,11 @@ extern "C" void conker_look_view(uint8_t* rdram, recomp_context* ctx) {
             const gpr look_aim_state = (gpr)(int32_t)MEM_W(0x3D4, camera);
             const bool look_conker_ok = ((uint32_t)look_conker & 0xFF000000u) == 0x80000000u;
             const bool look_aim_ok = ((uint32_t)look_aim_state & 0xFF000000u) == 0x80000000u;
-            char line[460];
+            char line[500];
             std::snprintf(line, sizeof(line),
-                "[look] f=%u n=%d stage=%d kind=%02X 23C=%u face=%04X aim=%d move=%04X yaw=%.2f->%.2f pitch=%.2f->%.2f a=%.1f->%.1f b=%.1f->%.1f eye=%.1f,%.1f,%.1f at=%.1f,%.1f,%.1f",
+                "[look] f=%u n=%d stage=%d kind=%02X 23C=%u state=%02X anim=%X face=%04X aim=%d move=%04X yaw=%.2f->%.2f pitch=%.2f->%.2f a=%.1f->%.1f b=%.1f->%.1f eye=%.1f,%.1f,%.1f at=%.1f,%.1f,%.1f",
                 conker::netsession::frame(), frames_logged, stage, (unsigned)MEM_BU(0x23E, camera), (unsigned)MEM_BU(0x23C, camera),
+                look_conker_ok ? (unsigned)MEM_BU(0x4, look_conker) : 0u, look_conker_ok ? (unsigned)(uint32_t)MEM_W(0x84, look_conker) : 0u,
                 look_conker_ok ? (unsigned)MEM_HU(0x7A, look_conker) : 0u, look_aim_ok ? (int)MEM_H(0x12, look_aim_state) : 0,
                 look_conker_ok ? (unsigned)MEM_HU(0x76, look_conker) : 0u,
                 read_float(rdram, camera, current_yaw), read_float(rdram, t0, target_yaw),
