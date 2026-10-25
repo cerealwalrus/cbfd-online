@@ -286,3 +286,15 @@ extern "C" void conker_online_boot_black(uint8_t* rdram, recomp_context* ctx) {
     }
     MEM_B(0, (gpr)(int32_t)0x800E0B96) = (int8_t)0xFF;
 }
+
+// 0.9.81: no controller during the black screen. Held from the start of an online game until the multiplayer barrels are up (or the
+// 900 frames are out), and only in the logos' and the bar's scenes (0x25, 0x1D), so a boot that went some other way is never left
+// without controllers. It goes by the game's own state, the same on every machine at the same read.
+bool conker::netmenu::boot_screen_held(uint8_t* rdram) {
+    // (no netsession::active() here: net_session.cpp's input calls this with its lock held, online only)
+    if (rdram == nullptr || boot_black_released) {
+        return false;
+    }
+    const int32_t scene = (int32_t)MEM_W(0, (gpr)(int32_t)0x800BE9F0);
+    return scene == 0x25 || scene == 0x1D;
+}

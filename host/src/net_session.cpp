@@ -3533,6 +3533,12 @@ bool conker::netsession::input(int port, bool* plugged, uint16_t* buttons, float
     }
     *x = in.x;
     *y = in.y;
+    // 0.9.81: nothing from any controller while the boot's black screen is held, on the way to the multiplayer menu (net_menu.cpp).
+    if (ram != nullptr && conker::netmenu::boot_screen_held(ram)) {
+        *buttons = 0;
+        *x = 0.0f;
+        *y = 0.0f;
+    }
     return true;
 }
 
