@@ -121,6 +121,8 @@ namespace {
     // the next 10) the view is on the aim again. Worked out from the game's memory on every machine for every player's camera, frame
     // by frame, so the same on all of them.
     float look_settle[aim_players] = {};
+    // Whether the first stage's target has been followed from the aim since the stage began (conker_look_stage_one).
+    bool stage_one_followed[aim_players] = {};
     int look_stage_two_frames[aim_players] = {};
     // An angle's difference, -180 to 180.
     float angle_difference(float to, float from) {
@@ -439,6 +441,9 @@ extern "C" void conker_look_stage_one(uint8_t* rdram, recomp_context* ctx) {
             look_settle[player] = 0.0f;
             look_stage_two_frames[player] = 0;
         }
+        if (player >= 0 && MEM_H(0x73C, camera) != 1) {
+            stage_one_followed[player] = false;
+        }
     }
     if (MEM_H(0x73C, camera) != 1) {
         return;
@@ -455,9 +460,22 @@ extern "C" void conker_look_stage_one(uint8_t* rdram, recomp_context* ctx) {
         // frame (the second stage's own sum, 0x15120908: Conker's facing less the aim angle and a quarter turn) instead of staying where
         // it was when R was pressed: so the stick can aim from the start, the view swinging after it, and nothing is left to catch up
         // with a jump as the stage ends. Only the target: the view is the game's spring's.
+        // 0.9.60: and the view turns with the aim as the stick turns it, its spring only swinging it in from where it was: following the
+        // moving target alone, the spring was up to 30 degrees behind it with the stick held, and the second stage's first frame put the view
+        // on the aim at once (0.9.59's [look] lines: 40 to 60 degrees in a frame, the jump). Each frame the target's turn since the last is
+        // added to the view's yaw as well. Not the stage's first frame: the target there is the game's, worked out when R was pressed.
         if (gun_kind) {
             const int32_t units = (int32_t)MEM_HU(0x7A, conker) - (int32_t)MEM_H(0x12, aim) + 0xC000;
-            write_float(rdram, camera, 0x740 + target_yaw, (float)units * 0.005493164f);
+            const float target = (float)units * 0.005493164f;
+            const int player = camera_player(rdram, camera);
+            if (player >= 0 && stage_one_followed[player]) {
+                const float turn = angle_difference(target, read_float(rdram, camera, 0x740 + target_yaw));
+                write_float(rdram, camera, current_yaw, read_float(rdram, camera, current_yaw) + turn);
+            }
+            if (player >= 0) {
+                stage_one_followed[player] = true;
+            }
+            write_float(rdram, camera, 0x740 + target_yaw, target);
         }
         return;
     }

@@ -388,6 +388,27 @@ namespace {
                 }
             }
         }
+        // (0.9.60: the sniper scope, drawn for the split screen's half at half size, its thin middle lines lost: every command of one frame of
+        // it, the 20th of the first scope, to see how it's drawn)
+        bool dump_scope = false;
+        {
+            static int scope_frames = 0;
+            static bool scope_dumped = false;
+            scope_frames = local_kind == 0x24 ? scope_frames + 1 : 0;
+            if (!scope_dumped && scope_frames == 20) {
+                scope_dumped = true;
+                dump_scope = true;
+                conker::netsession::log("[net view] scope dump begins");
+                for (size_t i = 0; i < frame.size(); i++) {
+                    const uint32_t to = i + 1 < frame.size() ? frame[i + 1].gfx : 0;
+                    char line[160];
+                    std::snprintf(line, sizeof(line), "[net view] scope: pass %zu at %08X (%u bytes): camera %d kind %d%s", i, frame[i].gfx,
+                        to > frame[i].gfx ? to - frame[i].gfx : 0u, frame[i].camera, frame[i].kind, frame[i].camera == local ? " (this machine's)" : "");
+                    conker::netsession::log(line);
+                }
+            }
+        }
+        int scope_lines = 0;
         if (dump_look) {
             for (size_t i = 0; i < frame.size(); i++) {
                 const uint32_t to = i + 1 < frame.size() ? frame[i + 1].gfx : 0;
@@ -560,6 +581,12 @@ namespace {
             const uint32_t w1 = (uint32_t)MEM_W(4, (gpr)(int32_t)address);
             const uint32_t op = w0 >> 24;
             const uint32_t chain_op = nested ? 0u : op;
+            if (dump_scope && scope_lines < 5000) {
+                char line[96];
+                std::snprintf(line, sizeof(line), "[net view] scope cmd %08X%s: %08X %08X", address, nested ? " (called)" : "", w0, w1);
+                conker::netsession::log(line);
+                scope_lines++;
+            }
             if (dump_hud && dumped < 2500 && (nested || inside(any_hud_segments, address))) {
                 char line[80];
                 std::snprintf(line, sizeof(line), "[net view] cmd %08X: %08X %08X", address, w0, w1);
