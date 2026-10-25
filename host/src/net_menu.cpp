@@ -102,3 +102,61 @@ extern "C" void conker_net_pause_hook(uint8_t* rdram, recomp_context* ctx, int w
         MEM_B(3, (gpr)(int32_t)(0x800BE918u + 6u * (uint32_t)slot)) = (int8_t)input_y.load();
     }
 }
+
+
+// Online, straight to the multiplayer menu (0.9.75). The boot's intro is skipped on every machine, as mods/skip_intro does it (see there):
+// once the logos (scene 0x25, phase 0xB) have run 10 frames, the bar (scene 0x1D) is asked for instead of the chainsaw opening, and once
+// it has loaded, what the opening's end leaves behind is set. Hooks at func_151DE6D4's and func_15007A70's returns (conker.toml). Every
+// machine does it at the same frame (the game's own frame counts), so they stay the same; with the mod as well, the first to ask wins.
+// The host's controller then takes the menus to the multiplayer one (net_session.cpp, the boot's menus).
+extern "C" void func_1501C730(uint8_t* rdram, recomp_context* ctx);
+
+namespace {
+    bool boot_bar_requested = false;
+    bool boot_bar_set_up = false;
+}
+
+extern "C" void conker_online_boot_logos(uint8_t* rdram, recomp_context* ctx) {
+    if (!conker::netsession::active() || boot_bar_requested) {
+        return;
+    }
+    const int32_t logo_frames = MEM_W(0, (gpr)(int32_t)0x800E0A90);
+    if ((uint8_t)MEM_BU(0, (gpr)(int32_t)0x800E0B94) != 0x0B || (int32_t)MEM_W(0, (gpr)(int32_t)0x800BE9F0) != 0x25 || logo_frames < 10) {
+        return;
+    }
+    boot_bar_requested = true;
+    MEM_B(0, (gpr)(int32_t)0x8008FE28) = 2;
+    MEM_B(0, (gpr)(int32_t)0x800E0B94) = 1;
+    MEM_B(0, (gpr)(int32_t)0x800D2E40) = 0;
+    const recomp_context saved = *ctx;
+    ctx->r29 = (gpr)(int32_t)0x80F4C000;   // a stack of ours (local_audio.cpp's, not in use here)
+    ctx->r4 = 6;
+    ctx->r5 = 0x1D;
+    ctx->r6 = 0;
+    ctx->r7 = 0;
+    MEM_W(0x10, ctx->r29) = 1;
+    func_1501C730(rdram, ctx);
+    *ctx = saved;
+    MEM_B(0, (gpr)(int32_t)0x800E0B96) = (int8_t)0xFF;
+    conker::netsession::log("[boot] online: the intro skipped, the bar asked for");
+}
+
+extern "C" void conker_online_boot_scene(uint8_t* rdram, recomp_context* ctx) {
+    (void)ctx;
+    if (!boot_bar_requested || boot_bar_set_up || (int32_t)MEM_W(0, (gpr)(int32_t)0x800BE9F0) != 0x1D) {
+        return;
+    }
+    boot_bar_set_up = true;
+    MEM_B(0, (gpr)(int32_t)0x800D2E40) = 0;
+    MEM_B(0, (gpr)(int32_t)0x800E0B94) = 3;
+    MEM_B(0, (gpr)(int32_t)0x8008FD80) = 1;
+    MEM_B(0, (gpr)(int32_t)0x8008FE28) = 2;
+    MEM_B(0, (gpr)(int32_t)0x8008FDA4) = 0;
+    const uint32_t state = (uint32_t)MEM_W(0, (gpr)(int32_t)0x8008FDD4);
+    if ((state >> 24) == 0x80) {
+        MEM_B(0x3E, (gpr)(int32_t)state) = 0;
+        MEM_B(0x2B, (gpr)(int32_t)state) = 5;
+        MEM_B(0x2C, (gpr)(int32_t)state) = 5;
+    }
+    conker::netsession::log("[boot] online: the bar loaded");
+}
