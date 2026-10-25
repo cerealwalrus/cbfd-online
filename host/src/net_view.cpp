@@ -630,6 +630,9 @@ namespace {
         uint32_t extended_on_in = 0xFFFFFFFFu;   // the range RT64's extended GBI was enabled in (at a sync before the first rectangle)
         uint32_t skip_to = 0;                    // the words of an extended rectangle written over the game's, not looked at again
         int edge_rects = 0;
+        // 0.9.87: whether what is drawn now is another camera's (its viewport collapsed, below), for its projections (see there)
+        bool hidden_view = false;
+        int hidden_projections = 0;
         for (const Range& range : ranges)
         for (uint32_t address = range.from; address < range.to; address += 8) {
             if (address < skip_to) {
@@ -759,6 +762,7 @@ namespace {
                     (w1 >= full + field_viewports && w1 < full + field_viewports + 0x40))) {
                 const bool own_viewport = w1 < own + field_viewports + 0x40 && w1 >= own + field_viewports;
                 const uint32_t target = own_viewport ? w1 - own + full : w1;
+                hidden_view = false;
                 if (inside(hud_segments, address) && (hud_shift != 0 || hud_shift_x != 0)) {
                     MEM_W(4, (gpr)(int32_t)address) = (int32_t)shifted_viewport_copy(rdram, target, hud_shift, hud_shift_x);
                 } else if (own_viewport) {
@@ -769,6 +773,7 @@ namespace {
                 // another player's camera pass (its scissor is emptied below): its viewport collapsed too, so that it can't
                 // draw over this machine's view whatever the renderer makes of an empty scissor
                 MEM_W(4, (gpr)(int32_t)address) = (int32_t)collapsed_viewport_copy(rdram, w1);
+                hidden_view = true;
                 redirected++;
             } else if ((mask & 2u) != 0 && chain_op == 0xED) {
                 for (int k = 0; k < players; k++) {
@@ -835,10 +840,19 @@ namespace {
                 }
                 char note[96];
                 std::snprintf(note, sizeof(note), " [pass %d/%d, record %d, %.3f %.3f%s]", pass_camera, pass_kind, owner, element(0, true), element(8, false),
-                    ((mask & 8u) != 0 && (scale_x != 1.0f || scale_y != 1.0f) && w1 >= own && w1 < own + camera_size) ? " scaled" : "");
+                    hidden_view ? " hidden" : (((mask & 8u) != 0 && (scale_x != 1.0f || scale_y != 1.0f) && w1 >= own && w1 < own + camera_size) ? " scaled" : ""));
                 projection_notes += note;
             }
-            if ((mask & 8u) != 0 && chain_op == 0xDA && (w0 & 0x04u) != 0 && (scale_x != 1.0f || scale_y != 1.0f) && w1 >= own && w1 < own + camera_size) {
+            if ((mask & 8u) != 0 && chain_op == 0xDA && (w0 & 0x04u) != 0 && hidden_view && (w1 >> 24) == 0x80 && (w1 & 0x7FFFFFu) < 0x7FFFC0u) {
+                // 0.9.87: a projection loaded while another camera's view is drawn (its viewport collapsed: nothing of it shows). RT64's frame
+                // smoothing pairs each frame's draws with the last frame's by their view and projection, and at the race's start both cameras
+                // fly the same path with the same lens, so the other camera's hidden draws had this machine's view and projection exactly
+                // (where the game loads a copy of it, not widened), and were paired with this machine's: the frames drawn between the game's
+                // jumped about (with Original frame rate, no frames in between, it was right). A copy of it, a quarter as large across and up,
+                // so it is never this machine's: nothing changes on the screen, as what it draws collapses to a point.
+                MEM_W(4, (gpr)(int32_t)address) = (int32_t)scaled_matrix_copy(rdram, w1, 0.25f, 0.25f);
+                hidden_projections++;
+            } else if ((mask & 8u) != 0 && chain_op == 0xDA && (w0 & 0x04u) != 0 && (scale_x != 1.0f || scale_y != 1.0f) && w1 >= own && w1 < own + camera_size) {
                 // Every load of this machine's camera's projection, in whatever pass: the game draws its characters in passes of
                 // their own after the cameras' (marked for no camera), with the same projection and the same viewport, and a
                 // viewport made full-screen needs the projection widened with it or what is drawn there doesn't fit the rest.
@@ -1246,8 +1260,8 @@ namespace {
         }
         if (log_it) {
             char line[320];
-            std::snprintf(line, sizeof(line), "[net view] frame list %08X..%08X: %d viewports redirected, %d scissors shown, %d hidden, %d projection matrices (shape %g), %d fills, HUD shift %d, %d HUD rectangles moved (%d of them to a screen edge), %d hidden, %zu passes",
-                start, end, redirected, shown, hidden, matrices, shape, fills, hud_shift, rects_moved, edge_rects, rects_hidden, frame.size());
+            std::snprintf(line, sizeof(line), "[net view] frame list %08X..%08X: %d viewports redirected, %d scissors shown, %d hidden, %d projection matrices (shape %g), %d of other cameras, %d fills, HUD shift %d, %d HUD rectangles moved (%d of them to a screen edge), %d hidden, %zu passes",
+                start, end, redirected, shown, hidden, matrices, shape, hidden_projections, fills, hud_shift, rects_moved, edge_rects, rects_hidden, frame.size());
             conker::netsession::log(line);
         }
     }
