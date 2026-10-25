@@ -1380,6 +1380,44 @@ extern "C" void conker_player_visibility(uint8_t* rdram, recomp_context* ctx, in
     // (0.9.53 hid a player's body from its own camera while its look's kind was 0x18, the crossbow's: that kind is there as long as the
     // crossbow is held, so the player went invisible, and the crossbow seen through the sight isn't the body: 0.9.72 takes it away, and
     // the crossbow's model is kept out of the view by the near plane instead, conker_net_view's projection.)
+    // 0.9.74: the crossbow seen through its own sight. With the crossbow (the look's kind 0x18) and the eye in the head (within 40 units of
+    // the player, the sight's view), anything within 90 units of the eye that isn't a player (the crossbow's model, held just before it) is
+    // hidden from that player's own camera: out of the split screen's short half, it was in the full view's taller one (0.9.72's near plane
+    // was no help: the game's is 55 already). Registers only, nothing in the game's memory. Logged, the first frames, with what is near.
+    if (which == 0 && !keep_cull && camera < 4 && conker::netsession::active() && (int)camera == conker::netsession::local_slot()) {
+        const uint32_t looks = (uint32_t)MEM_W(0, (gpr)(int32_t)0x800DBFF0);
+        if ((looks >> 24) == 0x80 && (looks & 0x7FFFFFu) + 4u * 0x9A0u <= 0x800000u) {
+            for (uint32_t k = 0; k < 4; k++) {
+                const gpr record = (gpr)(int32_t)(looks + k * 0x9A0u);
+                if (MEM_BU(0x23D, record) != camera || MEM_BU(0x23E, record) != 0x18) {
+                    continue;
+                }
+                const auto f = [&](gpr base, int32_t at) { const uint32_t w = (uint32_t)MEM_W(at, base); float v; std::memcpy(&v, &w, 4); return v; };
+                const gpr player = (gpr)(int32_t)(0x800CC2D0u + camera * 0x32Cu);
+                const gpr thing = (gpr)(int32_t)(0x800CC2D0u + object * 0x32Cu);
+                const float ex = f(record, 0x2F8), ey = f(record, 0x2FC), ez = f(record, 0x300);
+                const float head = std::sqrt((ex - f(player, 0x14)) * (ex - f(player, 0x14)) + (ez - f(player, 0x1C)) * (ez - f(player, 0x1C)));
+                float near_eye = 1e9f;
+                if (object < 256) {
+                    const float dx = f(thing, 0x14) - ex, dy = f(thing, 0x18) - ey, dz = f(thing, 0x1C) - ez;
+                    near_eye = std::sqrt(dx * dx + dy * dy + dz * dz);
+                }
+                const bool sight = head < 40.0f;
+                static int logged = 0;
+                if (sight && logged < 120) {
+                    char line[200];
+                    std::snprintf(line, sizeof(line), "[net view] crossbow sight: object %u drawn for camera %u, %.1f from the eye (the eye %.1f across from the player, stage %d)",
+                        object, camera, near_eye, head, (int)MEM_H(0x73C, record));
+                    conker::netsession::log(line);
+                    logged++;
+                }
+                if (sight && object >= 4 && near_eye < 90.0f) {
+                    ctx->r15 = ctx->r15 | ((gpr)1 << camera);
+                }
+                break;
+            }
+        }
+    }
     if (keep_cull || object >= 4 || camera >= 4 || object == camera || !conker::netsession::active()) {
         return;
     }
