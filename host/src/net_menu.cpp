@@ -298,3 +298,42 @@ bool conker::netmenu::boot_screen_held(uint8_t* rdram) {
     const int32_t scene = (int32_t)MEM_W(0, (gpr)(int32_t)0x800BE9F0);
     return scene == 0x25 || scene == 0x1D;
 }
+
+// 0.9.82: online, the multiplayer barrels' BACK leads nowhere (the one-player game is out of reach from an online game). Hook at the
+// entry of func_151E6C1C, the barrels' camera, which acts on the menu's buttons of the frame (gs+0x20, the bar's: 0x10 A or Start, 0x20
+// B). With the multiplayer barrels (gs+0x3E 1): on BACK (gs+0x2B 0) A and B are taken out, so it isn't zoomed into (which turns the
+// one-player barrels back on); zoomed out (gs+8 0) B is taken out, which jumps to BACK and zooms into it. Everything else is the game's:
+// turning to the other barrels, A on them, B out of them. The game's own state, the same on every machine.
+extern "C" void conker_online_no_back(uint8_t* rdram, recomp_context* ctx) {
+    (void)ctx;
+    if (!conker::netsession::active()) {
+        return;
+    }
+    const uint32_t state = (uint32_t)MEM_W(0, (gpr)(int32_t)0x8008FDD4);
+    if ((state >> 24) != 0x80 || (int32_t)MEM_W(0, (gpr)(int32_t)0x800BE9F0) != 0x1D) {
+        return;
+    }
+    const gpr gs = (gpr)(int32_t)state;
+    if (MEM_B(0x3E, gs) != 1) {
+        return;
+    }
+    const uint16_t buttons = (uint16_t)MEM_HU(0x20, gs);
+    uint16_t kept = buttons;
+    if (MEM_B(0x2B, gs) == 0) {
+        kept &= (uint16_t)~0x30u;
+    }
+    if (boot_float(rdram, state + 0x8) == 0.0f) {
+        kept &= (uint16_t)~0x20u;
+    }
+    if (kept != buttons) {
+        MEM_H(0x20, gs) = (int16_t)kept;
+        static int logged = 0;
+        if (logged < 20) {
+            char line[120];
+            std::snprintf(line, sizeof(line), "[boot] online: the barrels' %s held back (barrel %d)", (buttons & ~kept & 0x10u) != 0 ? "A on BACK" : "B",
+                (int)MEM_B(0x2B, gs));
+            conker::netsession::log(line);
+            logged++;
+        }
+    }
+}
