@@ -477,9 +477,6 @@ extern "C" void func_15063570(uint8_t* rdram, recomp_context* ctx);
 
 namespace {
     uint32_t coop_modes[4] = { 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu };
-    // (0.10.51) frames a player has been without the shotgun while another player has it
-    uint32_t coop_without[4] = {};
-    constexpr uint32_t coop_give_after = 30;
     // (0.10.52, measuring) the players' control blocks (the character's +0x31C, where the weapon mode is), watched as the characters
     // are; and dumped whole (with the characters) when a player first has the shotgun out, and 90 frames later
     constexpr uint32_t coop_control_size = 0x280;
@@ -521,7 +518,6 @@ extern "C" void conker_coop_frame(uint8_t* rdram, recomp_context* ctx) {
         coop_last.clear();
         for (int k = 0; k < 4; k++) {
             coop_modes[k] = 0xFFFFFFFFu;
-            coop_without[k] = 0;
         }
         coop_control_last.clear();
         coop_dump_at = 0;
@@ -532,8 +528,7 @@ extern "C" void conker_coop_frame(uint8_t* rdram, recomp_context* ctx) {
     // and should the first player's be the shotgun's with another player's still none (handed out before conker_coop_weapon could
     // see it), that player is given it too, once a stage (every machine at the same frame: the game's state)
     // (0.10.51) The mode is a byte: read as a word it was 0x3B000000, never 0x3B, so nobody else was ever given it (and the stage hands
-    // player 1 the shotgun some way conker_coop_weapon's hook doesn't see). Now: any player with it, and another without it (mode 0)
-    // for 30 frames in a row, that one is given it too (func_15063570, the game's own: the mode, the ammo); again if they lose it.
+    // player 1 the shotgun some way conker_coop_weapon's hook doesn't see). (0.10.53: see below, the weapon each character has.)
     {
         const int count = std::min(std::max(coop_players, 1), 4);
         uint32_t modes[4] = {};
@@ -601,23 +596,30 @@ extern "C" void conker_coop_frame(uint8_t* rdram, recomp_context* ctx) {
                 coop_control_last.swap(now);
             }
         }
-        for (int k = 0; k < count; k++) {
-            if (holder < 0 || modes[k] != 0u) {
-                coop_without[k] = 0;
-                continue;
+        // (0.10.53) Not drawn for them any more (0.10.51-52 drew it with func_15063570 every 30 frames, and the game put it away each
+        // time: the loop of equipping and unequipping). What a character has is +0x7C of its control block (the mode +0x78 is what's
+        // out): the stage sets player 1's to the shotgun's 0x3B as it starts, the others' stay 0, so their button takes out the frying
+        // pan (and a shotgun drawn for them is put away at once). So the first player's +0x7C is every player's: their button draws the
+        // shotgun as player 1's does. Every machine at the same frame (the game's state).
+        {
+            const uint32_t first = (uint32_t)MEM_W(0x31C, (gpr)(int32_t)0x800CC2D0u);
+            if ((first >> 24) == 0x80 && (first & 0x7FFFFFu) < 0x7FFF00u) {
+                const uint8_t weapon = (uint8_t)MEM_BU(0x7C, (gpr)(int32_t)first);
+                for (int k = 1; k < count; k++) {
+                    const uint32_t control = (uint32_t)MEM_W(0x31C, (gpr)(int32_t)(0x800CC2D0u + (uint32_t)k * 0x32Cu));
+                    if ((control >> 24) != 0x80 || (control & 0x7FFFFFu) >= 0x7FFF00u) {
+                        continue;
+                    }
+                    const uint8_t had = (uint8_t)MEM_BU(0x7C, (gpr)(int32_t)control);
+                    if (had != weapon) {
+                        MEM_B(0x7C, (gpr)(int32_t)control) = (int8_t)weapon;
+                        char line[112];
+                        std::snprintf(line, sizeof(line), "[coop] f=%u player %d's weapon %02X: player 1's, %02X", (unsigned)conker::netsession::frame(), k + 1,
+                            (unsigned)had, (unsigned)weapon);
+                        conker::netsession::log(line);
+                    }
+                }
             }
-            if (++coop_without[k] < coop_give_after || ctx == nullptr) {
-                continue;
-            }
-            coop_without[k] = 0;
-            const recomp_context saved = *ctx;
-            ctx->r4 = (gpr)(int32_t)(0x800CC2D0u + (uint32_t)k * 0x32Cu);
-            func_15063570(rdram, ctx);
-            *ctx = saved;
-            char line[96];
-            std::snprintf(line, sizeof(line), "[coop] f=%u player %d given the shotgun (player %d has it)", (unsigned)conker::netsession::frame(), k + 1,
-                holder + 1);
-            conker::netsession::log(line);
         }
     }
     const uint32_t players = (uint32_t)std::min(std::max(coop_players, 1), 4);
