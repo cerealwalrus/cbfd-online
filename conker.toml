@@ -1211,6 +1211,12 @@ func = "func_151E2834"
 before_vram = 0x151E2834
 text = "{ extern int conker_coop_start(uint8_t*, recomp_context*); if (conker_coop_start(rdram, ctx)) { return; } }"
 
+# 0.10.52, measuring: who calls func_15063570 (the shotgun's weapon mode) in co-op (host/src/net_menu.cpp, conker_coop_who).
+[[patches.hook]]
+func = "func_15063570"
+before_vram = 0x15063570
+text = "{ extern void conker_coop_who(uint8_t*, recomp_context*); conker_coop_who(rdram, ctx); }"
+
 # 0.10.32: co-op (host/src/net_menu.cpp, conker_coop_weapon): a script's weapon for the first player's Conker, given to every player's too.
 [[patches.hook]]
 func = "func_15097A8C"

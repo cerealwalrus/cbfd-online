@@ -480,6 +480,39 @@ namespace {
     // (0.10.51) frames a player has been without the shotgun while another player has it
     uint32_t coop_without[4] = {};
     constexpr uint32_t coop_give_after = 30;
+    // (0.10.52, measuring) the players' control blocks (the character's +0x31C, where the weapon mode is), watched as the characters
+    // are; and dumped whole (with the characters) when a player first has the shotgun out, and 90 frames later
+    constexpr uint32_t coop_control_size = 0x280;
+    std::vector<uint8_t> coop_control_last;
+    std::vector<uint8_t> coop_control_changes;
+    int coop_control_lines = 0;
+    uint32_t coop_dump_at = 0;   // the frame of the second dump (0: none due)
+    bool coop_dumped = false;
+
+    void coop_dump(uint8_t* rdram, int count, const char* why) {
+        char line[200];
+        std::snprintf(line, sizeof(line), "[coop dump] f=%u %s", (unsigned)conker::netsession::frame(), why);
+        conker::netsession::log(line);
+        for (int k = 0; k < count; k++) {
+            const uint32_t object = 0x800CC2D0u + (uint32_t)k * 0x32Cu;
+            const uint32_t control = (uint32_t)MEM_W(0x31C, (gpr)(int32_t)object);
+            const bool control_ok = (control >> 24) == 0x80 && (control & 0x7FFFFFu) < 0x7FFF00u;
+            for (int part = 0; part < 2; part++) {
+                const uint32_t base = part == 0 ? object : control;
+                const uint32_t size = part == 0 ? 0x32Cu : coop_control_size;
+                if (part == 1 && !control_ok) {
+                    continue;
+                }
+                for (uint32_t at = 0; at < size; at += 32) {
+                    int n = std::snprintf(line, sizeof(line), "[coop dump] p%d %s+%03X:", k, part == 0 ? "obj" : "ctl", (unsigned)at);
+                    for (uint32_t i = at; i < at + 32 && i < size && n < (int)sizeof(line) - 4; i++) {
+                        n += std::snprintf(line + n, sizeof(line) - (size_t)n, " %02X", (unsigned)MEM_BU(0, (gpr)(int32_t)(base + i)));
+                    }
+                    conker::netsession::log(line);
+                }
+            }
+        }
+    }
 }
 
 extern "C" void conker_coop_frame(uint8_t* rdram, recomp_context* ctx) {
@@ -490,6 +523,9 @@ extern "C" void conker_coop_frame(uint8_t* rdram, recomp_context* ctx) {
             coop_modes[k] = 0xFFFFFFFFu;
             coop_without[k] = 0;
         }
+        coop_control_last.clear();
+        coop_dump_at = 0;
+        coop_dumped = false;
         return;
     }
     // (0.10.32) each player's weapon mode (+0x78 of the character's +0x31C, func_15063570's 0x3B the shotgun), logged as it changes;
@@ -517,6 +553,52 @@ extern "C" void conker_coop_frame(uint8_t* rdram, recomp_context* ctx) {
             if (modes[k] == 0x3Bu) {
                 holder = k;
                 break;
+            }
+        }
+        // (0.10.52, measuring) the dumps
+        if (holder >= 0 && !coop_dumped) {
+            coop_dumped = true;
+            coop_dump_at = conker::netsession::frame() + 90;
+            char why[64];
+            std::snprintf(why, sizeof(why), "player %d has the shotgun out first", holder + 1);
+            coop_dump(rdram, count, why);
+        }
+        if (coop_dump_at != 0 && conker::netsession::frame() >= coop_dump_at) {
+            coop_dump_at = 0;
+            coop_dump(rdram, count, "90 frames later");
+        }
+        // (0.10.52, measuring) the control blocks' bytes as they change (each byte's first 4 changes)
+        {
+            std::vector<uint8_t> now((size_t)count * coop_control_size, 0);
+            for (int k = 0; k < count; k++) {
+                const uint32_t control = (uint32_t)MEM_W(0x31C, (gpr)(int32_t)(0x800CC2D0u + (uint32_t)k * 0x32Cu));
+                if ((control >> 24) != 0x80 || (control & 0x7FFFFFu) >= 0x7FFF00u) {
+                    continue;
+                }
+                for (uint32_t i = 0; i < coop_control_size; i++) {
+                    now[(size_t)k * coop_control_size + i] = (uint8_t)MEM_BU(0, (gpr)(int32_t)(control + i));
+                }
+            }
+            if (coop_control_last.size() != now.size()) {
+                coop_control_last = now;
+                coop_control_changes.assign(now.size(), 0);
+            }
+            else {
+                std::string text;
+                for (size_t i = 0; i < now.size() && coop_control_lines < 3000; i++) {
+                    if (now[i] != coop_control_last[i] && coop_control_changes[i] < 4) {
+                        coop_control_changes[i]++;
+                        char part[40];
+                        std::snprintf(part, sizeof(part), " p%u+%03X:%02X>%02X", (unsigned)(i / coop_control_size), (unsigned)(i % coop_control_size),
+                            (unsigned)coop_control_last[i], (unsigned)now[i]);
+                        text += part;
+                    }
+                }
+                for (size_t at = 0; at < text.size(); at += 900) {
+                    conker::netsession::log(("[coop ctl] f=" + std::to_string(conker::netsession::frame()) + text.substr(at, 900)).c_str());
+                    coop_control_lines++;
+                }
+                coop_control_last.swap(now);
             }
         }
         for (int k = 0; k < count; k++) {
@@ -614,5 +696,19 @@ extern "C" void conker_coop_weapon(uint8_t* rdram, recomp_context* ctx, int whic
     char line[120];
     std::snprintf(line, sizeof(line), "[coop] f=%u the script's %s for player 1: the same for players 2 to %d", (unsigned)conker::netsession::frame(),
         which == 0 ? "weapon 9" : which == 1 ? "shotgun" : "weapon 9 taken away", coop_players);
+    conker::netsession::log(line);
+}
+
+// 0.10.52, measuring: who calls func_15063570 (the shotgun's mode) for a player's character, and from where (its return address)
+extern "C" void conker_coop_who(uint8_t* rdram, recomp_context* ctx) {
+    (void)rdram;
+    if (!conker::netsession::active() || !coop_started) {
+        return;
+    }
+    const uint32_t object = (uint32_t)ctx->r4;
+    const int player = object >= 0x800CC2D0u && object < 0x800CC2D0u + 4u * 0x32Cu ? (int)((object - 0x800CC2D0u) / 0x32Cu) + 1 : 0;
+    char line[160];
+    std::snprintf(line, sizeof(line), "[coop who] f=%u func_15063570 for %08X (player %d), from %08X", (unsigned)conker::netsession::frame(),
+        (unsigned)object, player, (unsigned)(uint32_t)ctx->r31);
     conker::netsession::log(line);
 }
