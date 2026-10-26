@@ -318,6 +318,14 @@ namespace {
 
     // Frame numbering: frames_started is the number of the next frame to start.
     uint32_t frames_started = 0;
+    // 0.10.13: the frame at which every machine starts the hooks' own state over (the frame after a resync's order), and how many times
+    // it has been. The resync gives a machine the host's game memory, but what the hooks keep between frames outside it (the free
+    // camera's orbits, R-Look's walking and hits, the grenade's hold...) is each machine's own: the host started its orbits over as it
+    // took its copy and the machine loading it did too, but the others didn't, and in a 4 player game they drifted from the host the
+    // frame after (0.10.11's logs: player 4 resynced at frame 18155, players 2 and 3 had other cameras at 18156 and other objects at
+    // 18157, and so on until the game froze). Now everyone starts it over at the same frame.
+    uint32_t hook_reset_frame = 0xFFFFFFFFu;
+    std::atomic<uint32_t> hook_generation_count{ 0 };
     uint32_t current_frame = 0;
     bool in_frame = false;
     int last_port = 99;
@@ -3419,7 +3427,14 @@ void conker::netsession::on_port_read(int port) {
     }
     current = ready[f];
     if (current.snap != 0) {
+        hook_reset_frame = f + 1;
         on_snap_order(f, current.snap);
+    }
+    if (f == hook_reset_frame) {
+        hook_generation_count++;
+        conker::look_aim::reset_online_state();
+        conker::mouse_camera::reset();
+        log_line("[net] f=%u the hooks' own state starts over (the resync's frame), on every machine", f);
     }
     if (ram != nullptr) {
         // a player chose QUIT in the pause menu: every machine sets what the game's quit sets, at this same frame
@@ -3543,6 +3558,10 @@ bool conker::netsession::input(int port, bool* plugged, uint16_t* buttons, float
     return true;
 }
 
+uint32_t conker::netsession::hook_generation() {
+    return hook_generation_count.load();
+}
+
 bool conker::netsession::input_for_game(int port, bool* plugged, uint16_t* buttons, float* x, float* y) {
     if (!input(port, plugged, buttons, x, y)) {
         return false;
@@ -3558,6 +3577,14 @@ bool conker::netsession::input_for_game(int port, bool* plugged, uint16_t* butto
     // with R up, and the game threw a grenade. After R is let go the C-buttons are held back until none is pressed any more.
     static bool prev_r[max_players] = {};
     static bool hold_back[max_players] = {};
+    static uint32_t hold_generation = 0;
+    if (hold_generation != hook_generation_count.load()) {
+        hold_generation = hook_generation_count.load();
+        for (int k = 0; k < max_players; k++) {
+            prev_r[k] = false;
+            hold_back[k] = false;
+        }
+    }
     if (port >= 0 && port < max_players) {
         if (!swapped) {
             prev_r[port] = false;
@@ -3899,9 +3926,7 @@ namespace {
     void on_snap_order(uint32_t f, uint8_t mask) {
         if (is_host) {
             const bool asked = conker::save_states::net_capture([f](bool ok, std::vector<uint8_t>&& state) {
-                if (ok) {
-                    conker::mouse_camera::reset();   // (at the safe point; the machine that loads it does the same)
-                }
+                // (0.10.13: the hooks' state starts over on every machine at the next frame's start instead, hook_reset_frame)
                 std::lock_guard lock{ mtx };
                 if (!snap_round.active || snap_round.order_frame != f) {
                     return;
@@ -3970,6 +3995,8 @@ namespace {
                 return;
             }
             conker::mouse_camera::reset();
+            conker::look_aim::reset_online_state();
+            hook_generation_count++;
             if (late_join) {
                 late_synced = true;
             }

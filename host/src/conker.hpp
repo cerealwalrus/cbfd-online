@@ -165,6 +165,8 @@ namespace conker {
         bool aiming_recently(int player);
         // The stage of a player's look mode (+0x73C of the camera: 0 not started, 1 moving in, 2 aiming, 3 leaving), as of the last view.
         int look_stage(int player);
+        // 0.10.13: the online hooks' state between frames back to how it starts (with a resync, on every machine at the same frame).
+        void reset_online_state();
         // Online: whether the player's camera ran the second aiming mode (the sniper rifle's, the revolver's, the knives': not the
         // look mode's records) in the last few frames, from the game's own update on every machine (conker_aim_stick).
         bool second_aim_recent(int player);
@@ -349,6 +351,9 @@ namespace conker {
         bool active();
         // The game frame that has just started, and this machine's player slot (0 is the host, port 1).
         uint32_t frame();
+        // 0.10.13: counts the times the hooks' own state (what they keep between frames, outside the game's memory) started over:
+        // with a resync, on every machine at the frame after the resync's order (see hook_state_reset in net_session.cpp).
+        uint32_t hook_generation();
         int local_slot();
         // The name a player goes by on the screen: their nickname, or "Player N".
         std::string player_name(int slot);

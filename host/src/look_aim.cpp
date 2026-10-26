@@ -731,6 +731,15 @@ extern "C" void conker_look_view(uint8_t* rdram, recomp_context* ctx) {
             static bool armed[4] = {};
             static bool holding[4] = {};
             static uint16_t kept_face[4] = {};
+            static uint32_t knock_generation = 0;
+            if (knock_generation != conker::netsession::hook_generation()) {
+                knock_generation = conker::netsession::hook_generation();
+                for (int k = 0; k < 4; k++) {
+                    armed[k] = false;
+                    holding[k] = false;
+                    kept_face[k] = 0;
+                }
+            }
             const int stage_now = (int)MEM_H(0x73C, camera);
             bool plugged = false;
             uint16_t agreed = 0;
@@ -972,6 +981,14 @@ void conker::look_aim::no_weapon_walk(uint8_t* rdram, int port, uint16_t* button
     // Z itself is not passed on.
     static bool grenade_on[4] = {};
     static bool prev_z[4] = {};
+    static uint32_t grenade_generation = 0;
+    if (grenade_generation != conker::netsession::hook_generation()) {
+        grenade_generation = conker::netsession::hook_generation();
+        for (int k = 0; k < 4; k++) {
+            grenade_on[k] = false;
+            prev_z[k] = false;
+        }
+    }
     const bool z_now = (*buttons & 0x2000) != 0;
     const bool z_edge = z_now && !prev_z[port];
     prev_z[port] = z_now;
@@ -1664,4 +1681,32 @@ extern "C" void conker_look_currents(uint8_t* rdram, recomp_context* ctx) {
     }
     write_float(rdram, targets, current_pitch, pitch);
 #endif
+}
+
+// 0.10.13: the online hooks' own state between frames, back to how it starts: on every machine at the same frame with a resync (net_session.cpp,
+// hook_reset_frame), and on the machine loading the host's copy. (The function-local ones start over by conker::netsession::hook_generation.)
+void conker::look_aim::reset_online_state() {
+    aim_remainder = 0.0f;
+    for (int p = 0; p < aim_players; p++) {
+        look_settle[p] = 0.0f;
+        stage_one_followed[p] = false;
+        view_turn[p] = ViewTurn{};
+        eye_track[p] = EyeTrack{};
+        eye_restore[p] = EyeRestore{};
+        lift_state[p] = LiftState{};
+        look_stage_two_frames[p] = 0;
+        swap_view_yaw[p] = 0.0f;
+        swap_view_yaw_set[p] = false;
+    }
+    for (int p = 0; p < 4; p++) {
+        hit_hold_state[p] = HitHold{};
+        walk_dx[p] = 0;
+        walk_dy[p] = 0;
+        grenade_held[p] = false;
+        gun_walk_dx[p] = 0;
+        gun_walk_dy[p] = 0;
+        gun_walk_set[p] = false;
+        second_aim_seen[p] = false;
+        second_aim_frame[p] = 0;
+    }
 }
