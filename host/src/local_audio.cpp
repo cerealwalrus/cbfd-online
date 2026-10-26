@@ -48,7 +48,7 @@ extern "C" void func_10017594(uint8_t* rdram, recomp_context* ctx);
 extern "C" void conker_heap_watch(uint8_t* rdram, recomp_context* ctx);
 // online, every multiplayer character for everybody (mp_characters.cpp)
 extern "C" void conker_mp_characters(uint8_t* rdram);
-extern "C" void conker_coop_frame(uint8_t* rdram);
+extern "C" void conker_coop_frame(uint8_t* rdram, recomp_context* ctx);
 
 namespace {
     constexpr uint32_t listeners = 0x80041F68;       // D_80041F68: one per look camera, in their order, 0x1C bytes each
@@ -932,7 +932,7 @@ extern "C" void conker_local_audio(uint8_t* rdram, recomp_context* ctx, int whic
             stop_tails(rdram, ctx);
             conker_heap_watch(rdram, ctx);
             conker_mp_characters(rdram);
-            conker_coop_frame(rdram);
+            conker_coop_frame(rdram, ctx);
             follow_characters(rdram, ctx);
             return;
         }

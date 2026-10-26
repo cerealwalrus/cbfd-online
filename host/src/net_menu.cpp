@@ -116,6 +116,18 @@ extern "C" void conker_net_pause_hook(uint8_t* rdram, recomp_context* ctx, int w
 // (0.9.75's presses of the host's A in the bar, to go on to the multiplayer menu, are gone in 0.9.76: they started a one-player game.)
 extern "C" void func_1501C730(uint8_t* rdram, recomp_context* ctx);
 
+// co-op (0.10.28 on): see conker_coop_start below
+namespace {
+    bool coop_pending = false;
+    bool coop_pending_frame_set = false;
+    bool coop_started = false;   // (0.10.31) the stage was started with two or more players; off at the barrels again
+    int coop_players = 0;
+    // (0.10.32) the game's frames (counted at func_10011BB8, conker_coop_frame) and the one a scene last finished loading at
+    std::atomic<uint32_t> coop_frames{ 0 };
+    std::atomic<uint32_t> coop_loaded_at{ 0 };
+    constexpr uint32_t coop_settle_frames = 30;
+}
+
 namespace {
     bool boot_bar_requested = false;
     bool boot_bar_set_up = false;
@@ -151,6 +163,12 @@ extern "C" void conker_online_boot_logos(uint8_t* rdram, recomp_context* ctx) {
 
 extern "C" void conker_online_boot_scene(uint8_t* rdram, recomp_context* ctx) {
     (void)ctx;
+    // (0.10.32) a scene has just loaded (func_15007A70's return): the co-op stage settles before the pause menu is let in again
+    coop_loaded_at.store(coop_frames.load());
+    if (conker::netmenu::is_open() && coop_started) {
+        conker::netmenu::set_open(false);   // (at once, for this frame's HUD; net_session.cpp closes its side at the next input)
+        conker::netsession::log("[coop] the stage reloaded with the pause menu open: the menu closed");
+    }
     if (!boot_bar_requested || boot_bar_set_up || (int32_t)MEM_W(0, (gpr)(int32_t)0x800BE9F0) != 0x1D) {
         return;
     }
@@ -304,10 +322,6 @@ bool conker::netmenu::boot_screen_held(uint8_t* rdram) {
 
 // 0.10.28: co-op (stage 1). Set by A on BACK (conker_online_no_back), off again once back at the barrels, zoomed out.
 namespace {
-    bool coop_pending = false;
-    bool coop_pending_frame_set = false;
-    bool coop_started = false;   // (0.10.31) the stage was started with two or more players; off at the barrels again
-    int coop_players = 0;
     // The scene table's index (D_80087430, 20 bytes each) of the stage: Zombie Grave Shoot (0.10.29), the graveyard, where Gregg gives
     // Conker the shotgun and the zombies come (scene 0x41, entry 0xD004). (Zombie Fest, the mansion's, is 0xAB.)
     constexpr int16_t coop_stage = 0xA7;
@@ -435,6 +449,12 @@ bool conker::netmenu::coop_running(uint8_t* rdram) {
     if (rdram == nullptr || !coop_started) {
         return false;
     }
+    // 0.10.32: not for the first frames after the stage (re)loads (a death, a checkpoint, the way on to the next part): the online
+    // pause menu open on this machine as it reloaded had the HUD draw the pause screen over a stage whose data wasn't there yet (a
+    // crash, func_1503F4B0 from func_151EDBDC). Not running, the menu closes (net_session.cpp) and the pause screen isn't drawn.
+    if (coop_frames.load() - coop_loaded_at.load() < coop_settle_frames) {
+        return false;
+    }
     const int32_t scene = (int32_t)MEM_W(0, (gpr)(int32_t)0x800BE9F0);
     return scene != 0x1D && scene != 0x25;
 }
@@ -453,10 +473,54 @@ namespace {
     int coop_lines = 0;
 }
 
-extern "C" void conker_coop_frame(uint8_t* rdram) {
+extern "C" void func_15063570(uint8_t* rdram, recomp_context* ctx);
+
+namespace {
+    uint32_t coop_modes[4] = { 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu };
+    bool coop_caught_up[4] = {};
+}
+
+extern "C" void conker_coop_frame(uint8_t* rdram, recomp_context* ctx) {
+    coop_frames.fetch_add(1);
     if (!conker::netsession::active() || !conker::netmenu::coop_running(rdram)) {
         coop_last.clear();
+        for (int k = 0; k < 4; k++) {
+            coop_modes[k] = 0xFFFFFFFFu;
+            coop_caught_up[k] = false;
+        }
         return;
+    }
+    // (0.10.32) each player's weapon mode (+0x78 of the character's +0x31C, func_15063570's 0x3B the shotgun), logged as it changes;
+    // and should the first player's be the shotgun's with another player's still none (handed out before conker_coop_weapon could
+    // see it), that player is given it too, once a stage (every machine at the same frame: the game's state)
+    {
+        const int count = std::min(std::max(coop_players, 1), 4);
+        uint32_t modes[4] = {};
+        for (int k = 0; k < count; k++) {
+            const uint32_t object = 0x800CC2D0u + (uint32_t)k * 0x32Cu;
+            const uint32_t control = (uint32_t)MEM_W(0x31C, (gpr)(int32_t)object);
+            modes[k] = ((control >> 24) == 0x80 && (control & 0x7FFFFFu) < 0x7FFF00u) ? (uint32_t)MEM_W(0x78, (gpr)(int32_t)control) : 0xFFFFFFFEu;
+            if (modes[k] != coop_modes[k]) {
+                char line[96];
+                std::snprintf(line, sizeof(line), "[coop mode] f=%u player %d: weapon mode %X", (unsigned)conker::netsession::frame(), k + 1, (unsigned)modes[k]);
+                conker::netsession::log(line);
+                coop_modes[k] = modes[k];
+            }
+        }
+        if (ctx != nullptr && modes[0] == 0x3Bu) {
+            for (int k = 1; k < count; k++) {
+                if (modes[k] == 0u && !coop_caught_up[k]) {
+                    coop_caught_up[k] = true;
+                    const recomp_context saved = *ctx;
+                    ctx->r4 = (gpr)(int32_t)(0x800CC2D0u + (uint32_t)k * 0x32Cu);
+                    func_15063570(rdram, ctx);
+                    *ctx = saved;
+                    char line[96];
+                    std::snprintf(line, sizeof(line), "[coop] f=%u player %d given the shotgun (player 1 has it)", (unsigned)conker::netsession::frame(), k + 1);
+                    conker::netsession::log(line);
+                }
+            }
+        }
     }
     const uint32_t players = (uint32_t)std::min(std::max(coop_players, 1), 4);
     const uint32_t total = players * coop_object_size + coop_table_size;
@@ -500,4 +564,39 @@ extern "C" void conker_coop_frame(uint8_t* rdram) {
         }
     }
     coop_last.swap(now);
+}
+
+// 0.10.32: co-op, the weapons the stage's scripts hand to Conker. A script command (func_15097A8C's, its argument at +8 of the
+// command, the character in $s1) puts a character into a weapon's mode: 9 with func_15063404, 0x3B (the shotgun: Gregg's, in the
+// graveyard) with func_15063570, and takes 9's away with func_150634E4. The scripts are the one-player game's: they hand it to the
+// first player's Conker (gObjects[0]) only. Right after each call for the first player's Conker, the same call for every other
+// player's (gObjects[1..]), on every machine at the same frame.
+extern "C" void func_15063404(uint8_t* rdram, recomp_context* ctx);
+extern "C" void func_15063570(uint8_t* rdram, recomp_context* ctx);
+extern "C" void func_150634E4(uint8_t* rdram, recomp_context* ctx);
+
+extern "C" void conker_coop_weapon(uint8_t* rdram, recomp_context* ctx, int which) {
+    if (!conker::netsession::active() || !coop_started || coop_players < 2) {
+        return;
+    }
+    constexpr uint32_t objects = 0x800CC2D0, object_size = 0x32C;
+    if ((uint32_t)ctx->r17 != objects) {
+        return;   // (another character's: left to the game)
+    }
+    for (int k = 1; k < std::min(coop_players, 4); k++) {
+        const recomp_context saved = *ctx;
+        ctx->r4 = (gpr)(int32_t)(objects + (uint32_t)k * object_size);
+        if (which == 0) {
+            func_15063404(rdram, ctx);
+        } else if (which == 1) {
+            func_15063570(rdram, ctx);
+        } else {
+            func_150634E4(rdram, ctx);
+        }
+        *ctx = saved;
+    }
+    char line[120];
+    std::snprintf(line, sizeof(line), "[coop] f=%u the script's %s for player 1: the same for players 2 to %d", (unsigned)conker::netsession::frame(),
+        which == 0 ? "weapon 9" : which == 1 ? "shotgun" : "weapon 9 taken away", coop_players);
+    conker::netsession::log(line);
 }

@@ -1210,3 +1210,19 @@ text = "{ extern int conker_coop_start(uint8_t*, recomp_context*); if (conker_co
 func = "func_151E2834"
 before_vram = 0x151E2834
 text = "{ extern int conker_coop_start(uint8_t*, recomp_context*); if (conker_coop_start(rdram, ctx)) { return; } }"
+
+# 0.10.32: co-op (host/src/net_menu.cpp, conker_coop_weapon): a script's weapon for the first player's Conker, given to every player's too.
+[[patches.hook]]
+func = "func_15097A8C"
+before_vram = 0x150993E0
+text = "{ extern void conker_coop_weapon(uint8_t*, recomp_context*, int); conker_coop_weapon(rdram, ctx, 0); }"
+
+[[patches.hook]]
+func = "func_15097A8C"
+before_vram = 0x150993FC
+text = "{ extern void conker_coop_weapon(uint8_t*, recomp_context*, int); conker_coop_weapon(rdram, ctx, 1); }"
+
+[[patches.hook]]
+func = "func_15097A8C"
+before_vram = 0x1509941C
+text = "{ extern void conker_coop_weapon(uint8_t*, recomp_context*, int); conker_coop_weapon(rdram, ctx, 2); }"
