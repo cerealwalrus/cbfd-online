@@ -69,12 +69,20 @@ void conker::netmenu::set_input(int slot, uint16_t buttons, int x, int y) {
     input_buttons = buttons;
 }
 
+namespace {
+    bool coop_pause_screen();   // (below, with the co-op stage's state)
+}
+
 extern "C" void conker_net_pause_hook(uint8_t* rdram, recomp_context* ctx, int which) {
     if (!menu_open) {
         if (which == 7) {
             put_back(rdram);   // (the menu closed this frame: a slot it borrowed still goes back)
         }
-        return;
+        // (0.10.73) in co-op, the pause screen's last frames as it fades out after the menu has closed keep the layout too: RESTART
+        // hidden and QUIT in its place (0.10.72 showed QUIT in its own place, at the bottom, for those frames)
+        if (!((which == 4 || which == 5 || which == 6) && coop_pause_screen())) {
+            return;
+        }
     }
     if (which == 1) {
         ctx->r13 = 1;
@@ -137,6 +145,14 @@ namespace {
     std::atomic<uint32_t> coop_frames{ 0 };
     std::atomic<uint32_t> coop_loaded_at{ 0 };
     constexpr uint32_t coop_settle_frames = 30;
+}
+
+namespace {
+    // (0.10.73) the co-op stage is running online: the pause screen (drawn only on a machine whose menu is open, and for its fade
+    // after) gets the co-op layout, whether the menu is still open or fading out
+    bool coop_pause_screen() {
+        return conker::netsession::active() && coop_started && coop_players >= 2;
+    }
 }
 
 namespace {
@@ -1155,7 +1171,7 @@ namespace {
     }
 
     bool pause_hud_wanted() {
-        return conker::netsession::active() && coop_started && coop_players >= 2 && menu_open.load();
+        return coop_pause_screen();
     }
 }
 
@@ -1195,7 +1211,7 @@ extern "C" void conker_coop_pause_hud(uint8_t* rdram, recomp_context* ctx, int w
 // with this machine's menu open, the match's layout. What QUIT then does is the menu's own (net_session.cpp, the quit state 7).
 extern "C" void conker_coop_pause_layout(uint8_t* rdram, recomp_context* ctx) {
     (void)rdram;
-    if (conker::netsession::active() && coop_started && coop_players >= 2 && menu_open.load()) {
+    if (coop_pause_screen()) {
         ctx->r25 = 1;
     }
 }
@@ -1203,7 +1219,7 @@ extern "C" void conker_coop_pause_layout(uint8_t* rdram, recomp_context* ctx) {
 // 0.10.70: and at L_151DE00C, the buttons where the one-player game has them (the y offset at $sp+0x8C, 5; the match's -0x24 makes
 // room for its score table, which co-op hasn't): below PAUSED, not beside it
 extern "C" void conker_coop_pause_buttons_y(uint8_t* rdram, recomp_context* ctx) {
-    if (conker::netsession::active() && coop_started && coop_players >= 2 && menu_open.load()) {
+    if (coop_pause_screen()) {
         MEM_W(0x8C, ctx->r29) = 5;
     }
 }
@@ -1216,7 +1232,7 @@ extern "C" void conker_coop_pause_buttons_y(uint8_t* rdram, recomp_context* ctx)
 // in co-op, with this machine's menu open, as if loaded, so nothing is; the sprites' drawing further on is skipped for want of them.
 extern "C" void conker_coop_pause_sprites(uint8_t* rdram, recomp_context* ctx) {
     (void)rdram;
-    if (conker::netsession::active() && coop_started && coop_players >= 2 && menu_open.load() && ctx->r13 == 0) {
+    if (coop_pause_screen() && ctx->r13 == 0) {
         ctx->r13 = 1;
         static int logged = 0;
         if (logged < 2) {
@@ -1225,3 +1241,10 @@ extern "C" void conker_coop_pause_sprites(uint8_t* rdram, recomp_context* ctx) {
         }
     }
 }
+
+// 0.10.73: the pause menu's Y and N, N: func_151DDC20 at L_151DE538 reads 16 bytes of the cartridge (osPiStartDma, func_151DDB94's
+// address) and checks them against two constants; if they don't match, it copies 256 bytes from a random place on the cartridge
+// (random_u32, twice) to a random place in the game's memory (0x80300000 on): the game's copy protection. Here the check doesn't
+// match, so every N corrupted the game's memory, on that machine alone, with two of the RNG's numbers: the co-op test's desyncs (the
+// flicker was the resyncs), and the renderer's crash (a gfx task overwritten). As the check passing does: the picked button 2 back
+// (L_151DE670), nothing read, nothing written.

@@ -1070,6 +1070,13 @@ func = "func_151EB06C"
 before_vram = 0x151EB5B0
 text = "{ extern void conker_coop_pause_sprites(uint8_t*, recomp_context*); conker_coop_pause_sprites(rdram, ctx); }"
 
+# 0.10.73: the pause menu's N without the copy protection's check (host/src/net_menu.cpp, the note at its end): straight to what a passed
+# check does.
+[[patches.hook]]
+func = "func_151DDC20"
+before_vram = 0x151DE538
+text = "{ ctx->r11 = ADD32(S32(0X8009 << 16), -0X1D4); ctx->r25 = MEM_B(ctx->r11, 0X0); goto L_151DE670; }"
+
 # Online (host/src/heap_watch.cpp): the game's heap is only the game thread's, the same on every machine, and doesn't run out.
 # func_10003C6C (allocate) begins: the audio cache's, the streamed sounds' and other threads' allocations come from a pool of their own.
 [[patches.hook]]
