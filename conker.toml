@@ -1038,6 +1038,12 @@ func = "func_10003C6C"
 before_vram = 0x10003C6C
 text = "{ extern int conker_heap_alloc_begin(uint8_t*, recomp_context*); if (conker_heap_alloc_begin(rdram, ctx)) { return; } }"
 
+# 0.10.27, measuring only: func_10003C6C returns a heap block ($v0): kept with who asked, for the heap's walk (host/src/heap_watch.cpp).
+[[patches.hook]]
+func = "func_10003C6C"
+before_vram = 0x10004060
+text = "{ extern void conker_heap_alloc_end(uint8_t*, recomp_context*); conker_heap_alloc_end(rdram, ctx); }"
+
 # func_10003C6C about to stop the game (no free block big enough): the spare pool gives the memory instead.
 [[patches.hook]]
 func = "func_10003C6C"

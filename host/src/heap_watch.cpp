@@ -34,6 +34,9 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <algorithm>
+#include <map>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -209,6 +212,21 @@ namespace {
     std::vector<uint32_t> deferred_frees;   // heap blocks freed from another thread, for the game thread
     unsigned spare_used = 0;
 
+    // 0.10.27, measuring only (nothing in the game's memory changes): every heap block the game thread is given, kept here by its
+    // pointer with its size, its owner, who asked (the caller) and the code addresses found on the stack above (the callers' callers),
+    // so that the 15-second walk can say what the heap holds by who asked for it (to compare two players with four).
+    struct Asked {
+        uint32_t size = 0, owner = 0, from = 0, frame = 0;
+        uint32_t up[4] = {};
+    };
+    std::unordered_map<uint32_t, Asked> asked_blocks;
+    Asked pending_ask;
+    bool pending_valid = false;
+
+    bool code_address(uint32_t value) {
+        return (value >= 0x10000000u && value < 0x10100000u) || (value >= 0x15000000u && value < 0x16100000u);
+    }
+
     uint32_t last_bytes[256] = {};
     uint32_t last_count[256] = {};
     bool walked_once = false;
@@ -329,6 +347,53 @@ namespace {
         std::memcpy(last_bytes, bytes, sizeof(bytes));
         std::memcpy(last_count, count, sizeof(count));
         walked_once = true;
+        // (0.10.27) what is in use, by who asked for it: caller/owner, bytes in blocks, the largest, the callers' callers of the largest
+        {
+            struct Sum { uint32_t bytes = 0, blocks = 0, largest = 0; uint32_t up[4] = {}; };
+            std::map<std::pair<uint32_t, uint32_t>, Sum> sums;
+            std::lock_guard lock{ pool_mutex };
+            uint32_t walk_b = word(rdram, first_block);
+            for (int n = 0; walk_b != 0 && ram_pointer(walk_b) && n < 60000; n++) {
+                const uint32_t header = word(rdram, walk_b + 8);
+                const uint32_t size = header & 0xFFFFFFu, owner = header >> 24;
+                if (free_blocks.count(walk_b) == 0) {
+                    const auto found = asked_blocks.find(walk_b + 0xCu);
+                    const uint32_t from = found != asked_blocks.end() ? found->second.from : 0u;
+                    Sum& sum = sums[{ from, owner }];
+                    sum.bytes += size;
+                    sum.blocks++;
+                    if (size > sum.largest) {
+                        sum.largest = size;
+                        if (found != asked_blocks.end()) {
+                            std::memcpy(sum.up, found->second.up, sizeof(sum.up));
+                        }
+                    }
+                }
+                walk_b = word(rdram, walk_b);
+            }
+            std::vector<std::pair<std::pair<uint32_t, uint32_t>, Sum>> list(sums.begin(), sums.end());
+            std::sort(list.begin(), list.end(), [](const auto& x, const auto& y) { return x.second.bytes > y.second.bytes; });
+            std::string text;
+            int shown = 0;
+            for (const auto& item : list) {
+                if (shown >= 40 || item.second.bytes < 2048) {
+                    break;
+                }
+                char part[120];
+                std::snprintf(part, sizeof(part), " %08X/%u:%u/%u(max %u; %08X %08X %08X)", (unsigned)item.first.first, (unsigned)item.first.second,
+                    (unsigned)item.second.bytes, (unsigned)item.second.blocks, (unsigned)item.second.largest, (unsigned)item.second.up[0],
+                    (unsigned)item.second.up[1], (unsigned)item.second.up[2]);
+                text += part;
+                shown++;
+                if (text.size() > 800) {
+                    conker::netsession::log(("[heap]   in use by caller/owner:bytes/blocks" + text).c_str());
+                    text.clear();
+                }
+            }
+            if (!text.empty()) {
+                conker::netsession::log(("[heap]   in use by caller/owner:bytes/blocks" + text).c_str());
+            }
+        }
     }
 
     // Is a streamed sound being started (func_151F2960 on the game thread's stack)?
@@ -398,6 +463,31 @@ extern "C" int conker_heap_alloc_begin(uint8_t* rdram, recomp_context* ctx) {
     const bool other_thread = on_other_thread();
     const bool cache = from == 0x10009ED8u;
     if (!other_thread && !cache && !starting_stream(rdram, ctx, from)) {
+        if (on_game_thread()) {
+            // (0.10.27, measuring) noted, for conker_heap_alloc_end
+            pending_ask = Asked{};
+            pending_ask.size = (uint32_t)ctx->r4;
+            pending_ask.owner = (uint32_t)ctx->r5 & 0xFFu;
+            pending_ask.from = from;
+            pending_ask.frame = (uint32_t)conker::netsession::frame();
+            const uint32_t sp = (uint32_t)ctx->r29;
+            int found = 0;
+            if (ram_pointer(sp)) {
+                for (uint32_t offset = 0; offset < 0x600u && found < 4; offset += 4) {
+                    const uint32_t value = word(rdram, sp + offset);
+                    if (code_address(value) && value != from && value != 0x10003C5Cu) {
+                        bool seen = false;
+                        for (int k = 0; k < found; k++) {
+                            seen = seen || pending_ask.up[k] == value;
+                        }
+                        if (!seen) {
+                            pending_ask.up[found++] = value;
+                        }
+                    }
+                }
+            }
+            pending_valid = true;
+        }
         return 0;
     }
     uint32_t pointer = 0;
@@ -465,6 +555,9 @@ extern "C" int conker_heap_free(uint8_t* rdram, recomp_context* ctx) {
         return 0;
     }
     std::lock_guard lock{ pool_mutex };
+    if (on_game_thread()) {
+        asked_blocks.erase(pointer);   // (0.10.27, measuring)
+    }
     if (audio_pool.owns(pointer)) {
         audio_pool.release(rdram, pointer);
         return 1;
@@ -505,5 +598,35 @@ extern "C" void conker_heap_age(uint8_t* rdram, recomp_context* ctx, int all) {
                 put_word(rdram, pointer - 0x4u, ((owner - 1u) << 24) | (header & 0xFFFFFFu));
             }
         }
+    }
+}
+
+// 0.10.27, measuring only: func_10003C6C returns ($v0 the memory, at 0x10004060 on every path that gives a heap block): the block is
+// kept with who asked (conker_heap_alloc_begin), and one of 8 KB or more is logged as it is given.
+extern "C" void conker_heap_alloc_end(uint8_t* rdram, recomp_context* ctx) {
+    (void)rdram;
+    if (!pending_valid || !conker::netsession::active() || !on_game_thread()) {
+        pending_valid = false;
+        return;
+    }
+    pending_valid = false;
+    const uint32_t pointer = (uint32_t)ctx->r2;
+    if (!ram_pointer(pointer)) {
+        return;
+    }
+    {
+        std::lock_guard lock{ pool_mutex };
+        if (asked_blocks.size() < 200000) {
+            asked_blocks[pointer] = pending_ask;
+        }
+    }
+    static int logged = 0;
+    if (pending_ask.size >= 8192 && logged < 1500) {
+        logged++;
+        char line[200];
+        std::snprintf(line, sizeof(line), "[alloc] f=%u %u bytes owner %u at %08X for %08X (up %08X %08X %08X %08X)", (unsigned)pending_ask.frame,
+            (unsigned)pending_ask.size, (unsigned)pending_ask.owner, (unsigned)pointer, (unsigned)pending_ask.from, (unsigned)pending_ask.up[0],
+            (unsigned)pending_ask.up[1], (unsigned)pending_ask.up[2], (unsigned)pending_ask.up[3]);
+        conker::netsession::log(line);
     }
 }
