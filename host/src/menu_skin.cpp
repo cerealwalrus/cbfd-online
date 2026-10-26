@@ -145,6 +145,8 @@ namespace {
     recompui::Clickable* update_button = nullptr;
     recompui::Label* link_label = nullptr;
     recompui::Label* ping_label = nullptr;
+    recompui::Label* netcode_label = nullptr;
+    std::string netcode_shown;
     recompui::Label* update_label = nullptr;
     recompui::Image* lamps[3] = {};   // green, yellow, red
     int lamp_shown = -1;
@@ -341,7 +343,7 @@ namespace {
         make_separator(bar);
         ping_label = make_text(bar, "PING " + value("--"), 2.4f);
         make_separator(bar);
-        make_text(bar, "NETCODE " + value("UDP"), 2.4f);
+        netcode_label = make_text(bar, "NETCODE " + value("UDP"), 2.4f);
         recompui::Element* right = make_div(bar);
         right->set_display(recompui::Display::Flex);
         right->set_flex_direction(recompui::FlexDirection::Row);
@@ -356,6 +358,8 @@ namespace {
         update_label = make_text(update_button, "CHECK FOR UPDATES", 2.4f);
         // the check, from the start (once a run; Online started it before)
         conker::updates::check_in_background();
+        // (0.10.46) whether UDP 47000 can be reached from outside (and opened on the router over UPnP)
+        conker::upnp::start();
     }
 
     // tags are GitHub's: only letters, digits and dots go into the lettering
@@ -363,6 +367,17 @@ namespace {
         std::string out;
         for (char c : text) {
             if ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '.' || c == '-') {
+                out += c;
+            }
+        }
+        return out;
+    }
+
+    // the port check's reason: its own capitals, an address, slashes and spaces only
+    std::string plain_detail(const std::string& text) {
+        std::string out;
+        for (char c : text) {
+            if ((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || c == '.' || c == ' ' || c == '/' || c == '-') {
                 out += c;
             }
         }
@@ -446,6 +461,18 @@ namespace {
         // (0.10.45) a real ping to the tavern (hq_ping.cpp)
         const int ms = conker::hq_ping::last_ms();
         const std::string ping = "PING " + value(ms >= 0 ? std::to_string(ms) + " MS" : (ms == -1 ? "NO REPLY" : "--"));
+        // (0.10.46) NETCODE: whether others can reach UDP 47000 here, that is whether this player can host
+        std::string netcode;
+        {
+            const conker::upnp::Status port = conker::upnp::status();
+            static const char* const colours[] = { "#efe4bf", "#7dff6a", "#ff5a3c", "#f2b51b" };
+            static const char* const words[] = { "CHECKING", "OPEN - CAN HOST", "CLOSED - CAN'T HOST", "UNVERIFIED" };
+            const int state = port.state >= 0 && port.state <= 3 ? port.state : 3;
+            netcode = "NETCODE " + value("UDP 47000") + " <span style=\"color: " + colours[state] + ";\">" + words[state] + "</span>";
+            if (!port.detail.empty() && state != 1) {
+                netcode += " " + value("(" + plain_detail(port.detail) + ")");
+            }
+        }
         std::string update_text;
         bool update_lit = false;
         if (up.state == 1) {
@@ -493,6 +520,10 @@ namespace {
         if (link != link_shown) {
             link_label->set_text_unsafe(link);
             link_shown = link;
+        }
+        if (netcode_label != nullptr && netcode != netcode_shown) {
+            netcode_label->set_text_unsafe(netcode);
+            netcode_shown = netcode;
         }
         if (ping != ping_shown) {
             ping_label->set_text_unsafe(ping);

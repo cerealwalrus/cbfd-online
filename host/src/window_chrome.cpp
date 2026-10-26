@@ -109,7 +109,7 @@ namespace {
             SDL_SetWindowPosition(chrome_window, area.x, area.y);
         }
         else {
-            const int width = std::min(1600, area.w - 80), height = std::min(900, area.h - 60);
+            const int width = (std::min)(1600, area.w - 80), height = (std::min)(900, area.h - 60);
             SDL_SetWindowSize(chrome_window, width, height);
             SDL_SetWindowPosition(chrome_window, area.x + (area.w - width) / 2, area.y + (area.h - height) / 2);
         }

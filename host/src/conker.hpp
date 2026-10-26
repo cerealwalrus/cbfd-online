@@ -451,6 +451,17 @@ namespace conker {
         int last_ms();
     }
 
+    // upnp_port.cpp (0.10.46): whether UDP 47000 can be reached from the internet (so this player can host); opens it on the router
+    // over UPnP as the launcher starts (CONKER_NO_UPNP=1: only checks).
+    namespace upnp {
+        struct Status {
+            int state = 0;        // 0 checking, 1 open, 2 closed, 3 can't tell
+            std::string detail;   // why, in capitals ("UPNP", "CGNAT / DOUBLE NAT", "NO UPNP ROUTER"...)
+        };
+        void start();
+        Status status();
+    }
+
     // window_chrome.cpp (0.10.44): on Windows the launcher's window has no Windows title bar: the launcher draws its own (menu_skin.cpp)
     // and the window is dragged by it (SDL's hit test). Once the game starts the Windows border is back. CONKER_NATIVE_WINDOW=1 keeps it.
     namespace window_chrome {
