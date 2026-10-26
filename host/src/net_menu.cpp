@@ -303,9 +303,9 @@ bool conker::netmenu::boot_screen_held(uint8_t* rdram) {
 namespace {
     bool coop_pending = false;
     bool coop_pending_frame_set = false;
-    // The scene table's index (D_80087430, 20 bytes each) of the stage: Zombie Fest (scene 0x3C, the mansion with the shotgun's zombies).
-    // (Zombie Grave Shoot, the graveyard's, is 0xA7.)
-    constexpr int16_t coop_stage = 0xAB;
+    // The scene table's index (D_80087430, 20 bytes each) of the stage: Zombie Grave Shoot (0.10.29), the graveyard, where Gregg gives
+    // Conker the shotgun and the zombies come (scene 0x41, entry 0xD004). (Zombie Fest, the mansion's, is 0xAB.)
+    constexpr int16_t coop_stage = 0xA7;
 }
 
 extern "C" void func_151E30C4(uint8_t* rdram, recomp_context* ctx);
