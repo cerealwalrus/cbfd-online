@@ -1,7 +1,11 @@
-// (0.10.44) The launcher's own window frame. On Windows the window is made without the Windows title bar and border; the launcher
-// draws a title bar of its own along the top (menu_skin.cpp: the star, FIELD LAUNCHER, minimize and close), and SDL's hit test makes
-// that bar drag the window (and the window's edges resize it, when it isn't filling the screen). Double-clicking the bar fills the
-// desktop's work area (above the taskbar) or goes back to 1600 x 900. When the game starts the Windows border comes back, as before.
+// (0.10.44) The launcher's own window frame: on Windows the launcher draws its title bar (menu_skin.cpp: the star, FIELD LAUNCHER,
+// minimize, maximize / restore and close) in place of the Windows one. When the game starts the Windows title bar comes back.
+//
+// (0.10.50) The window is a normal Windows window underneath (caption, sizing frame, minimize and maximize boxes), so Windows treats it
+// as one: dragging it to a screen edge snaps it, the Snap Layouts flyout opens over its maximize button (Windows 11), Windows+arrows
+// work, its edges resize it, and maximized it stops at the taskbar. Only the frame isn't drawn: SDL's window procedure is wrapped, and
+// WM_NCCALCSIZE gives the whole window to the picture, WM_NCHITTEST says where the title bar, the maximize button and the edges are.
+// (0.10.44 to 0.10.49 made it a borderless popup, which Windows doesn't snap or lay out.)
 //
 // CONKER_NATIVE_WINDOW=1 keeps the Windows title bar. Other systems keep theirs.
 
@@ -16,122 +20,170 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <windowsx.h>
 #endif
 
 #include "conker.hpp"
 
 namespace {
     SDL_Window* chrome_window = nullptr;
-    bool active = false;     // the launcher is drawing the title bar
-    bool restored = false;   // the game started and the Windows border is back
-    std::atomic<bool> filled{ false };   // the window fills the desktop's work area (read by the launcher's button too)
-    std::atomic<bool> config_full_screen{ false };   // (0.10.45) Fullscreen in the graphics settings (RT64 makes it so)
+    bool active = false;                    // the launcher draws the title bar (until the game starts)
+    std::atomic<bool> restored{ false };    // the game started and the Windows title bar is back
+    std::atomic<bool> zoomed{ false };      // maximized (read by the launcher's middle button)
+    std::atomic<bool> max_hovered{ false }; // the mouse is on the maximize button (Windows has it: it's where Snap Layouts opens)
     std::atomic<bool> minimize_wanted{ false };
     std::atomic<bool> toggle_wanted{ false };
+    std::atomic<bool> config_full_screen{ false };
 
-    // RT64 makes the window full screen itself (Fullscreen in the graphics settings), by changing its Windows style: a popup the
-    // monitor's size, with no minimize box. Back to windowed it gives it the Windows border (a caption), which is taken off again.
-    enum class WindowStyle { Ours, FullScreen, WithBorder };
+    // In dp (the UI is 1080 dp high at any window size): the title bar's height, and its buttons at the right: close, maximize /
+    // restore and minimize, 69 dp each, 3 apart (menu_skin.cpp).
+    constexpr float ui_height = 1080.0f, bar_height = 51.0f, button_width = 69.0f, button_gap = 3.0f;
+
 #if defined(_WIN32)
     HWND window_handle = nullptr;
-#endif
-    WindowStyle window_style() {
-#if defined(_WIN32)
-        if (window_handle != nullptr) {
-            const LONG_PTR style = GetWindowLongPtr(window_handle, GWL_STYLE);
-            if ((style & WS_CAPTION) == WS_CAPTION) {
-                return WindowStyle::WithBorder;
-            }
-            if ((style & WS_POPUP) != 0 && (style & WS_MINIMIZEBOX) == 0) {
-                return WindowStyle::FullScreen;
-            }
-        }
-#endif
-        return WindowStyle::Ours;
+    WNDPROC sdl_procedure = nullptr;
+    bool max_pressed = false;
+
+    UINT window_dpi(HWND hwnd) {
+        using GetDpiForWindowFn = UINT(WINAPI*)(HWND);
+        static GetDpiForWindowFn get = (GetDpiForWindowFn)GetProcAddress(GetModuleHandleW(L"user32.dll"), "GetDpiForWindow");
+        const UINT dpi = get != nullptr ? get(hwnd) : 96;
+        return dpi != 0 ? dpi : 96;
     }
 
-    // (0.10.45: by the graphics settings, not by guessing from the window's style)
-    bool full_screen(SDL_Window* window) {
-        return (SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN) != 0 || config_full_screen.load();
+    // the launcher's frame applies: not once the game started, nor in full screen (RT64's: a popup with no caption)
+    bool own_frame(HWND hwnd) {
+        return active && !restored.load() && (GetWindowLongPtrW(hwnd, GWL_STYLE) & WS_CAPTION) == WS_CAPTION;
     }
 
-    // In dp (the UI is 1080 dp high at any window size): the title bar's height, and the width of its buttons at the right
-    // (minimize, maximize or restore, and close: 69 dp each with a little room), which are clicked, not dragged.
-    constexpr float ui_height = 1080.0f, bar_height = 51.0f, buttons_width = 225.0f;
-    constexpr int edge = 6;   // window units round the edge that resize it
-
-    SDL_HitTestResult SDLCALL hit_test(SDL_Window* window, const SDL_Point* point, void*) {
-        if (!active || restored || full_screen(window)) {
-            return SDL_HITTEST_NORMAL;
-        }
-        int width = 0, height = 0;
-        SDL_GetWindowSize(window, &width, &height);
-        if (!filled && width > 0 && height > 0) {
-            const bool left = point->x < edge, right = point->x >= width - edge;
-            const bool top = point->y < edge, bottom = point->y >= height - edge;
-            if (top && left) return SDL_HITTEST_RESIZE_TOPLEFT;
-            if (top && right) return SDL_HITTEST_RESIZE_TOPRIGHT;
-            if (bottom && left) return SDL_HITTEST_RESIZE_BOTTOMLEFT;
-            if (bottom && right) return SDL_HITTEST_RESIZE_BOTTOMRIGHT;
-            if (top) return SDL_HITTEST_RESIZE_TOP;
-            if (bottom) return SDL_HITTEST_RESIZE_BOTTOM;
-            if (left) return SDL_HITTEST_RESIZE_LEFT;
-            if (right) return SDL_HITTEST_RESIZE_RIGHT;
+    LRESULT hit_test(HWND hwnd, LPARAM lparam) {
+        POINT point{ GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam) };
+        ScreenToClient(hwnd, &point);
+        RECT client{};
+        GetClientRect(hwnd, &client);
+        const int width = client.right, height = client.bottom;
+        if (!IsZoomed(hwnd)) {
+            const int edge = MulDiv(6, (int)window_dpi(hwnd), 96);
+            const bool left = point.x < edge, right = point.x >= width - edge;
+            const bool top = point.y < edge, bottom = point.y >= height - edge;
+            if (top && left) return HTTOPLEFT;
+            if (top && right) return HTTOPRIGHT;
+            if (bottom && left) return HTBOTTOMLEFT;
+            if (bottom && right) return HTBOTTOMRIGHT;
+            if (top) return HTTOP;
+            if (bottom) return HTBOTTOM;
+            if (left) return HTLEFT;
+            if (right) return HTRIGHT;
         }
         const float dp = (float)height / ui_height;
-        if ((float)point->y < bar_height * dp && (float)point->x < (float)width - buttons_width * dp) {
-            return SDL_HITTEST_DRAGGABLE;
+        if (dp > 0.0f && (float)point.y < bar_height * dp) {
+            const float from_right = (float)(width - point.x) / dp;   // dp from the window's right edge
+            const float max_left = 2.0f * button_width + button_gap, max_right = button_width + button_gap;
+            if (from_right >= max_right && from_right < max_left) {
+                return HTMAXBUTTON;
+            }
+            if (from_right < 3.0f * button_width + 2.0f * button_gap + 4.0f) {
+                return HTCLIENT;   // close and minimize: the launcher's own buttons
+            }
+            return HTCAPTION;
         }
-        return SDL_HITTEST_NORMAL;
+        return HTCLIENT;
     }
 
-#if defined(_WIN32)
-    // A double click on the bar (Windows calls it the caption): the window has no maximize box, so Windows itself does nothing with it.
-    void SDLCALL message_hook(void*, void*, unsigned int message, Uint64 wparam, Sint64) {
-        if (message == WM_NCLBUTTONDBLCLK && wparam == HTCAPTION && active && !restored) {
-            toggle_wanted = true;
+    LRESULT CALLBACK chrome_procedure(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
+        if (own_frame(hwnd)) {
+            switch (message) {
+            case WM_NCCALCSIZE:
+                if (wparam == TRUE) {
+                    // no frame: the whole window is the picture; maximized, Windows makes the window its frame's width bigger than
+                    // the work area all round, so the picture is the work area
+                    NCCALCSIZE_PARAMS* params = (NCCALCSIZE_PARAMS*)lparam;
+                    if (IsZoomed(hwnd)) {
+                        MONITORINFO monitor{};
+                        monitor.cbSize = sizeof(monitor);
+                        if (GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &monitor)) {
+                            params->rgrc[0] = monitor.rcWork;
+                        }
+                    }
+                }
+                return 0;
+            case WM_NCHITTEST:
+                return hit_test(hwnd, lparam);
+            case WM_NCACTIVATE:
+                // (no frame to repaint as the window gains or loses focus)
+                return DefWindowProcW(hwnd, message, wparam, -1);
+            case WM_NCMOUSEMOVE:
+                if (wparam == HTMAXBUTTON) {
+                    if (!max_hovered.exchange(true)) {
+                        TRACKMOUSEEVENT track{};
+                        track.cbSize = sizeof(track);
+                        track.dwFlags = TME_LEAVE | TME_NONCLIENT;
+                        track.hwndTrack = hwnd;
+                        TrackMouseEvent(&track);
+                    }
+                }
+                else {
+                    max_hovered = false;
+                }
+                break;
+            case WM_NCMOUSELEAVE:
+            case WM_MOUSEMOVE:
+                max_hovered = false;
+                break;
+            case WM_NCLBUTTONDOWN:
+                if (wparam == HTMAXBUTTON) {
+                    max_pressed = true;
+                    return 0;   // (Windows would draw a button of its own)
+                }
+                max_pressed = false;
+                break;
+            case WM_NCLBUTTONUP:
+                if (wparam == HTMAXBUTTON) {
+                    if (max_pressed) {
+                        ShowWindow(hwnd, IsZoomed(hwnd) ? SW_RESTORE : SW_MAXIMIZE);
+                    }
+                    max_pressed = false;
+                    return 0;
+                }
+                max_pressed = false;
+                break;
+            case WM_NCLBUTTONDBLCLK:
+                if (wparam == HTMAXBUTTON) {
+                    return 0;
+                }
+                break;   // (on the title bar: Windows maximizes or restores)
+            default:
+                break;
+            }
         }
+        return CallWindowProcW(sdl_procedure, hwnd, message, wparam, lparam);
     }
-#endif
 
-    SDL_Rect work_area(int display) {
-        SDL_Rect area{ 0, 0, 1600, 900 };
-        if (display < 0 || SDL_GetDisplayUsableBounds(display, &area) != 0 || area.w <= 0 || area.h <= 0) {
-            SDL_GetDisplayBounds(display < 0 ? 0 : display, &area);
+    RECT work_area(HWND hwnd) {
+        MONITORINFO monitor{};
+        monitor.cbSize = sizeof(monitor);
+        GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY), &monitor);
+        return monitor.rcWork;
+    }
+
+    // the window 1600 x 900 (smaller on a smaller screen) in the middle of its screen's work area, not maximized
+    void centre_1600x900(HWND hwnd) {
+        if (IsZoomed(hwnd) || IsIconic(hwnd)) {
+            ShowWindow(hwnd, SW_RESTORE);
         }
-        return area;
+        const RECT area = work_area(hwnd);
+        const int area_width = area.right - area.left, area_height = area.bottom - area.top;
+        const int width = (std::min)(1600, area_width - 80), height = (std::min)(900, area_height - 60);
+        SetWindowPos(hwnd, nullptr, area.left + (area_width - width) / 2, area.top + (area_height - height) / 2, width, height,
+            SWP_NOZORDER | SWP_NOACTIVATE);
     }
 
     void minimize_now() {
-#if defined(_WIN32)
-        if (window_handle != nullptr) {
-            ReleaseCapture();
-            ShowWindow(window_handle, SW_MINIMIZE);
-            const bool iconic = IsIconic(window_handle) != 0;
-            std::printf("[window] minimizing: %s (style 0x%llx)\n", iconic ? "done" : "Windows didn't",
-                (unsigned long long)GetWindowLongPtr(window_handle, GWL_STYLE));
-            if (iconic) {
-                return;
-            }
-        }
+        ReleaseCapture();
+        ShowWindow(window_handle, SW_MINIMIZE);
+        std::printf("[window] minimizing: %s\n", IsIconic(window_handle) ? "done" : "Windows didn't");
+    }
 #endif
-        SDL_MinimizeWindow(chrome_window);
-        std::printf("[window] minimizing (SDL): %s\n", (SDL_GetWindowFlags(chrome_window) & SDL_WINDOW_MINIMIZED) != 0 ? "done" : "not yet");
-    }
-
-    void set_filled(bool fill) {
-        const SDL_Rect area = work_area(SDL_GetWindowDisplayIndex(chrome_window));
-        if (fill) {
-            SDL_SetWindowSize(chrome_window, area.w, area.h);
-            SDL_SetWindowPosition(chrome_window, area.x, area.y);
-        }
-        else {
-            const int width = (std::min)(1600, area.w - 80), height = (std::min)(900, area.h - 60);
-            SDL_SetWindowSize(chrome_window, width, height);
-            SDL_SetWindowPosition(chrome_window, area.x + (area.w - width) / 2, area.y + (area.h - height) / 2);
-        }
-        filled = fill;
-    }
 }
 
 bool conker::window_chrome::wanted() {
@@ -143,48 +195,55 @@ bool conker::window_chrome::wanted() {
 #endif
 }
 
-bool conker::window_chrome::start_rect(bool fill, int* x, int* y, int* width, int* height) {
-    const SDL_Rect area = work_area(0);
-    if (!fill) {
-        // (0.10.49) 1600 x 900 (Windowed Size), smaller on a smaller screen, in the middle of it
-        *width = (std::min)(*width, area.w - 80);
-        *height = (std::min)(*height, area.h - 60);
-        *x = area.x + (area.w - *width) / 2;
-        *y = area.y + (area.h - *height) / 2;
-        return false;
+bool conker::window_chrome::start_rect(bool, int* x, int* y, int* width, int* height) {
+    // the window's place when it isn't maximized: its size (1600 x 900, or --window's), smaller on a smaller screen, in the middle
+    SDL_Rect area{ 0, 0, 1600, 900 };
+    if (SDL_GetDisplayUsableBounds(0, &area) != 0 || area.w <= 0 || area.h <= 0) {
+        SDL_GetDisplayBounds(0, &area);
     }
-    *x = area.x;
-    *y = area.y;
-    *width = area.w;
-    *height = area.h;
-    return true;
+    *width = (std::min)(*width, area.w - 80);
+    *height = (std::min)(*height, area.h - 60);
+    *x = area.x + (area.w - *width) / 2;
+    *y = area.y + (area.h - *height) / 2;
+    return false;
 }
 
-void conker::window_chrome::attach(SDL_Window* window, bool is_filled) {
+void conker::window_chrome::attach(SDL_Window* window, bool maximized, int x, int y, int width, int height) {
     chrome_window = window;
-    filled = is_filled;
 #if defined(_WIN32)
     SDL_SysWMinfo info;
     SDL_VERSION(&info.version);
-    if (SDL_GetWindowWMInfo(window, &info)) {
-        window_handle = info.info.win.window;
-        std::printf("[window] its Windows style: 0x%llx\n", (unsigned long long)GetWindowLongPtr(window_handle, GWL_STYLE));
-    }
-#endif
-    if (SDL_SetWindowHitTest(window, hit_test, nullptr) != 0) {
-        std::printf("[window] no hit test (%s): the Windows title bar stays\n", SDL_GetError());
-        SDL_SetWindowBordered(window, SDL_TRUE);
+    if (!SDL_GetWindowWMInfo(window, &info) || info.info.win.window == nullptr) {
+        SDL_ShowWindow(window);
+        if (maximized) {
+            SDL_MaximizeWindow(window);
+        }
         return;
     }
-#if defined(_WIN32)
-    SDL_SetWindowsMessageHook(message_hook, nullptr);
+    window_handle = info.info.win.window;
+    sdl_procedure = (WNDPROC)SetWindowLongPtrW(window_handle, GWLP_WNDPROC, (LONG_PTR)chrome_procedure);
+    active = sdl_procedure != nullptr;
+    if (!active) {
+        std::printf("[window] couldn't take over the frame: the Windows title bar stays\n");
+    }
+    // the frame recomputed (none), the window's place set (its whole size now the picture), then shown
+    SetWindowPos(window_handle, nullptr, x, y, width, height, SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+    ShowWindow(window_handle, maximized ? SW_SHOWMAXIMIZED : SW_SHOW);
+    SetForegroundWindow(window_handle);
+    zoomed = IsZoomed(window_handle) != 0;
+    std::printf("[window] the launcher's own title bar (%s), style 0x%llx\n", zoomed.load() ? "maximized" : "windowed",
+        (unsigned long long)GetWindowLongPtrW(window_handle, GWL_STYLE));
+#else
+    (void)x; (void)y; (void)width; (void)height;
+    SDL_ShowWindow(window);
+    if (maximized) {
+        SDL_MaximizeWindow(window);
+    }
 #endif
-    active = true;
-    std::printf("[window] the launcher's own title bar (%s)\n", filled ? "filling the work area" : "windowed");
 }
 
 bool conker::window_chrome::custom() {
-    return active && !restored;
+    return active && !restored.load();
 }
 
 void conker::window_chrome::minimize() {
@@ -193,7 +252,11 @@ void conker::window_chrome::minimize() {
 }
 
 bool conker::window_chrome::is_filled() {
-    return filled.load();
+    return zoomed.load();
+}
+
+bool conker::window_chrome::maximize_hovered() {
+    return max_hovered.load();
 }
 
 void conker::window_chrome::toggle_fill() {
@@ -203,9 +266,12 @@ void conker::window_chrome::toggle_fill() {
 
 void conker::window_chrome::update(bool game_started, bool settings_full_screen) {
     config_full_screen = settings_full_screen;
-    if (!active || chrome_window == nullptr) {
+#if defined(_WIN32)
+    if (!active || window_handle == nullptr) {
         return;
     }
+    HWND hwnd = window_handle;
+    zoomed = IsZoomed(hwnd) != 0;
     {
         // (0.10.49) the Graphics tab's Windowed Size changed: the window takes the new size at once (not in full screen)
         static int size_seen = -1;
@@ -213,100 +279,58 @@ void conker::window_chrome::update(bool game_started, bool settings_full_screen)
         if (size_seen < 0) {
             size_seen = fill;
         }
-        else if (fill != size_seen && !full_screen(chrome_window)) {
+        else if (fill != size_seen && !settings_full_screen) {
             size_seen = fill;
             std::printf("[window] Windowed Size: %s\n", fill ? "Fill Screen" : "1600 x 900");
-            if (!restored) {
-                set_filled(fill != 0);
+            if (fill) {
+                ShowWindow(hwnd, SW_MAXIMIZE);
             }
-            else if (fill) {
-                SDL_MaximizeWindow(chrome_window);
-                filled = true;
+            else if (!restored.load()) {
+                centre_1600x900(hwnd);
             }
             else {
+                // with the Windows title bar: 1600 x 900 inside it
                 SDL_RestoreWindow(chrome_window);
-                const SDL_Rect area = work_area(SDL_GetWindowDisplayIndex(chrome_window));
-                int top = 0;
-                SDL_GetWindowBordersSize(chrome_window, &top, nullptr, nullptr, nullptr);
-                const int width = (std::min)(1600, area.w - 80), height = (std::min)(900, area.h - 60 - top);
-                SDL_SetWindowSize(chrome_window, width, height);
-                SDL_SetWindowPosition(chrome_window, area.x + (area.w - width) / 2, area.y + top + (area.h - top - height) / 2);
-                filled = false;
+                SDL_SetWindowSize(chrome_window, 1600, 900);
+                SDL_SetWindowPosition(chrome_window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
             }
         }
     }
-    if (restored) {
+    if (restored.load()) {
         return;
     }
-    const Uint32 flags = SDL_GetWindowFlags(chrome_window);
-    {
-        // (0.10.48) the log says when it's minimized and back, to see what brings it back if something does
-        static bool was_minimized = false;
-        const bool minimized = (flags & SDL_WINDOW_MINIMIZED) != 0;
-        if (minimized != was_minimized) {
-            was_minimized = minimized;
-            std::printf("[window] %s\n", minimized ? "minimized" : "shown again");
-        }
-    }
     if (game_started) {
-        // the Windows border back for the game
+        // the Windows title bar back for the game: the frame recomputed, the window grown round its picture so the picture keeps its
+        // size (maximized, it stays maximized); in full screen RT64 brings the frame back when it goes back to windowed
         restored = true;
-        SDL_SetWindowHitTest(chrome_window, nullptr, nullptr);
-#if defined(_WIN32)
-        SDL_SetWindowsMessageHook(nullptr, nullptr);
-#endif
-        if (full_screen(chrome_window)) {
-            // full screen: RT64 gives it the Windows border when it goes back to windowed
-            std::printf("[window] the game started full screen\n");
-            return;
-        }
-        SDL_SetWindowBordered(chrome_window, SDL_TRUE);
-        if (filled) {
-            SDL_MaximizeWindow(chrome_window);
+        max_hovered = false;
+        const LONG_PTR style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+        if ((style & WS_CAPTION) == WS_CAPTION && !IsZoomed(hwnd) && !IsIconic(hwnd)) {
+            RECT outer{};
+            GetWindowRect(hwnd, &outer);
+            AdjustWindowRectEx(&outer, (DWORD)style, FALSE, (DWORD)GetWindowLongPtrW(hwnd, GWL_EXSTYLE));
+            const RECT area = work_area(hwnd);
+            if (outer.top < area.top) {
+                OffsetRect(&outer, 0, area.top - outer.top);
+            }
+            SetWindowPos(hwnd, nullptr, outer.left, outer.top, outer.right - outer.left, outer.bottom - outer.top,
+                SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
         }
         else {
-            // the title bar is added above the window: keep it on the screen
-            int top = 0, x = 0, y = 0;
-            SDL_GetWindowBordersSize(chrome_window, &top, nullptr, nullptr, nullptr);
-            SDL_GetWindowPosition(chrome_window, &x, &y);
-            const SDL_Rect area = work_area(SDL_GetWindowDisplayIndex(chrome_window));
-            if (y - top < area.y) {
-                SDL_SetWindowPosition(chrome_window, x, area.y + top);
-            }
+            SetWindowPos(hwnd, nullptr, 0, 0, 0, 0, SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_FRAMECHANGED);
         }
         std::printf("[window] the game started: the Windows title bar is back\n");
         return;
     }
-    if (full_screen(chrome_window)) {
-        // (full screen: minimize still works, maximize / restore doesn't apply)
-        if (minimize_wanted.load() && (SDL_GetGlobalMouseState(nullptr, nullptr) & SDL_BUTTON_LMASK) == 0) {
-            minimize_wanted = false;
-            minimize_now();
-        }
-        toggle_wanted = false;
-        return;
-    }
-    if (window_style() == WindowStyle::WithBorder) {
-        // RT64 went back to windowed with the Windows border: off again (SDL still has it as borderless, so it's put on and taken off),
-        // at the size it had
-        SDL_SetWindowBordered(chrome_window, SDL_TRUE);
-        SDL_SetWindowBordered(chrome_window, SDL_FALSE);
-        set_filled(filled);
-        std::printf("[window] out of full screen: the launcher's own title bar again\n");
-    }
-    if ((SDL_GetWindowFlags(chrome_window) & SDL_WINDOW_MAXIMIZED) != 0) {
-        // maximized some other way (Windows+Up): a window with no border would cover the taskbar, so it fills the work area instead
-        SDL_RestoreWindow(chrome_window);
-        set_filled(true);
-    }
-    // (0.10.48) once the mouse button is let go (the button acts on the press, and the window has the mouse captured while it's
-    // held), minimized straight away by Windows (ShowWindow, which doesn't depend on the window's style); if it still isn't, SDL's way
+    // (once the mouse button is let go: the buttons act on the press)
     if (minimize_wanted.load() && (SDL_GetGlobalMouseState(nullptr, nullptr) & SDL_BUTTON_LMASK) == 0) {
         minimize_wanted = false;
         minimize_now();
     }
-    if (toggle_wanted.exchange(false) && (flags & SDL_WINDOW_MINIMIZED) == 0) {
-        set_filled(!filled.load());
-        std::printf("[window] %s\n", filled.load() ? "filling the work area" : "1600 x 900");
+    if (toggle_wanted.exchange(false) && !settings_full_screen && !IsIconic(hwnd)) {
+        ShowWindow(hwnd, IsZoomed(hwnd) ? SW_RESTORE : SW_MAXIMIZE);
     }
+#else
+    (void)game_started;
+#endif
 }

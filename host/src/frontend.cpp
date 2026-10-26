@@ -285,16 +285,13 @@ namespace {
         // (0.10.49: or 1600 x 900, by the Graphics tab's Windowed Size)
         const bool open_maximized = (conker::frontend::window_width <= 0 || conker::frontend::window_height <= 0) &&
             conker::windowed_size::fill_screen();
-        // (0.10.44) on Windows the launcher draws its own title bar (window_chrome.cpp): no Windows border, and in place of maximized
-        // the window fills the desktop's work area (a maximized window with no border would cover the taskbar)
+        // (0.10.44) on Windows the launcher draws its own title bar (window_chrome.cpp). (0.10.50) The window is a normal one (so
+        // Windows snaps it, lays it out and maximizes it as any other), made hidden, and shown once its frame is taken over.
         const bool own_chrome = conker::window_chrome::wanted();
         int x = SDL_WINDOWPOS_CENTERED, y = SDL_WINDOWPOS_CENTERED, open_width = width, open_height = height;
-        bool filled = false;
         if (own_chrome) {
-            flags |= SDL_WINDOW_BORDERLESS;
-            if (open_maximized || conker::frontend::window_width <= 0 || conker::frontend::window_height <= 0) {
-                filled = conker::window_chrome::start_rect(open_maximized, &x, &y, &open_width, &open_height);
-            }
+            flags |= SDL_WINDOW_HIDDEN;
+            conker::window_chrome::start_rect(false, &x, &y, &open_width, &open_height);
         }
         else if (open_maximized) {
             flags |= SDL_WINDOW_MAXIMIZED;
@@ -305,7 +302,7 @@ namespace {
             return {};
         }
         if (own_chrome) {
-            conker::window_chrome::attach(window, filled);
+            conker::window_chrome::attach(window, open_maximized, x, y, open_width, open_height);
         }
 #if defined(_WIN32)
         SDL_SysWMinfo info;

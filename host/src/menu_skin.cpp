@@ -498,7 +498,9 @@ namespace {
             }
         }
         if (size_button != nullptr) {
-            const int shown = (conker::window_chrome::is_filled() ? 2 : 0) + (size_button->is_style_enabled(recompui::hover_state) ? 1 : 0);
+            // (0.10.50: Windows has the mouse over this one, so the lit picture goes by window_chrome's hover)
+            const bool lit = conker::window_chrome::maximize_hovered() || size_button->is_style_enabled(recompui::hover_state);
+            const int shown = (conker::window_chrome::is_filled() ? 2 : 0) + (lit ? 1 : 0);
             if (shown != size_shown) {
                 size_shown = shown;
                 for (int i = 0; i < 4; i++) {

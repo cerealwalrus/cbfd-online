@@ -465,18 +465,21 @@ namespace conker {
     // window_chrome.cpp (0.10.44): on Windows the launcher's window has no Windows title bar: the launcher draws its own (menu_skin.cpp)
     // and the window is dragged by it (SDL's hit test). Once the game starts the Windows border is back. CONKER_NATIVE_WINDOW=1 keeps it.
     namespace window_chrome {
-        // Before the window is made: whether it's borderless, and (fill: it was to open maximized) where it goes, the desktop's work area.
+        // Before the window is made: whether the launcher draws its own title bar, and the window's place when it isn't maximized
+        // (its size, smaller on a smaller screen, in the middle).
         bool wanted();
         bool start_rect(bool fill, int* x, int* y, int* width, int* height);
-        // After it's made.
-        void attach(SDL_Window* window, bool filled);
+        // After it's made (hidden): the frame taken over, the window put there and shown (maximized or not).
+        void attach(SDL_Window* window, bool maximized, int x, int y, int width, int height);
         // True while the launcher draws the title bar.
         bool custom();
         // From the launcher's buttons (any thread): done on the main thread, in update.
         void minimize();
         void toggle_fill();
-        // (0.10.45) whether it fills the work area (the middle button shows restore then, maximize otherwise)
+        // (0.10.45) whether it's maximized (the middle button shows restore then, maximize otherwise)
         bool is_filled();
+        // (0.10.50) the mouse is on the middle button (Windows has it, for Snap Layouts, so the launcher doesn't see it)
+        bool maximize_hovered();
         // Every frame, on the main thread (frontend.cpp's update_gfx); full_screen: Fullscreen in the graphics settings.
         void update(bool game_started, bool full_screen);
     }

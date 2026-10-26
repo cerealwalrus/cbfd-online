@@ -20,7 +20,8 @@ skipped; with none of them the launcher keeps its flat wooden look.
                       lamp with its glow), hazard.png (the yellow and black stripes over the status bar, 7680 x 18),
                       transmission.png and update.png (the update check's answer, over the bottom right corner). The lettering is
                       Share Tech Mono (assets/ShareTechMono-Regular.ttf). On Windows the title bar takes the place of the Windows one;
-                      set CONKER_NATIVE_WINDOW=1 to keep the Windows title bar instead.
+                      set CONKER_NATIVE_WINDOW=1 to keep the Windows title bar instead. The window is a normal one underneath, so Windows snaps it,
+                      lays it out (Snap Layouts on the middle button) and maximizes it as any other.
   background.png      the whole screen behind everything. A 4:3 picture (1448 x 1086) shown in the middle of the window (bars at the
                       sides on a wide screen). With it the launcher lays its options out on the picture's five planks: Start Game,
                       Online, Controls, Settings and Mods sit on them, Exit on a sixth plank added under them, and Version and Add
