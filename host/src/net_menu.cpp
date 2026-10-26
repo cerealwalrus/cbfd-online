@@ -1290,10 +1290,6 @@ extern "C" void conker_coop_pause_sprites(uint8_t* rdram, recomp_context* ctx) {
 // flicker was the resyncs), and the renderer's crash (a gfx task overwritten). As the check passing does: the picked button 2 back
 // (L_151DE670), nothing read, nothing written.
 
-// (0.10.75) func_151DDC20 (the pause menu) begins: in co-op, on a machine whose menu isn't open, it isn't run at all. The co-op stage's
-// own pause is never on (Start opens the online menu), so the menu runs only for this machine's online menu; in the frames after that
-// closes it still ran, drawing its buttons as they left (the stray QUIT and joystick at the bottom). Returns 1 to skip it.
-extern "C" int conker_pause_menu_enter(uint8_t* rdram, recomp_context* ctx) {
-    conker_pause_bounds(rdram, ctx, 1);
-    return (coop_pause_screen() && !menu_open.load()) ? 1 : 0;
-}
+// (0.10.76) 0.10.75 skipped func_151DDC20 in co-op while this machine's menu was closed: it runs every frame, not only for the pause
+// (its start resets the game's state for a black box, D_800E0B96 among it), and every player's screen had a black box over it. It
+// runs as the game has it again.

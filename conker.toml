@@ -1092,7 +1092,7 @@ text = "{ extern void conker_pause_bounds(uint8_t*, recomp_context*, int); conke
 [[patches.hook]]
 func = "func_151DDC20"
 before_vram = 0x151DDC20
-text = "{ extern int conker_pause_menu_enter(uint8_t*, recomp_context*); if (conker_pause_menu_enter(rdram, ctx)) { return; } }"
+text = "{ extern void conker_pause_bounds(uint8_t*, recomp_context*, int); conker_pause_bounds(rdram, ctx, 1); }"
 
 [[patches.hook]]
 func = "func_10010F30"
