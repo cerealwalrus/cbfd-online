@@ -324,9 +324,9 @@ bool conker::netmenu::boot_screen_held(uint8_t* rdram) {
 namespace {
     // The scene table's index (D_80087430, 20 bytes each) of the stage: Zombie Grave Shoot (0.10.29), the graveyard, where Gregg gives
     // Conker the shotgun and the zombies come (scene 0x41, entry 0xD004). (Zombie Fest, the mansion's, is 0xAB.)
-    // (0.10.54) Horror Intro (0xA6, the same scene from its start, entry 0) instead: Gregg's cutscene, where Conker is given the shotgun,
-    // then the zombies (0xA7, Zombie Grave Shoot, starts after it, at entry 0xD004, so nobody saw it)
-    constexpr int16_t coop_stage = 0xA6;
+    // (0.10.54 tried Horror Intro, 0xA6, the same scene from its start with Gregg's cutscene; 0.10.56 back to Zombie Grave Shoot's start,
+    // after it, the players' choice)
+    constexpr int16_t coop_stage = 0xA7;
 }
 
 extern "C" void func_151E30C4(uint8_t* rdram, recomp_context* ctx);
