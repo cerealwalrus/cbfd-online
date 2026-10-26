@@ -114,3 +114,32 @@ extern "C" void conker_team_trim(uint8_t* rdram, recomp_context* ctx) {
         ctx->r16 = (gpr)(int32_t)count;
     }
 }
+
+// 0.10.24: online, the race takes up to four players, as the other modes do. The game keeps it to two in three places, each
+// with the menu's category (gGameState +0x2C) at 7, the race's:
+//  - the character select (func_151E0B70) lets controllers 2 to 4 join only under a count it sets to 2 for the race (4 otherwise),
+//    a byte at $sp + 0x33: set to 4 at 0x151E0DA0, where both paths meet;
+//  - the select's drawing (func_151EC648, its case 4) draws 2 columns from x 0x70 for the race (4 from 0x28 otherwise): $s5 and the
+//    byte at $sp + 0xF7, set to 0x28 and 4 at 0x151ECCA8;
+//  - the characters shown on it (func_151E7F60) stand at the places of players 2 and 3 of the four (the player's number + 1): back
+//    to the player's own place ($v1 = $t2) at 0x151E8004, as there are four now (a fifth place, past the table's four, is no place).
+// The race's own limit on racers (D_800AB74C's row for it: 8 with one player, 4 with two to four) has room for four players.
+extern "C" void conker_race_join(uint8_t* rdram, recomp_context* ctx) {
+    if (conker::netsession::active()) {
+        MEM_B(0x33, ctx->r29) = 4;
+    }
+}
+
+extern "C" void conker_race_columns(uint8_t* rdram, recomp_context* ctx) {
+    if (conker::netsession::active()) {
+        ctx->r21 = (gpr)(int32_t)0x28;
+        MEM_B(0xF7, ctx->r29) = 4;
+    }
+}
+
+extern "C" void conker_race_places(uint8_t* rdram, recomp_context* ctx) {
+    (void)rdram;
+    if (conker::netsession::active()) {
+        ctx->r3 = ctx->r10;
+    }
+}

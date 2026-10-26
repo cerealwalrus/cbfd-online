@@ -930,7 +930,11 @@ namespace {
             //    to the top corner on the right;
             //  - inside this machine's camera's rectangle: at its corners, the corners of the full view;
             //  - inside another camera's rectangle: gone (another player's HUD).
-            if (hud_layout && (op == 0xE4 || op == 0xE5 || op == 0xF6) && (nested || inside(any_hud_segments, address) || inside(bar_segments, address)) &&
+            // 0.10.24: with the pause menu open and three or four players, every rectangle (wherever in the list it is drawn) is looked at
+            // for the cameras' scores, which the pause draws at each quarter's top middle (0.10.22 looked in the HUD's passes only)
+            const bool pause_outside = hud_layout && menu_open && players >= 3 && (op == 0xE4 || op == 0xE5) &&
+                !(nested || inside(any_hud_segments, address) || inside(bar_segments, address));
+            if (hud_layout && (op == 0xE4 || op == 0xE5 || op == 0xF6) && (nested || inside(any_hud_segments, address) || inside(bar_segments, address) || pause_outside) &&
                     !(op == 0xF6 && w0 == (0xF6000000u | (scissor1[local] & 0xFFFFFFu)) && w1 == (scissor0[local] & 0xFFFFFFu))) {
                 const int32_t yl = (int32_t)(w0 & 0xFFFu), yh = (int32_t)(w1 & 0xFFFu);
                 const int32_t xl = (int32_t)((w0 >> 12) & 0xFFFu), xh = (int32_t)((w1 >> 12) & 0xFFFu);
@@ -1001,7 +1005,9 @@ namespace {
                                 (std::fabs(cx - middle) < 40.0f && cy > b - 14.0f);                    // the timer
                         }
                     }
-                    if (bar && (radar_camera >= 0 || !leave)) {
+                    if (pause_outside) {
+                        kind_name = "menu: left alone (outside the HUD)";
+                    } else if (bar && (radar_camera >= 0 || !leave)) {
                         hide = true;
                         kind_name = "menu: HUD hidden";
                     } else if (race_piece) {
@@ -1026,46 +1032,36 @@ namespace {
                         }
                     } else {
                         kind_name = "menu: left alone";
-                        // 0.10.22: the war's pause with three or four players. The game draws each camera's score and place ("0 (1st)") at
-                        // the top middle of its quarter, over the pause screen: on the full view all four showed, on every machine. Another
-                        // camera's is hidden (when the pass it is drawn in is known, only from that camera's own HUD pass, so the pause
-                        // screen's pieces are never taken for it) and this machine's goes to the top middle of the full view, as in play.
-                        if (!bar && players >= 3 && width <= 16.5f && height <= 12.5f) {
-                            int pass_camera = -1;
-                            if (!nested) {
-                                for (const auto& item : any_hud_cameras) {
-                                    if (address >= item[0] && address < item[1]) {
-                                        pass_camera = (int)item[2];
-                                    }
-                                }
+                    }
+                    // 0.10.22 (0.10.24: wherever it is drawn): the pause with three or four players. The game draws each camera's score
+                    // and place ("0 (1st)") at the top middle of its quarter, over the pause screen: on the full view all four showed, on
+                    // every machine. Another camera's is hidden and this machine's goes to the top middle of the full view, as in play.
+                    // (Only the score's own size of piece, a character up to 16 x 12, within 32 of the quarter's middle and 18 of its top:
+                    // the pause screen's pictures (PAUSED, QUIT, CONT.) are 32 square, its table is lower and nearer the middle.)
+                    if (!hide && dx == 0 && dy == 0 && players >= 3 && op != 0xF6 && width <= 16.5f && height <= 12.5f) {
+                        for (int k = 0; k < players; k++) {
+                            const uint32_t record = base + k * camera_size;
+                            const float l = get_float(rdram, record, field_left), r = get_float(rdram, record, field_right);
+                            const float t = get_float(rdram, record, field_top), b = get_float(rdram, record, field_bottom);
+                            if (r - l > 0.75f * (right - left) || !in_rect(l, t, r, b) || cy >= t + 18.0f || std::fabs(cx - 0.5f * (l + r)) >= 32.0f) {
+                                continue;
                             }
-                            for (int k = 0; k < players; k++) {
-                                const uint32_t record = base + k * camera_size;
-                                const float l = get_float(rdram, record, field_left), r = get_float(rdram, record, field_right);
-                                const float t = get_float(rdram, record, field_top), b = get_float(rdram, record, field_bottom);
-                                if (r - l > 0.75f * (right - left) || !in_rect(l, t, r, b) || cy >= t + 18.0f || std::fabs(cx - 0.5f * (l + r)) >= 40.0f) {
-                                    continue;
-                                }
-                                if (pass_camera >= 0 && pass_camera != k) {
-                                    break;
-                                }
-                                if (k == local) {
-                                    dx = (int32_t)((0.5f * (left + right) - 0.5f * (l + r)) * 4.0f);
-                                    dy = (int32_t)((top - t) * 4.0f);
-                                    kind_name = "menu: score at the top";
-                                } else {
-                                    hide = true;
-                                    kind_name = "menu: other score hidden";
-                                }
-                                break;
+                            if (k == local) {
+                                dx = (int32_t)((0.5f * (left + right) - 0.5f * (l + r)) * 4.0f);
+                                dy = (int32_t)((top - t) * 4.0f);
+                                kind_name = "menu: score at the top";
+                            } else {
+                                hide = true;
+                                kind_name = "menu: other score hidden";
                             }
+                            break;
                         }
                     }
                     static int war_menu_logged = 0;
-                    if (!race_menu && players >= 3 && war_menu_logged < 200) {
+                    if (!race_menu && players >= 3 && war_menu_logged < 400 && op != 0xF6 && width <= 16.5f && height <= 12.5f) {
                         char line[160];
-                        std::snprintf(line, sizeof(line), "[net view] pause rect %08X%s: %08X %08X (centre %g,%g, %gx%g)%s %s", address, nested ? " (called)" : "", w0, w1,
-                            cx, cy, width, height, bar ? " bar" : "", kind_name);
+                        std::snprintf(line, sizeof(line), "[net view] pause rect %08X%s: %08X %08X (centre %g,%g, %gx%g)%s %s", address, nested ? " (called)" : (pause_outside ? " (outside)" : ""),
+                            w0, w1, cx, cy, width, height, bar ? " bar" : "", kind_name);
                         conker::netsession::log(line);
                         war_menu_logged++;
                     }

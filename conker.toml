@@ -1162,3 +1162,21 @@ text = "{ extern void conker_team_caps(uint8_t*, recomp_context*); conker_team_c
 func = "func_151E1744"
 before_vram = 0x151E1E4C
 text = "{ extern void conker_team_trim(uint8_t*, recomp_context*); conker_team_trim(rdram, ctx); }"
+
+# 0.10.24: online, the race with up to four players (host/src/mp_characters.cpp): who may join on the character select ...
+[[patches.hook]]
+func = "func_151E0B70"
+before_vram = 0x151E0DA0
+text = "{ extern void conker_race_join(uint8_t*, recomp_context*); conker_race_join(rdram, ctx); }"
+
+# ... the select's four columns ...
+[[patches.hook]]
+func = "func_151EC648"
+before_vram = 0x151ECCA8
+text = "{ extern void conker_race_columns(uint8_t*, recomp_context*); conker_race_columns(rdram, ctx); }"
+
+# ... and the characters shown in them, at each player's own place.
+[[patches.hook]]
+func = "func_151E7F60"
+before_vram = 0x151E8004
+text = "{ extern void conker_race_places(uint8_t*, recomp_context*); conker_race_places(rdram, ctx); }"
