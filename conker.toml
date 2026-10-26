@@ -1211,6 +1211,12 @@ func = "func_151E2834"
 before_vram = 0x151E2834
 text = "{ extern int conker_coop_start(uint8_t*, recomp_context*); if (conker_coop_start(rdram, ctx)) { return; } }"
 
+# 0.10.58, measuring: who measures distances to a player's character in co-op (host/src/net_menu.cpp, conker_coop_distance).
+[[patches.hook]]
+func = "func_1505A6F8"
+before_vram = 0x1505A6F8
+text = "{ extern void conker_coop_distance(uint8_t*, recomp_context*); conker_coop_distance(rdram, ctx); }"
+
 # 0.10.52, measuring: who calls func_15063570 (the shotgun's weapon mode) in co-op (host/src/net_menu.cpp, conker_coop_who).
 [[patches.hook]]
 func = "func_15063570"

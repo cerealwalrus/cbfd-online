@@ -630,45 +630,37 @@ extern "C" void conker_coop_frame(uint8_t* rdram, recomp_context* ctx) {
             }
         }
     }
-    // (0.10.57, measuring, the zombies) 0.10.56's log: no character but the players' in gObjects (the zombies aren't characters there). So
-    // every 300 frames the game's memory (the first 8 MB) is searched for the players' characters' addresses (0x800CC2D0 + 0x32C each),
-    // where something keeps a pointer to one: a zombie after player 1 would hold player 1's; a global the one-player game's enemies
-    // read Conker through would show at a fixed address. Each address found once (up to 80 for each player), with the word before
-    // and the two after it.
-    if (conker::netsession::frame() % 300 == 0) {
+    // (0.10.57-58, measuring, the zombies) 0.10.56's log: no character but the players' in gObjects. 0.10.57's: besides the players' own
+    // structures, pointers to player 1's character turn up for a while in the game's heap (0x802xxxxx: 802001F8, 802267C0, 80222A28,
+    // 80239160...), never to the others': likely the zombies, each pointing at the one they're after. So every 60 frames the heap
+    // (0x80100000-0x80800000) is searched for pointers to any player's character, and each new address found (up to 60 in all) is
+    // logged with the 64 words round it (32 before, 32 from it), to see what holds it.
+    if (conker::netsession::frame() % 60 == 0) {
+        static std::vector<uint32_t> seen;
         const int count = std::min(std::max(coop_players, 1), 4);
-        for (int search = 0; search < count * 2; search++) {
-            // (each player's character, then each one's control block, +0x31C's)
-            const int k = search % count;
-            const uint32_t object = 0x800CC2D0u + (uint32_t)k * 0x32Cu;
-            const uint32_t wanted = search < count ? object : (uint32_t)MEM_W(0x31C, (gpr)(int32_t)object);
-            if ((wanted >> 24) != 0x80) {
+        for (uint32_t address = 0x80100000u; address < 0x80800000u && seen.size() < 60; address += 4) {
+            const uint32_t word = (uint32_t)MEM_W(0, (gpr)(int32_t)address);
+            if (word < 0x800CC2D0u || word >= 0x800CC2D0u + (uint32_t)count * 0x32Cu || (word - 0x800CC2D0u) % 0x32Cu != 0) {
                 continue;
             }
-            std::string text;
-            int found = 0;
-            for (uint32_t address = 0x80000000u; address < 0x80800000u && found < 80; address += 4) {
-                if ((uint32_t)MEM_W(0, (gpr)(int32_t)address) != wanted) {
-                    continue;
-                }
-                if (address >= 0x800CC2D0u && address < 0x800CC2D0u + 25u * 0x32Cu && search < count) {
-                    continue;   // (inside the characters themselves)
-                }
-                char part[64];
-                std::snprintf(part, sizeof(part), " %08X(%08X,%08X,%08X)", (unsigned)address, (unsigned)(uint32_t)MEM_W(-4, (gpr)(int32_t)address),
-                    (unsigned)(uint32_t)MEM_W(4, (gpr)(int32_t)address), (unsigned)(uint32_t)MEM_W(8, (gpr)(int32_t)address));
-                text += part;
-                found++;
+            // (the players' own structures, the same from the stage's start: their control blocks and the like, 801Bxxxx-801Dxxxx)
+            if (address >= 0x801B0000u && address < 0x801E0000u) {
+                continue;
             }
-            for (size_t at = 0; at < text.size() || at == 0; at += 900) {
-                char head[80];
-                std::snprintf(head, sizeof(head), "[coop find] f=%u player %d's %s %08X:%s", (unsigned)conker::netsession::frame(), k + 1,
-                    search < count ? "character" : "control block", (unsigned)wanted,
-                    text.empty() ? " nowhere" : "");
-                conker::netsession::log((std::string(head) + text.substr(std::min(at, text.size()), 900)).c_str());
-                if (text.empty()) {
-                    break;
+            if (std::find(seen.begin(), seen.end(), address) != seen.end()) {
+                continue;
+            }
+            seen.push_back(address);
+            const int k = (int)((word - 0x800CC2D0u) / 0x32Cu);
+            for (int half = 0; half < 2; half++) {
+                char line[400];
+                int n = std::snprintf(line, sizeof(line), "[coop held] f=%u %08X -> player %d's, %s:", (unsigned)conker::netsession::frame(), (unsigned)address,
+                    k + 1, half == 0 ? "the 32 words before" : "the 32 words from it");
+                for (int i = 0; i < 32 && n < (int)sizeof(line) - 10; i++) {
+                    const int32_t offset = half == 0 ? (i - 32) * 4 : i * 4;
+                    n += std::snprintf(line + n, sizeof(line) - (size_t)n, " %08X", (unsigned)(uint32_t)MEM_W(offset, (gpr)(int32_t)address));
                 }
+                conker::netsession::log(line);
             }
         }
     }
@@ -762,5 +754,31 @@ extern "C" void conker_coop_who(uint8_t* rdram, recomp_context* ctx) {
     char line[160];
     std::snprintf(line, sizeof(line), "[coop who] f=%u func_15063570 for %08X (player %d), from %08X", (unsigned)conker::netsession::frame(),
         (unsigned)object, player, (unsigned)(uint32_t)ctx->r31);
+    conker::netsession::log(line);
+}
+
+// 0.10.58, measuring, the zombies: who measures the distance from something to a player's character (func_1505A6F8(a, b), a's +0x14 and
+// +0x1C to b's), when the other one isn't a player's: each caller (its return address) with what it measured from, once (up to 60)
+extern "C" void conker_coop_distance(uint8_t* rdram, recomp_context* ctx) {
+    (void)rdram;
+    if (!conker::netsession::active() || !coop_started) {
+        return;
+    }
+    const uint32_t a = (uint32_t)ctx->r4, b = (uint32_t)ctx->r5;
+    const auto player = [](uint32_t x) { return x >= 0x800CC2D0u && x < 0x800CC2D0u + 4u * 0x32Cu && (x - 0x800CC2D0u) % 0x32Cu == 0; };
+    if (player(a) == player(b)) {
+        return;
+    }
+    static std::vector<uint64_t> seen;
+    const uint32_t ra = (uint32_t)ctx->r31;
+    const uint32_t other = player(a) ? b : a;
+    const uint64_t key = ((uint64_t)ra << 32) | (other & 0xFFFF0000u);
+    if (seen.size() >= 60 || std::find(seen.begin(), seen.end(), key) != seen.end()) {
+        return;
+    }
+    seen.push_back(key);
+    char line[160];
+    std::snprintf(line, sizeof(line), "[coop distance] f=%u from %08X: %08X to %08X (player %d's)", (unsigned)conker::netsession::frame(), (unsigned)ra,
+        (unsigned)other, (unsigned)(player(a) ? a : b), (int)(((player(a) ? a : b) - 0x800CC2D0u) / 0x32Cu) + 1);
     conker::netsession::log(line);
 }
