@@ -7,6 +7,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
@@ -137,14 +138,31 @@ namespace {
                 std::this_thread::sleep_for(std::chrono::milliseconds(2));
             }
             IMFMediaBuffer* buffer = nullptr;
+            IMF2DBuffer* buffer2d = nullptr;
             BYTE* data = nullptr;
             DWORD length = 0;
-            if (SUCCEEDED(sample->ConvertToContiguousBuffer(&buffer)) && SUCCEEDED(buffer->Lock(&data, nullptr, &length))) {
-                const LONG pitch = stride != 0 ? stride : (LONG)(width * 4);
+            LONG pitch = stride != 0 ? stride : (LONG)(width * 4);
+            bool locked2d = false, locked = false;
+            if (SUCCEEDED(sample->ConvertToContiguousBuffer(&buffer))) {
+                // (0.10.34) the decoder's rows can be wider than the picture (854 wide came in rows of 864 or so): the buffer's own
+                // pitch, from its 2D lock where it has one, or else the length over the rows
+                if (SUCCEEDED(buffer->QueryInterface(IID_PPV_ARGS(&buffer2d))) && SUCCEEDED(buffer2d->Lock2D(&data, &pitch))) {
+                    locked2d = true;
+                    length = (DWORD)((pitch < 0 ? -pitch : pitch) * (LONG)height);
+                } else if (SUCCEEDED(buffer->Lock(&data, nullptr, &length))) {
+                    locked = true;
+                    if (stride == 0 && height > 0 && length / height >= width * 4) {
+                        pitch = (LONG)(length / height);
+                    }
+                }
+            }
+            if (locked2d || locked) {
                 const size_t needed = (size_t)(pitch < 0 ? -pitch : pitch) * height;
                 if (length >= needed) {
                     for (UINT32 y = 0; y < height; y++) {
-                        const BYTE* row = pitch >= 0 ? data + (size_t)y * pitch : data + (size_t)(height - 1 - y) * (size_t)(-pitch);
+                        // (a 2D lock's pointer is the top row's, whichever way the rows run; a plain lock's is the buffer's start)
+                        const BYTE* row = locked2d ? data + (ptrdiff_t)y * (ptrdiff_t)pitch :
+                            pitch >= 0 ? data + (size_t)y * (size_t)pitch : data + (size_t)(height - 1 - y) * (size_t)(-pitch);
                         char* out = rgba.data() + (size_t)y * width * 4;
                         for (UINT32 x = 0; x < width; x++) {
                             // B G R X in, R G B A out
@@ -160,8 +178,13 @@ namespace {
                     latest_height = height;
                     fresh = true;
                 }
-                buffer->Unlock();
+                if (locked2d) {
+                    buffer2d->Unlock2D();
+                } else {
+                    buffer->Unlock();
+                }
             }
+            release(buffer2d);
             release(buffer);
             release(sample);
         }

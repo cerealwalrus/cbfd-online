@@ -124,7 +124,14 @@ void conker::menu_skin::apply(recompui::LauncherMenu* menu, recompui::GameOption
         image->set_left(0);
         image->set_width(100.0f, recompui::Unit::Percent);
         image->set_height(100.0f, recompui::Unit::Percent);
+        // (0.10.34) the options laid out as on the picture's planks (each on its own plank.png), under the launcher's title, and
+        // Version and Add ROM small buttons in the top-left corner
+        options->unset_bottom();
+        options->set_top(first_plank_top - 24.0f);
+        options->set_width(plank_width);
+        options->set_gap(plank_pitch - plank_height);
     }
+    const bool layout = stage || video_on;   // the picture's layout (with the video, every plank is plank.png)
 
     if (stage) {
         menu->remove_default_title();   // the picture has the title
@@ -150,13 +157,13 @@ void conker::menu_skin::apply(recompui::LauncherMenu* menu, recompui::GameOption
         image->set_width(46.0f, recompui::Unit::Percent);
         image->set_height_auto();
     }
-    if (plank.empty() && plank_selected.empty() && arrow.empty() && !stage) {
+    if (plank.empty() && plank_selected.empty() && arrow.empty() && !layout) {
         return;
     }
     int index = 0;
     int corner_index = 0;
     for (recompui::GameOption* option : options->get_options()) {
-        const bool in_corner = stage && std::find(corner.begin(), corner.end(), option) != corner.end();
+        const bool in_corner = layout && std::find(corner.begin(), corner.end(), option) != corner.end();
         if (in_corner) {
             // small buttons in the top-left corner (they're out of the column: the menu is where its first plank is)
             option->set_position(recompui::Position::Absolute);
@@ -175,7 +182,7 @@ void conker::menu_skin::apply(recompui::LauncherMenu* menu, recompui::GameOption
         SkinnedOption entry;
         entry.option = option;
         const bool picture_has_plank = stage && index < picture_planks;
-        if (!plank.empty() || stage) {
+        if (!plank.empty() || layout) {
             option->set_background_color(recompui::Color{ 0, 0, 0, 0 });
             option->set_border_width(0.0f);
             option->hover_style.set_background_color(recompui::Color{ 0, 0, 0, 0 });
@@ -183,24 +190,24 @@ void conker::menu_skin::apply(recompui::LauncherMenu* menu, recompui::GameOption
             option->set_rotation(0.0f);
             option->set_padding(0.0f);
             option->set_margin_bottom(0.0f);
-            option->set_height(stage ? plank_height : 84.0f);
-            option->set_min_height(stage ? plank_height : 84.0f);
+            option->set_height(layout ? plank_height : 84.0f);
+            option->set_min_height(layout ? plank_height : 84.0f);
             if (recompui::Label* label = option->get_label()) {
                 label->set_font_size(40.0f);
             }
         }
         if (!plank.empty() && !picture_has_plank) {
-            fit_plank(make_layer(option, plank), stage);
+            fit_plank(make_layer(option, plank), layout);
         }
         if (!plank_selected.empty()) {
             entry.selected = make_layer(option, plank_selected);
-            fit_plank(entry.selected, stage);
+            fit_plank(entry.selected, layout);
             entry.selected->display_hide();
         }
         if (!arrow.empty()) {
             entry.arrow = make_layer(option, arrow);
             entry.arrow->set_top(50.0f, recompui::Unit::Percent);
-            entry.arrow->set_left(stage ? -34.0f : 20.0f);
+            entry.arrow->set_left(layout ? -34.0f : 20.0f);
             entry.arrow->set_translate_2D(0.0f, -50.0f, recompui::Unit::Percent);
             entry.arrow->set_height(60.0f);
             entry.arrow->set_width_auto();
