@@ -1619,9 +1619,34 @@ void conker::netview::frame_end(uint8_t* rdram, uint32_t list_end) {
     int local = forced_slot >= 0 ? forced_slot : conker::netsession::local_slot();
     // 0.10.31: the co-op campaign stage: while a cutscene plays (a slot's byte at D_800C35EA is 1) its camera is the first player's,
     // so every machine shows the first camera's picture (the second player's own camera was shown: no cutscene there)
-    if (conker::netmenu::coop_running(rdram) &&
-            (MEM_BU(0, (gpr)(int32_t)0x800C35EA) == 1 || MEM_BU(1, (gpr)(int32_t)0x800C35EA) == 1)) {
-        local = 0;
+    // (0.10.65) only once the cutscene flag has been on for 6 frames in a row: a flag on for a frame or two (the 0.10.64 test's flicker
+    // on players 3 and 4, a guess) showed the first player's picture and HUD for that long. Its changes are logged.
+    {
+        static int cutscene_frames = 0;
+        static bool cutscene_shown = false;
+        const bool coop = conker::netmenu::coop_running(rdram);
+        const bool flag = coop && (MEM_BU(0, (gpr)(int32_t)0x800C35EA) == 1 || MEM_BU(1, (gpr)(int32_t)0x800C35EA) == 1);
+        cutscene_frames = flag ? cutscene_frames + 1 : 0;
+        const bool show = cutscene_frames >= 6;
+        static int flag_logs = 0;
+        static bool last_flag = false;
+        if (coop && flag != last_flag && flag_logs < 200) {
+            flag_logs++;
+            char line[120];
+            std::snprintf(line, sizeof(line), "[net view] co-op: the cutscene flag %s (frame %u)", flag ? "on" : "off", (unsigned)conker::netsession::frame());
+            conker::netsession::log(line);
+        }
+        last_flag = flag;
+        if (show != cutscene_shown) {
+            cutscene_shown = show;
+            char line[120];
+            std::snprintf(line, sizeof(line), "[net view] co-op: %s (frame %u)", show ? "a cutscene: the first player's camera shown" : "this player's own camera again",
+                (unsigned)conker::netsession::frame());
+            conker::netsession::log(line);
+        }
+        if (show) {
+            local = 0;
+        }
     }
     if (players <= 1 || players > max_cameras || local < 0 || local >= players) {
         return;
@@ -1648,6 +1673,21 @@ void conker::netview::frame_end(uint8_t* rdram, uint32_t list_end) {
         before.assign(rdram + (start & 0x7FFFFFu), rdram + (list_end & 0x7FFFFFu));
     }
     if (conker::netmenu::coop_running(rdram)) {
+        // (0.10.65, measuring) a frame without every player's HUD range: its HUDs aren't hidden (logged a few times)
+        {
+            static int missing_logs = 0;
+            int ranges = 0;
+            for (int k = 0; k < players && k < 4; k++) {
+                uint32_t from = 0, to = 0;
+                ranges += conker::netmenu::coop_hud_range(k, &from, &to) ? 1 : 0;
+            }
+            if (ranges != 0 && ranges < players && missing_logs < 40) {
+                missing_logs++;
+                char line[120];
+                std::snprintf(line, sizeof(line), "[net view] co-op: frame %u has %d of %d players' HUD ranges", (unsigned)conker::netsession::frame(), ranges, players);
+                conker::netsession::log(line);
+            }
+        }
         coop_hud_prepare(rdram, base, players, local);
     }
     rewrite_frame(rdram, frame, list_end, base, players, local, log_it);
