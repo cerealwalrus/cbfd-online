@@ -163,6 +163,7 @@ namespace {
     // The display list words a frame's rewrite changed, to be put back once the renderer has read the list.
     struct Journal {
         uint32_t start;
+        uint32_t end = 0;   // (0.10.66) the rewritten list's end
         std::vector<std::array<uint32_t, 3>> words;   // address, original, rewritten
     };
     std::mutex journal_mutex;
@@ -289,6 +290,9 @@ namespace {
         const uint32_t mine_s0 = scissor_word0(get_float(rdram, mine, field_left), get_float(rdram, mine, field_top));
         const uint32_t mine_s1 = scissor_word1(get_float(rdram, mine, field_right), get_float(rdram, mine, field_bottom));
         static int logged = 0;
+        // (0.10.66) with this machine's pause menu open, its own HUD (the chocolate, the tail and the lives, shown by the game while
+        // it's paused) isn't drawn either: the pause screen alone
+        const bool paused_here = conker::netmenu::is_open();
         for (int k = 0; k < players && k < 4; k++) {
             uint32_t from = 0, to = 0;
             if (!conker::netmenu::coop_hud_range(k, &from, &to) || (from >> 24) != 0x80 || to - from > 0x20000u) {
@@ -297,7 +301,7 @@ namespace {
             int viewports = 0, scissors = 0;
             for (uint32_t a = from; a < to; a += 8) {
                 const uint32_t w0 = (uint32_t)MEM_W(0, (gpr)(int32_t)a), w1 = (uint32_t)MEM_W(4, (gpr)(int32_t)a);
-                if (k != local) {
+                if (k != local || paused_here) {
                     MEM_W(0, (gpr)(int32_t)a) = 0;
                     MEM_W(4, (gpr)(int32_t)a) = 0;
                     continue;
@@ -1556,6 +1560,20 @@ namespace {
                 conker::netsession::log(line.c_str());
             }
         }
+        // (0.10.66, measuring the co-op flicker) the frame's counts whenever they change from the frame before's
+        if (conker::netmenu::coop_running(rdram)) {
+            static int last_sig[5] = { -1, -1, -1, -1, -1 };
+            static int sig_logs = 0;
+            const int sig[5] = { redirected, shown, hidden, matrices, (int)frame.size() };
+            if (std::memcmp(sig, last_sig, sizeof(sig)) != 0 && sig_logs < 400) {
+                sig_logs++;
+                char line[200];
+                std::snprintf(line, sizeof(line), "[net view] co-op f=%u list %08X..%08X: %d viewports redirected, %d scissors shown, %d hidden, %d matrices, %zu passes",
+                    (unsigned)conker::netsession::frame(), start, end, redirected, shown, hidden, matrices, frame.size());
+                conker::netsession::log(line);
+            }
+            std::memcpy(last_sig, sig, sizeof(sig));
+        }
         if (log_it) {
             char line[320];
             std::snprintf(line, sizeof(line), "[net view] frame list %08X..%08X: %d viewports redirected, %d scissors shown, %d hidden, %d projection matrices (shape %g), %d fills, HUD shift %d, %d HUD rectangles moved (%d of them to a screen edge), %d hidden, %zu passes",
@@ -1609,6 +1627,15 @@ void conker::netview::frame_end(uint8_t* rdram, uint32_t list_end) {
     }
     std::vector<Pass> frame;
     frame.swap(passes);
+    if (view_is_full() && frame.empty() && conker::netmenu::coop_running(rdram)) {
+        static int empty_logs = 0;
+        if (empty_logs < 60) {
+            empty_logs++;
+            char line[120];
+            std::snprintf(line, sizeof(line), "[net view] co-op f=%u: a frame list with no passes seen, not rewritten (list end %08X)", (unsigned)conker::netsession::frame(), list_end);
+            conker::netsession::log(line);
+        }
+    }
     if (!view_is_full() || frame.empty()) {
         return;
     }
@@ -1694,6 +1721,7 @@ void conker::netview::frame_end(uint8_t* rdram, uint32_t list_end) {
     if (can_journal) {
         Journal journal;
         journal.start = start;
+        journal.end = list_end;
         const uint8_t* now = rdram + (start & 0x7FFFFFu);
         for (size_t off = 0; off + 4 <= before.size(); off += 4) {
             uint32_t a, b;
@@ -1713,22 +1741,55 @@ void conker::netview::frame_end(uint8_t* rdram, uint32_t list_end) {
 }
 
 void conker::netview::render_done(uint8_t* rdram, uint32_t data_ptr) {
+    // (0.10.66) the journal of the list the renderer has just read: its rewritten words start a little past the task's display list
+    // (the frame's setup comes first). Up to 0.10.65 the oldest journal was put back whenever the task's list was anywhere below it
+    // (within 1 MB): a task that wasn't a rewritten frame's, or one out of turn, put back the other buffer's frame before it was
+    // drawn, and that frame showed as the game drew it, the split screen (the 0.10.65 test's flicker on player 2, a guess). Now only
+    // a journal starting in the task's own list is put back, with any older ones before it.
     std::lock_guard<std::mutex> lock(journal_mutex);
     if (journals.empty()) {
         return;
     }
-    const Journal& journal = journals.front();
-    if (journal.start < data_ptr || journal.start - data_ptr >= 0x100000u) {
-        return;
-    }
-    for (const auto& word : journal.words) {
-        uint32_t current;
-        std::memcpy(&current, rdram + (word[0] & 0x7FFFFFu), 4);
-        if (current == word[2]) {
-            std::memcpy(rdram + (word[0] & 0x7FFFFFu), &word[1], 4);
+    const uint32_t task = data_ptr & 0x1FFFFFFFu;
+    size_t match = journals.size();
+    for (size_t n = 0; n < journals.size(); n++) {
+        const uint32_t start = journals[n].start & 0x1FFFFFFFu;
+        const uint32_t end = journals[n].end & 0x1FFFFFFFu;
+        if (start >= task && start - task < 0x8000u && (end == 0 || end > start)) {
+            match = n;
+            break;
         }
     }
-    journals.pop_front();
+    if (match == journals.size()) {
+        static int unmatched_logs = 0;
+        if (unmatched_logs < 40 && conker::netsession::active()) {
+            unmatched_logs++;
+            char line[160];
+            std::snprintf(line, sizeof(line), "[net view] a task's list %08X isn't a rewritten frame's (the oldest journal starts %08X): nothing put back",
+                (unsigned)data_ptr, (unsigned)journals.front().start);
+            conker::netsession::log(line);
+        }
+        return;
+    }
+    if (match > 0) {
+        static int skipped_logs = 0;
+        if (skipped_logs < 40 && conker::netsession::active()) {
+            skipped_logs++;
+            char line[160];
+            std::snprintf(line, sizeof(line), "[net view] the task's list %08X is journal %zu's: %zu older ones put back with it", (unsigned)data_ptr, match, match);
+            conker::netsession::log(line);
+        }
+    }
+    for (size_t n = 0; n <= match; n++) {
+        for (const auto& word : journals.front().words) {
+            uint32_t current;
+            std::memcpy(&current, rdram + (word[0] & 0x7FFFFFu), 4);
+            if (current == word[2]) {
+                std::memcpy(rdram + (word[0] & 0x7FFFFFu), &word[1], 4);
+            }
+        }
+        journals.pop_front();
+    }
 }
 
 // At the entry of func_15019464 (kind 1), func_15019BB8 (kind 2) and func_1501A490 (kind 0): where the frame's
