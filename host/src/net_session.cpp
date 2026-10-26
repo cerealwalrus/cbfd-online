@@ -3588,7 +3588,10 @@ bool conker::netsession::input_for_game(int port, bool* plugged, uint16_t* butto
     if (swapped && rdram != nullptr && port >= 0 && port < 4 && (*buttons & 0x0010) != 0) {
         const uint32_t looks = (uint32_t)MEM_W(0, (gpr)(int32_t)0x800DBFF0);
         if ((looks >> 24) == 0x80 && (looks & 0x7FFFFFu) + 4u * 0x9A0u <= 0x800000u) {
-            bool look_on = false;
+            // (0.10.9: the second aiming mode, the sniper rifle's, the revolver's and the knives', has no look record stage: it counts as the
+            // look, or the sticks were held still all through it and the right stick couldn't aim, the 0.10.8 logs: R held, the right stick
+            // sent, nothing turned)
+            bool look_on = conker::look_aim::second_aim_recent(port);
             for (uint32_t k = 0; k < 4; k++) {
                 const gpr record = (gpr)(int32_t)(looks + k * 0x9A0u);
                 if ((int)MEM_BU(0x23D, record) == port && MEM_H(0x73C, record) != 0) {

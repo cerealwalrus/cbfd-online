@@ -1377,8 +1377,29 @@ namespace {
 // the mouse and gyro turn by the same part of the view: their turn is scaled by the zoom, the
 // tangent of the field of view in use (the camera's + 0x74) against the unzoomed one's (+ 0x6C),
 // as func_1510B128 sets it.
+namespace {
+    // (0.10.9: the frame each player's camera last ran the second aiming mode, online; second_aim_recent)
+    bool second_aim_seen[4] = {};
+    uint32_t second_aim_frame[4] = {};
+}
+
+bool conker::look_aim::second_aim_recent(int player) {
+    if (player < 0 || player >= 4 || !second_aim_seen[player]) {
+        return false;
+    }
+    const uint32_t now = conker::netsession::frame();
+    return now >= second_aim_frame[player] && now - second_aim_frame[player] <= 3;
+}
+
 extern "C" void conker_aim_stick(uint8_t* rdram, recomp_context* ctx) {
 #if defined(CONKER_RT64)
+    if (conker::netsession::active()) {
+        const int aim_player = camera_player(rdram, ctx->r16);
+        if (aim_player >= 0 && aim_player < 4) {
+            second_aim_seen[aim_player] = true;
+            second_aim_frame[aim_player] = conker::netsession::frame();
+        }
+    }
     // Aiming: Reticle (reticle.cpp): this camera aims this frame.
     conker::reticle::aim_frame(rdram, ctx->r16);
     // Aiming: Swap Sticks: this camera's player is aiming.
