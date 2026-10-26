@@ -138,6 +138,10 @@ namespace {
         bool showing = false;
     };
     BarButton minimize_button, close_button;
+    // (0.10.45) between them: maximize (fill the work area) or, when it fills it, restore (1600 x 900); its four pictures
+    recompui::Clickable* size_button = nullptr;
+    recompui::Image* size_images[4] = {};   // maximize, maximize lit, restore, restore lit
+    int size_shown = -1;
     recompui::Clickable* update_button = nullptr;
     recompui::Label* link_label = nullptr;
     recompui::Label* ping_label = nullptr;
@@ -251,6 +255,27 @@ namespace {
             buttons->set_gap(3.0f);
             buttons->set_height(title_bar_height);
             minimize_button = make_window_button(buttons, load("chrome/minimize"), load("chrome/minimize_hover"), []() { conker::window_chrome::minimize(); });
+            {
+                size_button = recompui::get_current_context().create_element<recompui::Clickable>(buttons);
+                size_button->set_position(recompui::Position::Relative);
+                size_button->set_width(69.0f);
+                size_button->set_height(title_bar_height);
+                size_button->set_focusable(false);
+                const char* names[4] = { "chrome/maximize", "chrome/maximize_hover", "chrome/restore", "chrome/restore_hover" };
+                for (int i = 0; i < 4; i++) {
+                    const std::string key = load(names[i]);
+                    if (key.empty()) {
+                        continue;
+                    }
+                    size_images[i] = make_layer(size_button, key);
+                    size_images[i]->set_top(0);
+                    size_images[i]->set_left(0);
+                    size_images[i]->set_width(100.0f, recompui::Unit::Percent);
+                    size_images[i]->set_height(100.0f, recompui::Unit::Percent);
+                    size_images[i]->display_hide();
+                }
+                size_button->add_clicked_callback([](float, float) { conker::window_chrome::toggle_fill(); });
+            }
             close_button = make_window_button(buttons, load("chrome/close"), load("chrome/close_hover"), []() {
                 // as the window's own X did: quits
                 SDL_Event quit;
@@ -360,9 +385,26 @@ namespace {
                 }
             }
         }
+        if (size_button != nullptr) {
+            const int shown = (conker::window_chrome::is_filled() ? 2 : 0) + (size_button->is_style_enabled(recompui::hover_state) ? 1 : 0);
+            if (shown != size_shown) {
+                size_shown = shown;
+                for (int i = 0; i < 4; i++) {
+                    if (size_images[i] != nullptr) {
+                        if (i == shown) {
+                            size_images[i]->display_show();
+                        }
+                        else {
+                            size_images[i]->display_hide();
+                        }
+                    }
+                }
+            }
+        }
         if (link_label == nullptr) {
             return;
         }
+        conker::hq_ping::keep_going();
         std::string tag, page;
         const int check = conker::updates::check_state();
         const bool newer = conker::updates::newer_available(&tag, &page);
@@ -401,8 +443,9 @@ namespace {
 
         const int lamp = check == 0 ? 1 : (check == 1 ? 0 : 2);
         const std::string link = "HQ LINK " + value(check == 0 ? "CONNECTING" : (check == 1 ? "ONLINE" : "OFFLINE"));
-        const int ms = conker::updates::answer_time_ms();
-        const std::string ping = "PING " + value(check == 1 && ms >= 0 ? std::to_string(ms) + " MS" : "--");
+        // (0.10.45) a real ping to the tavern (hq_ping.cpp)
+        const int ms = conker::hq_ping::last_ms();
+        const std::string ping = "PING " + value(ms >= 0 ? std::to_string(ms) + " MS" : (ms == -1 ? "NO REPLY" : "--"));
         std::string update_text;
         bool update_lit = false;
         if (up.state == 1) {

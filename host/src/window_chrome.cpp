@@ -24,7 +24,8 @@ namespace {
     SDL_Window* chrome_window = nullptr;
     bool active = false;     // the launcher is drawing the title bar
     bool restored = false;   // the game started and the Windows border is back
-    bool filled = false;     // the window fills the desktop's work area
+    std::atomic<bool> filled{ false };   // the window fills the desktop's work area (read by the launcher's button too)
+    std::atomic<bool> config_full_screen{ false };   // (0.10.45) Fullscreen in the graphics settings (RT64 makes it so)
     std::atomic<bool> minimize_wanted{ false };
     std::atomic<bool> toggle_wanted{ false };
 
@@ -49,13 +50,14 @@ namespace {
         return WindowStyle::Ours;
     }
 
+    // (0.10.45: by the graphics settings, not by guessing from the window's style)
     bool full_screen(SDL_Window* window) {
-        return (SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN) != 0 || window_style() == WindowStyle::FullScreen;
+        return (SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN) != 0 || config_full_screen.load();
     }
 
     // In dp (the UI is 1080 dp high at any window size): the title bar's height, and the width of its buttons at the right
-    // (minimize and close, 69 dp each with a little room), which are clicked, not dragged.
-    constexpr float ui_height = 1080.0f, bar_height = 51.0f, buttons_width = 150.0f;
+    // (minimize, maximize or restore, and close: 69 dp each with a little room), which are clicked, not dragged.
+    constexpr float ui_height = 1080.0f, bar_height = 51.0f, buttons_width = 225.0f;
     constexpr int edge = 6;   // window units round the edge that resize it
 
     SDL_HitTestResult SDLCALL hit_test(SDL_Window* window, const SDL_Point* point, void*) {
@@ -144,6 +146,7 @@ void conker::window_chrome::attach(SDL_Window* window, bool is_filled) {
     SDL_VERSION(&info.version);
     if (SDL_GetWindowWMInfo(window, &info)) {
         window_handle = info.info.win.window;
+        std::printf("[window] its Windows style: 0x%llx\n", (unsigned long long)GetWindowLongPtr(window_handle, GWL_STYLE));
     }
 #endif
     if (SDL_SetWindowHitTest(window, hit_test, nullptr) != 0) {
@@ -163,14 +166,21 @@ bool conker::window_chrome::custom() {
 }
 
 void conker::window_chrome::minimize() {
+    std::printf("[window] minimize pressed\n");
     minimize_wanted = true;
 }
 
+bool conker::window_chrome::is_filled() {
+    return filled.load();
+}
+
 void conker::window_chrome::toggle_fill() {
+    std::printf("[window] maximize / restore pressed\n");
     toggle_wanted = true;
 }
 
-void conker::window_chrome::update(bool game_started) {
+void conker::window_chrome::update(bool game_started, bool settings_full_screen) {
+    config_full_screen = settings_full_screen;
     if (!active || restored || chrome_window == nullptr) {
         return;
     }
@@ -205,6 +215,15 @@ void conker::window_chrome::update(bool game_started) {
         return;
     }
     if (full_screen(chrome_window)) {
+        // (full screen: minimize still works, maximize / restore doesn't apply)
+        if (minimize_wanted.exchange(false)) {
+#if defined(_WIN32)
+            if (window_handle != nullptr) {
+                PostMessageW(window_handle, WM_SYSCOMMAND, SC_MINIMIZE, 0);
+            }
+#endif
+        }
+        toggle_wanted = false;
         return;
     }
     if (window_style() == WindowStyle::WithBorder) {
@@ -221,9 +240,20 @@ void conker::window_chrome::update(bool game_started) {
         set_filled(true);
     }
     if (minimize_wanted.exchange(false)) {
-        SDL_MinimizeWindow(chrome_window);
+        // (0.10.45) as the taskbar does it: Windows' own minimize command
+        std::printf("[window] minimizing\n");
+#if defined(_WIN32)
+        if (window_handle != nullptr) {
+            PostMessageW(window_handle, WM_SYSCOMMAND, SC_MINIMIZE, 0);
+        }
+        else
+#endif
+        {
+            SDL_MinimizeWindow(chrome_window);
+        }
     }
     if (toggle_wanted.exchange(false) && (flags & SDL_WINDOW_MINIMIZED) == 0) {
-        set_filled(!filled);
+        set_filled(!filled.load());
+        std::printf("[window] %s\n", filled.load() ? "filling the work area" : "1600 x 900");
     }
 }

@@ -428,8 +428,6 @@ namespace conker {
         bool newer_available(std::string* tag, std::string* page);
         // (0.10.44) 0 while the check runs (or before it starts), 1 it reached GitHub and found the newest release, 2 it didn't.
         int check_state();
-        // (0.10.44) the time GitHub took to answer the check, in ms (its quickest answer), or -1.
-        int answer_time_ms();
         // (0.10.44) checks again (the launcher's Check for updates), once the last check has finished and nothing is installing.
         void check_again();
         // This build's version (version.hpp).
@@ -446,6 +444,13 @@ namespace conker {
         Status status();
     }
 
+    // hq_ping.cpp (0.10.45): the launcher's PING to the tavern. keep_going every frame the launcher is up (it pings every 5 s while
+    // it's called); last_ms: the last round trip in ms, -1 no answer, -2 none yet.
+    namespace hq_ping {
+        void keep_going();
+        int last_ms();
+    }
+
     // window_chrome.cpp (0.10.44): on Windows the launcher's window has no Windows title bar: the launcher draws its own (menu_skin.cpp)
     // and the window is dragged by it (SDL's hit test). Once the game starts the Windows border is back. CONKER_NATIVE_WINDOW=1 keeps it.
     namespace window_chrome {
@@ -459,8 +464,10 @@ namespace conker {
         // From the launcher's buttons (any thread): done on the main thread, in update.
         void minimize();
         void toggle_fill();
-        // Every frame, on the main thread (frontend.cpp's update_gfx).
-        void update(bool game_started);
+        // (0.10.45) whether it fills the work area (the middle button shows restore then, maximize otherwise)
+        bool is_filled();
+        // Every frame, on the main thread (frontend.cpp's update_gfx); full_screen: Fullscreen in the graphics settings.
+        void update(bool game_started, bool full_screen);
     }
 
     // net_lobby.cpp: the launcher's Online screen (the lobby), see net_session.cpp's lobby functions.

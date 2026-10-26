@@ -322,7 +322,8 @@ namespace {
 
     void update_gfx(void*) {
         recompinput::handle_events();
-        conker::window_chrome::update(ultramodern::is_game_started());
+        conker::window_chrome::update(ultramodern::is_game_started(),
+            ultramodern::renderer::get_graphics_config().wm_option == ultramodern::renderer::WindowMode::Fullscreen);
         conker::texture_packs::update_unpacking();
         conker::fps_counter::update();
         conker::notices::update();
