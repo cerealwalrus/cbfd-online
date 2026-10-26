@@ -1074,3 +1074,14 @@ extern "C" void conker_local_audio(uint8_t* rdram, recomp_context* ctx, int whic
     }
 }
 
+
+// 0.10.14: online, footsteps in a 3 or 4 player game as in a 2 player one. The game plays a character's footstep (func_1506BF5C, at
+// 0x1506C05C) only while D_80082FA0, the last listener in use, is under 2: one or two players (the Nintendo 64's sound in a 4 way split
+// screen). Online each machine hears its own player's place (above), so they're played for every player count; every machine alike,
+// so the sound slots stay the same everywhere.
+extern "C" void conker_net_footsteps(uint8_t* rdram, recomp_context* ctx) {
+    (void)rdram;
+    if (conker::netsession::active() && (int32_t)ctx->r12 > 1) {
+        ctx->r12 = 1;
+    }
+}

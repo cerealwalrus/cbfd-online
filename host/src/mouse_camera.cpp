@@ -867,8 +867,98 @@ bool conker::mouse_camera::online_turn(float* yaw, float* pitch) {
 
 // A snapshot was taken or loaded (a resync, or the start state): the orbit's own memory isn't in it, so every machine
 // starts it over at that same moment, from the game's memory that is.
+namespace {
+    // 0.10.14: conker_view_snap_guard's per camera state (the view's eye and look-at point last frame)
+    struct SnapGuard {
+        bool have = false;
+        uint32_t frame = 0;
+        float eye[3] = {};
+        float look[3] = {};
+        float distance = 0.0f;
+        int held = 0;
+        bool held_this_frame = false;
+        float held_eye[3] = {};
+    };
+    SnapGuard snap_guards[max_cameras];
+    int snap_guard_logs = 0;
+}
+
 void conker::mouse_camera::reset() {
     for (Orbit& o : orbits) {
         o = Orbit{};
     }
+    for (SnapGuard& g : snap_guards) {
+        g = SnapGuard{};
+    }
+}
+
+// 0.10.14: online, the teddies' cameras in a 4 player game (cameras 1 and 3) were pulled right in for a frame about every 35 to 50
+// frames, standing or walking, free camera or not: the view's eye 150 from the look-at point, then 50 to 70, then 150 again (0.10.10
+// to 0.10.13's [camera] lines: "jump", +0x23C set, the camera's snap to where it is placed; no camera command or reset was queued, the
+// game's camera zones place it, func_1512E8E0 at 0x1512F178). The game's own camera, its eye and its collision are left as they are;
+// only the view (func_1512C490 has just copied the look-at point and the eye into +0x2E0 and +0x2EC; the eye's z goes in from $at
+// after this) keeps last frame's eye, moved with the look-at point, for such a frame: +0x23C set, the look-at point where it was (not
+// a respawn or a teleport, which move it far), and the eye less than 0.7 of last frame's distance from it. At most 2 frames running.
+extern "C" void conker_view_snap_guard(uint8_t* rdram, recomp_context* ctx) {
+    if (!conker::netsession::active()) {
+        return;
+    }
+    const gpr camera = ctx->r16;
+    int index = -1;
+    if (pick(rdram, camera, &index) == nullptr || index < 0 || index >= max_cameras) {
+        return;
+    }
+    SnapGuard& g = snap_guards[index];
+    const uint32_t now = conker::netsession::frame();
+    float look[3] = { read_float(rdram, camera, 0x2BC), read_float(rdram, camera, 0x2C0), read_float(rdram, camera, 0x2C4) };
+    uint32_t z_bits = (uint32_t)ctx->r1;
+    float z;
+    std::memcpy(&z, &z_bits, sizeof(z));
+    float eye[3] = { read_float(rdram, camera, 0x2EC), read_float(rdram, camera, 0x2F0), z };
+    auto gap = [](const float* a, const float* b) {
+        return std::sqrt((a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1]) + (a[2] - b[2]) * (a[2] - b[2]));
+    };
+    if (g.have && now == g.frame) {
+        // (the view built again this frame: the same)
+        if (g.held_this_frame) {
+            write_float(rdram, camera, 0x2EC, g.held_eye[0]);
+            write_float(rdram, camera, 0x2F0, g.held_eye[1]);
+            uint32_t bits;
+            std::memcpy(&bits, &g.held_eye[2], sizeof(bits));
+            ctx->r1 = (gpr)(int32_t)bits;
+        }
+        return;
+    }
+    const float distance = gap(eye, look);
+    bool hold = false;
+    if (g.have && now == g.frame + 1 && MEM_BU(0x23C, camera) != 0 && g.held < 2 && g.distance > 30.0f) {
+        hold = gap(look, g.look) < 60.0f && distance < 0.7f * g.distance;
+    }
+    g.held_this_frame = hold;
+    if (hold) {
+        for (int i = 0; i < 3; i++) {
+            g.held_eye[i] = g.eye[i] + (look[i] - g.look[i]);
+        }
+        write_float(rdram, camera, 0x2EC, g.held_eye[0]);
+        write_float(rdram, camera, 0x2F0, g.held_eye[1]);
+        uint32_t bits;
+        std::memcpy(&bits, &g.held_eye[2], sizeof(bits));
+        ctx->r1 = (gpr)(int32_t)bits;
+        if (index == conker::netsession::local_slot() && snap_guard_logs < 200) {
+            snap_guard_logs++;
+            char line[160];
+            std::snprintf(line, sizeof(line), "[camera] f=%u camera %d: the snap in (distance %.0f -> %.0f) not shown, the eye kept", now, index, g.distance, distance);
+            conker::netsession::log(line);
+        }
+        g.held++;
+        std::memcpy(g.eye, g.held_eye, sizeof(g.eye));
+    }
+    else {
+        g.held = 0;
+        std::memcpy(g.eye, eye, sizeof(g.eye));
+        g.distance = distance;
+    }
+    std::memcpy(g.look, look, sizeof(g.look));
+    g.frame = now;
+    g.have = true;
 }

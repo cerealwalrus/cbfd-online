@@ -475,6 +475,15 @@ namespace {
         uint32_t hold_start = 0;
         bool checked = false;
         uint32_t checked_frame = 0;
+        // 0.10.14: the moving angle the hit set, his place last frame, whether he has stood still since the hold began, and the
+        // animation last looked at and when it changed
+        uint16_t hold_move = 0;
+        float last_pos[3] = {};
+        bool have_pos = false;
+        bool stood = false;
+        uint32_t last_anim = 0;
+        uint32_t anim_changed = 0;
+        bool have_anim = false;
     };
     HitHold hit_hold_state[4];
 
@@ -513,13 +522,37 @@ namespace {
             h.checked_frame = now;
             return false;
         }
+        const bool first_look_this_frame = !(h.checked && h.checked_frame == now);
         h.checked = true;
         h.checked_frame = now;
         const uint16_t move = (uint16_t)MEM_HU(0x76, walker);
         const uint16_t face = (uint16_t)MEM_HU(0x7A, walker);
         const uint32_t anim = (uint32_t)MEM_W(0x84, walker);
+        // 0.10.14: his place, and the animation's changes, once a frame
+        const float pos[3] = { read_float(rdram, walker, 0x14), read_float(rdram, walker, 0x18), read_float(rdram, walker, 0x1C) };
+        float moved_by = 0.0f;
+        if (first_look_this_frame) {
+            if (h.have_pos) {
+                moved_by = std::fabs(pos[0] - h.last_pos[0]) + std::fabs(pos[1] - h.last_pos[1]) + std::fabs(pos[2] - h.last_pos[2]);
+            }
+            std::memcpy(h.last_pos, pos, sizeof(pos));
+            h.have_pos = true;
+            if (h.have_anim && anim != h.last_anim) {
+                h.anim_changed = now;
+            }
+            h.last_anim = anim;
+            h.have_anim = true;
+        }
         if (h.holding) {
-            if (anim != h.hold_anim || now - h.hold_start > 90) {
+            // 0.10.14: not over when the animation changes (a hit's can be followed by another: 0.10.13's logs, player 3 at f=3676, the
+            // hit's then another, as he lost his gun, and he spun round in the second), but once the game moves him again (he walks:
+            // having stood, he moves; or it turns his moving angle from the hit's), R is let go, the look ends, or 90 frames.
+            if (first_look_this_frame && moved_by < 0.05f && now - h.hold_start >= 2) {
+                h.stood = true;
+            }
+            const int32_t from_hit = (int16_t)(uint16_t)(move - h.hold_move);
+            const bool walking_again = (h.stood && moved_by > 1.0f) || from_hit > 0x800 || from_hit < -0x800;
+            if (walking_again || now - h.hold_start > 90) {
                 h.holding = false;
                 h.have_written = false;
                 if (local) {
@@ -537,13 +570,20 @@ namespace {
             }
             return true;
         }
-        if (h.have_written && now - h.written_frame <= 4) {
+        // 0.10.14: the hit's moving angle (his facing plus half a turn) with a new animation (the hit's, this frame or the one before),
+        // where the walking didn't set it so: it hadn't set it lately (a gun's first stage, a look just started: 0.10.13's logs, player 3
+        // at f=3676) or set it more than 0x1800 away
+        {
             const int32_t changed = (int16_t)(uint16_t)(move - h.written_move);
             const int32_t from_back = (int16_t)(uint16_t)(move - (uint16_t)(face + 0x8000u));
-            if ((changed > 0x1800 || changed < -0x1800) && from_back > -0x800 && from_back < 0x800) {
+            const bool walking_set = h.have_written && now - h.written_frame <= 4 && changed <= 0x1800 && changed >= -0x1800;
+            const bool new_animation = now - h.anim_changed <= 1;
+            if (!walking_set && new_animation && from_back > -0x800 && from_back < 0x800) {
                 h.holding = true;
                 h.hold_anim = anim;
                 h.hold_start = now;
+                h.hold_move = move;
+                h.stood = false;
                 if (local) {
                     char line[200];
                     std::snprintf(line, sizeof(line), "[look] f=%u hit in the look: moving angle %04X (facing %04X; the walking's was %04X), animation %X: the walking waits",
@@ -1020,7 +1060,12 @@ void conker::look_aim::no_weapon_walk(uint8_t* rdram, int port, uint16_t* button
         // as it is: the view is still turning in behind it. C-Down never goes to the game here (with R held it starts a grenade).
         // (0.10.8: a hit in the look playing, hit_holding: nothing from the walking, the game's knock back as it is)
         if (hit_hold_state[port].holding && hit_hold_state[port].checked_frame + 3 >= conker::netsession::frame() && (*buttons & 0x0010) != 0) {
-            *buttons &= (uint16_t)~c_buttons;
+            // (0.10.14: after 12 frames, the walking's C-Left or C-Right, so he walks again once the hit is over and the hold ends)
+            const bool late = conker::netsession::frame() - hit_hold_state[port].hold_start >= 12;
+            *buttons = (uint16_t)(*buttons & ~c_buttons);
+            if (late && (dx != 0 || dy != 0)) {
+                *buttons |= (uint16_t)(dx > 0 ? 0x0001 : 0x0002);
+            }
             return;
         }
         if (MEM_H(0x73C, camera) == 1 && (*buttons & 0x0010) != 0) {

@@ -677,7 +677,7 @@ text = "{ extern void conker_mouse_camera_look_mode(uint8_t*, recomp_context*); 
 [[patches.hook]]
 func = "func_1512C490"
 before_vram = 0x1512C640
-text = "{ extern void conker_mouse_camera_aim(uint8_t*, recomp_context*); conker_mouse_camera_aim(rdram, ctx); extern void conker_look_view(uint8_t*, recomp_context*); conker_look_view(rdram, ctx); extern void conker_leap_view_lift(uint8_t*, recomp_context*); conker_leap_view_lift(rdram, ctx); }"
+text = "{ extern void conker_mouse_camera_aim(uint8_t*, recomp_context*); conker_mouse_camera_aim(rdram, ctx); extern void conker_look_view(uint8_t*, recomp_context*); conker_look_view(rdram, ctx); extern void conker_leap_view_lift(uint8_t*, recomp_context*); conker_leap_view_lift(rdram, ctx); extern void conker_view_snap_guard(uint8_t*, recomp_context*); conker_view_snap_guard(rdram, ctx); }"
 
 # Motion blur (func_151D6778, Conker drunk): a frame it's drawn in is drawn without frames between it
 # and the next, so the blur blends with a whole frame's ghost as on the N64 (host/src/widescreen.cpp,
@@ -1087,3 +1087,10 @@ text = "{ extern void conker_online_boot_black(uint8_t*, recomp_context*); conke
 func = "func_151E6C1C"
 before_vram = 0x151E6C1C
 text = "{ extern void conker_online_no_back(uint8_t*, recomp_context*); conker_online_no_back(rdram, ctx); }"
+
+# 0.10.14: online, footsteps with 3 or 4 players too (host/src/local_audio.cpp, conker_net_footsteps): func_1506BF5C plays a
+# character's footstep only while D_80082FA0 (the last listener: 0 one player, 1 two) is under 2; $t4 holds it here.
+[[patches.hook]]
+func = "func_1506BF5C"
+before_vram = 0x1506C060
+text = "{ extern void conker_net_footsteps(uint8_t*, recomp_context*); conker_net_footsteps(rdram, ctx); }"

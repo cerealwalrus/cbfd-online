@@ -677,6 +677,8 @@ namespace {
     PlayerInput carry;               // finished sounds and a QUIT from inputs that had no frame of their own
     int delay_up_seconds = 0, delay_down_seconds = 0;   // host: seconds in a row the round trips have called for more, or fewer, frames
     constexpr int auto_delay_min = 2, auto_delay_max = 10;
+    // (0.10.14: Auto's delay is worked out as the game starts and kept; true would have it follow the round trips during the game again)
+    constexpr bool delay_follows_round_trips = false;
 
     // --- Resyncs by the pieces that differ ---
     // A client whose game has drifted asks; the host names it in the next frame it sends (FrameInputs::snap); at that frame every
@@ -1091,7 +1093,7 @@ namespace {
         if (auto_delay) {
             const int want = wanted_delay_locked();
             delay = (uint32_t)(want > 0 ? want : 4);
-            log_line("[net] input delay: %u frames (worked out from the round trips%s; it follows them during the game)", delay, want > 0 ? "" : ", none known yet");
+            log_line("[net] input delay: %u frames (worked out from the round trips%s; kept for the game)", delay, want > 0 ? "" : ", none known yet");
         }
         have_target = true;
         last_target = delay - 1;
@@ -1189,6 +1191,12 @@ namespace {
                 const int want = wanted_delay_locked();
                 if (want > 0 && !started) {
                     delay = (uint32_t)want;
+                }
+                // 0.10.14: once the game has started, Auto keeps the delay it worked out: it no longer follows the round trips. A
+                // moment's long round trip (a player's connection, a resync's copy going out) took it from 3 frames to 8 or 10 for
+                // half a minute (0.10.13's 4 player game, f=1677 and f=17947), and the game felt slow all that time.
+                else if (want > 0 && !delay_follows_round_trips) {
+                    delay_up_seconds = delay_down_seconds = 0;
                 }
                 else if (want > 0) {
                     if (want > (int)delay) {
