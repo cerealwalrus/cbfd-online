@@ -1211,11 +1211,21 @@ func = "func_151E2834"
 before_vram = 0x151E2834
 text = "{ extern int conker_coop_start(uint8_t*, recomp_context*); if (conker_coop_start(rdram, ctx)) { return; } }"
 
-# 0.10.58, measuring: who measures distances to a player's character in co-op (host/src/net_menu.cpp, conker_coop_distance).
+# 0.10.59: co-op, the zombies' "near the player" test measures to the player they're after (host/src/net_menu.cpp, conker_coop_near_test).
 [[patches.hook]]
-func = "func_1505A6F8"
-before_vram = 0x1505A6F8
-text = "{ extern void conker_coop_distance(uint8_t*, recomp_context*); conker_coop_distance(rdram, ctx); }"
+func = "func_150779D4"
+before_vram = 0x150779D4
+text = "{ extern void conker_coop_near_test(uint8_t*, recomp_context*, int); conker_coop_near_test(rdram, ctx, 0); }"
+
+[[patches.hook]]
+func = "func_150779D4"
+before_vram = 0x15077A88
+text = "{ extern void conker_coop_near_test(uint8_t*, recomp_context*, int); conker_coop_near_test(rdram, ctx, 1); }"
+
+[[patches.hook]]
+func = "func_150779D4"
+before_vram = 0x15077A94
+text = "{ extern void conker_coop_near_test(uint8_t*, recomp_context*, int); conker_coop_near_test(rdram, ctx, 2); }"
 
 # 0.10.52, measuring: who calls func_15063570 (the shotgun's weapon mode) in co-op (host/src/net_menu.cpp, conker_coop_who).
 [[patches.hook]]

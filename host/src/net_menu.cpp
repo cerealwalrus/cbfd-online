@@ -630,36 +630,58 @@ extern "C" void conker_coop_frame(uint8_t* rdram, recomp_context* ctx) {
             }
         }
     }
-    // (0.10.57-58, measuring, the zombies) 0.10.56's log: no character but the players' in gObjects. 0.10.57's: besides the players' own
-    // structures, pointers to player 1's character turn up for a while in the game's heap (0x802xxxxx: 802001F8, 802267C0, 80222A28,
-    // 80239160...), never to the others': likely the zombies, each pointing at the one they're after. So every 60 frames the heap
-    // (0x80100000-0x80800000) is searched for pointers to any player's character, and each new address found (up to 60 in all) is
-    // logged with the 64 words round it (32 before, 32 from it), to see what holds it.
-    if (conker::netsession::frame() % 60 == 0) {
-        static std::vector<uint32_t> seen;
+    // (0.10.59) The zombies after every player. The one-player game's characters keep who they're after in +0x222 (an index into
+    // gObjects, 0 being player 1's Conker), which their AI commands read (func_15078900, func_1507839C...), and nothing in the stage ever
+    // sets it for them, so it stays 0: player 1. Every 30 frames (counted in this hook, on every machine alike), each other character in
+    // use (gObjects 4-24, +0 not 0) after a player is turned to the nearest player who's alive (+0 not 0, health +0x1CA not 0), by
+    // where they stand (+0x14, +0x1C), and kept on the one it has unless another is clearly nearer (by a sixth) or its own is down.
+    // (0.10.56's log of them read +0 as a byte, the top of a word, so it showed none.)
+    if (coop_frames.load() % 30 == 0) {
         const int count = std::min(std::max(coop_players, 1), 4);
-        for (uint32_t address = 0x80100000u; address < 0x80800000u && seen.size() < 60; address += 4) {
-            const uint32_t word = (uint32_t)MEM_W(0, (gpr)(int32_t)address);
-            if (word < 0x800CC2D0u || word >= 0x800CC2D0u + (uint32_t)count * 0x32Cu || (word - 0x800CC2D0u) % 0x32Cu != 0) {
+        static int switches_logged = 0;
+        for (int i = count; i < 25; i++) {
+            const uint32_t object = 0x800CC2D0u + (uint32_t)i * 0x32Cu;
+            if (MEM_W(0, (gpr)(int32_t)object) == 0) {
                 continue;
             }
-            // (the players' own structures, the same from the stage's start: their control blocks and the like, 801Bxxxx-801Dxxxx)
-            if (address >= 0x801B0000u && address < 0x801E0000u) {
-                continue;
+            const int target = (int)(uint8_t)MEM_BU(0x222, (gpr)(int32_t)object);
+            if (target >= count) {
+                continue;   // (after something else)
             }
-            if (std::find(seen.begin(), seen.end(), address) != seen.end()) {
-                continue;
-            }
-            seen.push_back(address);
-            const int k = (int)((word - 0x800CC2D0u) / 0x32Cu);
-            for (int half = 0; half < 2; half++) {
-                char line[400];
-                int n = std::snprintf(line, sizeof(line), "[coop held] f=%u %08X -> player %d's, %s:", (unsigned)conker::netsession::frame(), (unsigned)address,
-                    k + 1, half == 0 ? "the 32 words before" : "the 32 words from it");
-                for (int i = 0; i < 32 && n < (int)sizeof(line) - 10; i++) {
-                    const int32_t offset = half == 0 ? (i - 32) * 4 : i * 4;
-                    n += std::snprintf(line + n, sizeof(line) - (size_t)n, " %08X", (unsigned)(uint32_t)MEM_W(offset, (gpr)(int32_t)address));
+            const auto where = [&](uint32_t base, float* x, float* z) {
+                const uint32_t xw = (uint32_t)MEM_W(0x14, (gpr)(int32_t)base), zw = (uint32_t)MEM_W(0x1C, (gpr)(int32_t)base);
+                std::memcpy(x, &xw, 4);
+                std::memcpy(z, &zw, 4);
+            };
+            float ox, oz;
+            where(object, &ox, &oz);
+            int best = -1;
+            float best_d = 0.0f, target_d = -1.0f;
+            for (int k = 0; k < count; k++) {
+                const uint32_t player = 0x800CC2D0u + (uint32_t)k * 0x32Cu;
+                if (MEM_W(0, (gpr)(int32_t)player) == 0 || MEM_BU(0x1CA, (gpr)(int32_t)player) == 0) {
+                    continue;
                 }
+                float px, pz;
+                where(player, &px, &pz);
+                const float d = (px - ox) * (px - ox) + (pz - oz) * (pz - oz);
+                if (k == target) {
+                    target_d = d;
+                }
+                if (best < 0 || d < best_d) {
+                    best = k;
+                    best_d = d;
+                }
+            }
+            if (best < 0 || best == target || (target_d >= 0.0f && best_d > target_d * 0.7f)) {
+                continue;
+            }
+            MEM_B(0x222, (gpr)(int32_t)object) = (int8_t)best;
+            if (switches_logged < 200) {
+                switches_logged++;
+                char line[128];
+                std::snprintf(line, sizeof(line), "[coop chase] f=%u character %d (type %02X) after player %d now, not player %d",
+                    (unsigned)conker::netsession::frame(), i, (unsigned)MEM_BU(4, (gpr)(int32_t)object), best + 1, target + 1);
                 conker::netsession::log(line);
             }
         }
@@ -757,28 +779,31 @@ extern "C" void conker_coop_who(uint8_t* rdram, recomp_context* ctx) {
     conker::netsession::log(line);
 }
 
-// 0.10.58, measuring, the zombies: who measures the distance from something to a player's character (func_1505A6F8(a, b), a's +0x14 and
-// +0x1C to b's), when the other one isn't a player's: each caller (its return address) with what it measured from, once (up to 60)
-extern "C" void conker_coop_distance(uint8_t* rdram, recomp_context* ctx) {
-    (void)rdram;
-    if (!conker::netsession::active() || !coop_started) {
+// 0.10.59: the zombies' "near the player" test (func_150779D4: with its argument D_800D1892 0 it measures to player 1's Conker,
+// gObjects[0], whoever the character is after; with 1, to the one it's after, +0x222). In co-op, for a character that isn't a player's,
+// it's made 1 for the test (so it's the one it's after, which the frame hook above keeps the nearest player), and put back before the
+// command it may go on to (func_15075400) and at the end. Every machine alike.
+namespace {
+    bool coop_near_test_changed = false;
+}
+
+extern "C" void conker_coop_near_test(uint8_t* rdram, recomp_context* ctx, int where) {
+    (void)ctx;
+    if (where != 0) {
+        if (coop_near_test_changed) {
+            coop_near_test_changed = false;
+            MEM_B(0, (gpr)(int32_t)0x800D1892) = 0;
+        }
         return;
     }
-    const uint32_t a = (uint32_t)ctx->r4, b = (uint32_t)ctx->r5;
-    const auto player = [](uint32_t x) { return x >= 0x800CC2D0u && x < 0x800CC2D0u + 4u * 0x32Cu && (x - 0x800CC2D0u) % 0x32Cu == 0; };
-    if (player(a) == player(b)) {
+    coop_near_test_changed = false;
+    if (!conker::netsession::active() || !coop_started || coop_players < 2) {
         return;
     }
-    static std::vector<uint64_t> seen;
-    const uint32_t ra = (uint32_t)ctx->r31;
-    const uint32_t other = player(a) ? b : a;
-    const uint64_t key = ((uint64_t)ra << 32) | (other & 0xFFFF0000u);
-    if (seen.size() >= 60 || std::find(seen.begin(), seen.end(), key) != seen.end()) {
+    const int current = (int)(int8_t)MEM_B(0, (gpr)(int32_t)0x800C3E78);   // gCurrentObjectIndex
+    if (current < coop_players || MEM_BU(0, (gpr)(int32_t)0x800D1892) != 0) {
         return;
     }
-    seen.push_back(key);
-    char line[160];
-    std::snprintf(line, sizeof(line), "[coop distance] f=%u from %08X: %08X to %08X (player %d's)", (unsigned)conker::netsession::frame(), (unsigned)ra,
-        (unsigned)other, (unsigned)(player(a) ? a : b), (int)(((player(a) ? a : b) - 0x800CC2D0u) / 0x32Cu) + 1);
-    conker::netsession::log(line);
+    MEM_B(0, (gpr)(int32_t)0x800D1892) = 1;
+    coop_near_test_changed = true;
 }
