@@ -117,6 +117,12 @@ extern "C" void conker_net_pause_hook(uint8_t* rdram, recomp_context* ctx, int w
         if (which == 7) {
             put_back(rdram);   // (the menu closed this frame: a slot it borrowed still goes back)
         }
+        // (0.10.77) in co-op, once this machine's menu has closed the pause menu's buttons aren't drawn as they leave (the game's own
+        // pause is never on there): at 0x151DDFD0 $t8 0 goes straight to the function's end, past its buttons (the stray QUIT and
+        // joystick at the bottom of the screen as the menu closed)
+        if (which == 3 && coop_pause_screen()) {
+            ctx->r24 = 0;
+        }
         // (0.10.73) in co-op, the pause screen's last frames as it fades out after the menu has closed keep the layout too: RESTART
         // hidden and QUIT in its place (0.10.72 showed QUIT in its own place, at the bottom, for those frames)
         if (!((which == 4 || which == 5 || which == 6) && coop_pause_screen())) {

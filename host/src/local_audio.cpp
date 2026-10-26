@@ -453,13 +453,19 @@ namespace {
     }
 
     void on_start_inner(uint8_t* rdram, recomp_context* ctx) {
-        // (0.10.75) co-op: Conker's Gameboy (his idle, sounds 0x29C-0x29F every 8 frames) silent, for every player. Only this machine's
-        // volume: the game's slots and handles are as it has them.
+        // (0.10.75) co-op: Conker's Gameboy (his idle, sounds 0x29C-0x29F every 8 frames). Only this machine's volume: the game's slots
+        // and handles are as it has them.
+        // (0.10.77) only another player's: this player hears their own Conker's Gameboy (its tune 0x296-0x29F, and 0x3A0-0x3AB, which
+        // the idle players' Conkers played every 20 frames in the logs), and never the others'
         if (conker::netmenu::coop_running(rdram)) {
             const uint32_t sound = (uint32_t)ctx->r5 & 0xFFFFu;
-            if (sound >= 0x29Cu && sound <= 0x29Fu) {
-                ctx->r6 = 0;
-                return;
+            if ((sound >= 0x296u && sound <= 0x29Fu) || (sound >= 0x3A0u && sound <= 0x3ABu)) {
+                const uint32_t object = word(rdram, (uint32_t)ctx->r29 + 0x24);
+                const int player = character_player(rdram, owner_of(rdram, object, sound));
+                if (player != conker::netsession::local_slot()) {
+                    ctx->r6 = 0;
+                    return;
+                }
             }
         }
         const uint32_t sp = (uint32_t)ctx->r29;
