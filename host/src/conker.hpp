@@ -523,6 +523,11 @@ namespace conker {
     }
 
     // fps_counter.cpp: Show FPS, the frame rate counter.
+    namespace windowed_size {
+        // conker_config.cpp (0.10.49): the Windowed Size setting (Graphics tab): Fill Screen (true) or 1600 x 900.
+        bool fill_screen();
+    }
+
     namespace vsync {
         // conker_config.cpp: whether the VSync setting is on (Graphics tab; frontend.cpp hands it to RT64 each frame).
         bool enabled();

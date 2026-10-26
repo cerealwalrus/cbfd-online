@@ -144,10 +144,15 @@ bool conker::window_chrome::wanted() {
 }
 
 bool conker::window_chrome::start_rect(bool fill, int* x, int* y, int* width, int* height) {
+    const SDL_Rect area = work_area(0);
     if (!fill) {
+        // (0.10.49) 1600 x 900 (Windowed Size), smaller on a smaller screen, in the middle of it
+        *width = (std::min)(*width, area.w - 80);
+        *height = (std::min)(*height, area.h - 60);
+        *x = area.x + (area.w - *width) / 2;
+        *y = area.y + (area.h - *height) / 2;
         return false;
     }
-    const SDL_Rect area = work_area(0);
     *x = area.x;
     *y = area.y;
     *width = area.w;
@@ -198,7 +203,39 @@ void conker::window_chrome::toggle_fill() {
 
 void conker::window_chrome::update(bool game_started, bool settings_full_screen) {
     config_full_screen = settings_full_screen;
-    if (!active || restored || chrome_window == nullptr) {
+    if (!active || chrome_window == nullptr) {
+        return;
+    }
+    {
+        // (0.10.49) the Graphics tab's Windowed Size changed: the window takes the new size at once (not in full screen)
+        static int size_seen = -1;
+        const int fill = conker::windowed_size::fill_screen() ? 1 : 0;
+        if (size_seen < 0) {
+            size_seen = fill;
+        }
+        else if (fill != size_seen && !full_screen(chrome_window)) {
+            size_seen = fill;
+            std::printf("[window] Windowed Size: %s\n", fill ? "Fill Screen" : "1600 x 900");
+            if (!restored) {
+                set_filled(fill != 0);
+            }
+            else if (fill) {
+                SDL_MaximizeWindow(chrome_window);
+                filled = true;
+            }
+            else {
+                SDL_RestoreWindow(chrome_window);
+                const SDL_Rect area = work_area(SDL_GetWindowDisplayIndex(chrome_window));
+                int top = 0;
+                SDL_GetWindowBordersSize(chrome_window, &top, nullptr, nullptr, nullptr);
+                const int width = (std::min)(1600, area.w - 80), height = (std::min)(900, area.h - 60 - top);
+                SDL_SetWindowSize(chrome_window, width, height);
+                SDL_SetWindowPosition(chrome_window, area.x + (area.w - width) / 2, area.y + top + (area.h - top - height) / 2);
+                filled = false;
+            }
+        }
+    }
+    if (restored) {
         return;
     }
     const Uint32 flags = SDL_GetWindowFlags(chrome_window);

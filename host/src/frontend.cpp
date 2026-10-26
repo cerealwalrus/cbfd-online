@@ -282,7 +282,9 @@ namespace {
         const int height = conker::frontend::window_height > 0 ? conker::frontend::window_height : 900;
         // 0.10.5: windowed, the window opens maximized (1600 x 900 is its size when it's restored). Not with --window WxH, which asks
         // for that size; in Fullscreen RT64 makes it full screen once it's up, as before.
-        const bool open_maximized = conker::frontend::window_width <= 0 || conker::frontend::window_height <= 0;
+        // (0.10.49: or 1600 x 900, by the Graphics tab's Windowed Size)
+        const bool open_maximized = (conker::frontend::window_width <= 0 || conker::frontend::window_height <= 0) &&
+            conker::windowed_size::fill_screen();
         // (0.10.44) on Windows the launcher draws its own title bar (window_chrome.cpp): no Windows border, and in place of maximized
         // the window fills the desktop's work area (a maximized window with no border would cover the taskbar)
         const bool own_chrome = conker::window_chrome::wanted();
@@ -290,7 +292,9 @@ namespace {
         bool filled = false;
         if (own_chrome) {
             flags |= SDL_WINDOW_BORDERLESS;
-            filled = conker::window_chrome::start_rect(open_maximized, &x, &y, &open_width, &open_height);
+            if (open_maximized || conker::frontend::window_width <= 0 || conker::frontend::window_height <= 0) {
+                filled = conker::window_chrome::start_rect(open_maximized, &x, &y, &open_width, &open_height);
+            }
         }
         else if (open_maximized) {
             flags |= SDL_WINDOW_MAXIMIZED;

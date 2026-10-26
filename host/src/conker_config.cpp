@@ -43,6 +43,9 @@ namespace {
     // VSync (0.10.15: RT64's swap chain, rt64.patch's setVsyncWanted, applied from frontend.cpp), on the Graphics tab.
     const std::string vsync_id = "vsync";
     enum class VSync : uint32_t { On, Off };
+    // (0.10.49) Windowed Size (window_chrome.cpp, frontend.cpp's create_window), on the Graphics tab.
+    const std::string windowed_size_id = "windowed_size";
+    enum class WindowedSize : uint32_t { FillScreen, Size1600x900 };
 
     void add_graphics_options(recomp::config::Config& config) {
         static const std::vector<recomp::config::ConfigOptionEnumOption> choices = {
@@ -105,6 +108,20 @@ namespace {
             "but a fast-moving picture can tear (a line across the screen where two frames meet) unless the monitor has "
             "G-Sync or FreeSync on. Online, each player can choose their own: it changes nothing in the game itself.",
             vsync_choices, VSync::Off);   // (0.10.16: Off unless chosen)
+
+        static const std::vector<recomp::config::ConfigOptionEnumOption> size_choices = {
+            {WindowedSize::FillScreen, "FillScreen", "Fill Screen"},
+            {WindowedSize::Size1600x900, "1600x900", "1600 x 900"},
+        };
+        config.add_enum_option(windowed_size_id, "Windowed Size",
+            "The size of the window when <recomp-color primary>Window Mode</recomp-color> is Windowed, as the program starts "
+            "and when this is changed. "
+            "<recomp-color primary>Fill Screen</recomp-color> fills the screen above the taskbar (maximized, once the game starts). "
+            "<recomp-color primary>1600 x 900</recomp-color> opens a 1600 x 900 window in the middle of the screen. "
+            "Double-clicking the launcher's title bar, or its middle button, switches between the two at any time.",
+            size_choices, WindowedSize::FillScreen);
+        config.add_option_disable_dependency(windowed_size_id,
+            recompui::config::graphics::options::wm_option, ultramodern::renderer::WindowMode::Fullscreen);
     }
 
     // Settings moved to another tab keep their ids, but each tab saves to its own json (<tab id>.json in
@@ -325,4 +342,12 @@ bool conker::fps_counter::enabled() {
     }
     const auto value = recompui::config::get_graphics_config().get_option_value(show_fps_id);
     return static_cast<ShowFps>(std::get<uint32_t>(value)) == ShowFps::On;
+}
+
+bool conker::windowed_size::fill_screen() {
+    if (!conker::graphics_config_ready()) {
+        return true;
+    }
+    const auto value = recompui::config::get_graphics_config().get_option_value(windowed_size_id);
+    return static_cast<WindowedSize>(std::get<uint32_t>(value)) == WindowedSize::FillScreen;
 }
