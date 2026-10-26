@@ -15,6 +15,7 @@
 // net_session.cpp opens and closes it (the game's own unpause sets D_8008FEF0, which it sees) and ends this
 // machine's part of the match when QUIT is confirmed.
 
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
@@ -322,12 +323,47 @@ extern "C" int conker_coop_start(uint8_t* rdram, recomp_context* ctx) {
     MEM_B(0, (gpr)(int32_t)0x8008FDB4) = 1;
     MEM_H(0, (gpr)(int32_t)0x8008FDAC) = coop_stage;
     MEM_B(0, (gpr)(int32_t)0x8008FD74) = 3;
+    // (0.10.30, stage 2) the players who joined on the race's character select: D_8008FE44's first D_8008FE40 entries, each a
+    // controller (0-3), read before the one-player start sets its own counts
+    const int joined = std::min(std::max((int)(int8_t)MEM_B(0, (gpr)(int32_t)0x8008FE40), 1), 4);
+    uint32_t mask = 0;
+    for (int k = 0; k < joined; k++) {
+        const int controller = (int)(int8_t)MEM_B(0, (gpr)(int32_t)(0x8008FE44u + (uint32_t)k));
+        if (controller >= 0 && controller < 4) {
+            mask |= 1u << controller;
+        }
+    }
+    if ((mask & 1u) == 0) {
+        mask |= 1u;   // (player 1 always: the one-player game's Conker is the first player's)
+    }
+    int players = 0;
+    for (int k = 0; k < 4; k++) {
+        players += (int)((mask >> k) & 1u);
+    }
     const recomp_context saved = *ctx;
     func_151E30C4(rdram, ctx);
     *ctx = saved;
-    char line[120];
-    std::snprintf(line, sizeof(line), "[coop] the race's start: the campaign stage (table %02X, scene %02X) instead", (unsigned)coop_stage,
-        (unsigned)MEM_W(0, (gpr)(int32_t)0x800BE9F4));
+    if (players >= 2) {
+        // 0.10.30, stage 2: every player who joined is a player of the stage, each with a Conker of their own (character 0, the
+        // one-player game's) and a camera of their own: the scene's request (func_1501C730, mode 6) left with the player mask at
+        // D_800BEA00 (1 for the one-player game) and the screen's layout at D_800BEA04 (0, one screen); the scene's load
+        // (func_15007A70 -> func_15017300) sets up a player for each bit of the mask with D_80087270's character, as a match's does.
+        // The counts a match's start sets (D_8008FD88/8C/90/94, D_800BE618) to the players.
+        const uint32_t layout = (uint32_t)(uint8_t)MEM_BU(0, (gpr)(int32_t)(0x8008FF37u + (uint32_t)players));
+        MEM_W(0, (gpr)(int32_t)0x800BEA00) = (int32_t)mask;
+        MEM_W(0, (gpr)(int32_t)0x800BEA04) = (int32_t)layout;
+        for (uint32_t k = 0; k < 4; k++) {
+            MEM_B(0, (gpr)(int32_t)(0x80087270u + k)) = 0;
+        }
+        MEM_B(0, (gpr)(int32_t)0x8008FD88) = (int8_t)players;
+        MEM_B(0, (gpr)(int32_t)0x8008FD8C) = (int8_t)players;
+        MEM_B(0, (gpr)(int32_t)0x8008FD90) = (int8_t)players;
+        MEM_B(0, (gpr)(int32_t)0x8008FD94) = (int8_t)players;
+        MEM_B(0, (gpr)(int32_t)0x800BE618) = (int8_t)players;
+    }
+    char line[200];
+    std::snprintf(line, sizeof(line), "[coop] the race's start: the campaign stage (table %02X, scene %02X) instead, %d players (mask %X, layout %u)",
+        (unsigned)coop_stage, (unsigned)MEM_W(0, (gpr)(int32_t)0x800BE9F4), players, (unsigned)mask, (unsigned)MEM_W(0, (gpr)(int32_t)0x800BEA04));
     conker::netsession::log(line);
     return 1;
 }
