@@ -39,6 +39,9 @@ namespace {
     // Graphics tab.
     const std::string conker_detail_id = "conker_detail";
     enum class ConkerDetail : uint32_t { AlwaysHighest, Original };
+    // VSync (0.10.15: RT64's swap chain, rt64.patch's setVsyncWanted, applied from frontend.cpp), on the Graphics tab.
+    const std::string vsync_id = "vsync";
+    enum class VSync : uint32_t { On, Off };
 
     void add_graphics_options(recomp::config::Config& config) {
         static const std::vector<recomp::config::ConfigOptionEnumOption> choices = {
@@ -89,6 +92,18 @@ namespace {
             "longer swaps as the camera pulls back or as he starts and stops walking. Multiplayer is left as it was. "
             "<recomp-color primary>Original</recomp-color> lets the game pick, as on the N64.",
             detail_choices, ConkerDetail::AlwaysHighest);
+
+        static const std::vector<recomp::config::ConfigOptionEnumOption> vsync_choices = {
+            {VSync::On, "On", "On"},
+            {VSync::Off, "Off", "Off"},
+        };
+        config.add_enum_option(vsync_id, "VSync",
+            "Whether each frame waits for the screen's refresh before it's shown. "
+            "<recomp-color primary>On</recomp-color> never tears. "
+            "<recomp-color primary>Off</recomp-color> shows each frame as soon as it's ready, a few milliseconds sooner, "
+            "but a fast-moving picture can tear (a line across the screen where two frames meet) unless the monitor has "
+            "G-Sync or FreeSync on. Online, each player can choose their own: it changes nothing in the game itself.",
+            vsync_choices, VSync::On);
     }
 
     // Settings moved to another tab keep their ids, but each tab saves to its own json (<tab id>.json in
@@ -292,6 +307,14 @@ bool conker::model_detail::always_highest() {
     }
     const auto value = recompui::config::get_graphics_config().get_option_value(conker_detail_id);
     return static_cast<ConkerDetail>(std::get<uint32_t>(value)) == ConkerDetail::AlwaysHighest;
+}
+
+bool conker::vsync::enabled() {
+    if (!conker::graphics_config_ready()) {
+        return true;
+    }
+    const auto value = recompui::config::get_graphics_config().get_option_value(vsync_id);
+    return static_cast<VSync>(std::get<uint32_t>(value)) == VSync::On;
 }
 
 bool conker::fps_counter::enabled() {

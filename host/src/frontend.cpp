@@ -50,6 +50,11 @@ std::vector<recomp::GameEntry> supported_games;
 // The game window, which recompui also uses (ui_state.cpp declares it extern).
 SDL_Window* window = nullptr;
 
+namespace RT64 {
+    // rt64.patch: vsync on or off, from any thread (the present thread applies it)
+    void setVsyncWanted(bool enabled);
+}
+
 void conker_mouse_camera_init();
 
 namespace {
@@ -588,7 +593,11 @@ namespace {
             conker::netview::render_done(rdram, (uint32_t)task->t.data_ptr);
         }
         void send_dummy_workload(uint32_t fb_address) override { real->send_dummy_workload(fb_address); }
-        void update_screen() override { real->update_screen(); }
+        void update_screen() override {
+            // 0.10.15: the VSync setting (Graphics tab), for RT64's present thread to apply (rt64.patch)
+            RT64::setVsyncWanted(conker::vsync::enabled());
+            real->update_screen();
+        }
         void shutdown() override { real->shutdown(); }
         uint32_t get_display_framerate() const override { return real->get_display_framerate(); }
         float get_resolution_scale() const override { return real->get_resolution_scale(); }

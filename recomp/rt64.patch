@@ -921,7 +921,7 @@ diff --git a/src/hle/rt64_present_queue.cpp b/src/hle/rt64_present_queue.cpp
 index 7de5b69..2ef2ef5 100644
 --- a/src/hle/rt64_present_queue.cpp
 +++ b/src/hle/rt64_present_queue.cpp
-@@ -9,7 +9,16 @@
+@@ -9,7 +9,23 @@
  
  #include "rt64_workload_queue.h"
  
@@ -935,10 +935,17 @@ index 7de5b69..2ef2ef5 100644
 +        return presentedFrames.load(std::memory_order_relaxed);
 +    }
 +
++    // Vsync, as Conker's VSync option wants it (host/src/frontend.cpp): the present thread puts the swap chain to it.
++    static std::atomic<int> vsyncWanted = 1;
++
++    void setVsyncWanted(bool enabled) {
++        vsyncWanted.store(enabled ? 1 : 0, std::memory_order_relaxed);
++    }
++
      // PresentQueue
  
      PresentQueue::PresentQueue() {
-@@ -402,6 +411,7 @@ namespace RT64 {
+@@ -402,6 +418,7 @@ namespace RT64 {
                  RenderCommandSemaphore *waitSemaphore = drawSemaphores[swapChainIndex].get();
                  presentTimestamp = Timer::current();
                  swapChainValid = ext.swapChain->present(swapChainIndex, &waitSemaphore, 1);
@@ -946,16 +953,47 @@ index 7de5b69..2ef2ef5 100644
                  presentProfiler.logAndRestart();
              }
          }
+@@ -450,20 +467,28 @@ namespace RT64 {
+         uint32_t displayTimingRate = UINT32_MAX;
+         const bool displayTiming = ext.device->getCapabilities().displayTiming;
+         bool swapChainValid = !ext.swapChain->needsResize();
++        int vsyncApplied = 1;
+         while (presentThreadRunning) {
+             {
+                 std::unique_lock<std::mutex> cursorLock(cursorMutex);
+                 cursorCondition.wait(cursorLock, [&]() {
+                     return (writeCursor != threadCursor) || !presentThreadRunning;
+                 });
+ 
+                 if (presentThreadRunning) {
+                     processCursor = threadCursor;
+                     threadCursor = (threadCursor + 1) % presents.size();
+                     skipPresent = (writeCursor != threadCursor);
+                 }
+             }
+ 
+             if (processCursor >= 0) {
+                 std::unique_lock<std::mutex> threadLock(threadMutex);
++                const int vsyncNow = vsyncWanted.load(std::memory_order_relaxed);
++                if (vsyncNow != vsyncApplied) {
++                    // (Vulkan takes it at the swap chain's next resize, which needsResize() then asks for; D3D12 at the next present)
++                    ext.swapChain->setVsyncEnabled(vsyncNow != 0);
++                    vsyncApplied = vsyncNow;
++                }
++
+                 const bool needsResize = ext.swapChain->needsResize() || !swapChainValid;
 diff --git a/src/hle/rt64_present_queue.h b/src/hle/rt64_present_queue.h
 index e08b02c..084ccfd 100644
 --- a/src/hle/rt64_present_queue.h
 +++ b/src/hle/rt64_present_queue.h
-@@ -17,6 +17,9 @@
+@@ -17,6 +17,11 @@
  namespace RT64 {
      struct WorkloadQueue;
  
 +    // The number of frames presented to the screen so far, from any thread (Conker's FPS counter).
 +    uint64_t presentedFrameCount();
++    // Vsync on or off (Conker's VSync option), from any thread: the present thread applies it.
++    void setVsyncWanted(bool enabled);
 +
      struct PresentQueue {
          struct External {

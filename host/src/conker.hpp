@@ -463,6 +463,11 @@ namespace conker {
     }
 
     // fps_counter.cpp: Show FPS, the frame rate counter.
+    namespace vsync {
+        // conker_config.cpp: whether the VSync setting is on (Graphics tab; frontend.cpp hands it to RT64 each frame).
+        bool enabled();
+    }
+
     namespace fps_counter {
         // conker_config.cpp: whether the setting is on.
         bool enabled();
