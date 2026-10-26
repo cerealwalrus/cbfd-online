@@ -91,7 +91,9 @@ extern "C" void conker_net_pause_hook(uint8_t* rdram, recomp_context* ctx, int w
     } else if (which == 4) {
         put_back(rdram);   // (the menu has read its input by now: the slot's own goes back)
         // before the jal: its delay slot makes $a1 (the y of RESTART's button, in the game's 320 x 240 screen) from $t9
-        ctx->r25 = (gpr)(int64_t)(450 << 16);
+        // (0.10.74: 2000, not 450: 450 is the screen's bottom edge, where RESTART's button and the joystick beside it showed in the
+        // co-op pause as it closed (a match's pause has its score table over it))
+        ctx->r25 = (gpr)(int64_t)(2000 << 16);
     } else if (which == 7) {
         // (0.10.71) func_151DDC20's end: the borrowed slot's own input back, whichever way the menu went (its Y and N screen
         // doesn't pass 0x151DE2F0, so in 0.10.70 the player's own slot kept the menu's stick and buttons: their Conker moved on this

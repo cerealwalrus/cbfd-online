@@ -657,12 +657,28 @@ namespace {
 
     // The memory comparisons (DIAG): seven copies of the host's memory sent to a client whenever their games differ. Only with
     // CONKER_NET_DIAG=1 (a test for finding a drift's cause): in a normal game they took the connection for seconds at a time.
-    bool diag_dumps_on() {
+    bool diag_env_on() {
         static const bool on = [] {
             const std::string v = get_env("CONKER_NET_DIAG");
             return !v.empty() && v != "0";
         }();
         return on;
+    }
+    // (0.10.74, measuring the co-op pause's drift) in the co-op stage the memory comparison is on too: the copies every frame, and the
+    // first four comparisons asked for
+    bool diag_copies_on() {
+        return diag_env_on() || (ram != nullptr && conker::netmenu::coop_running(ram));
+    }
+    bool diag_dumps_on() {
+        if (diag_env_on()) {
+            return true;
+        }
+        static int coop_dumps = 0;
+        if (ram != nullptr && conker::netmenu::coop_running(ram) && coop_dumps < 4) {
+            coop_dumps++;
+            return true;
+        }
+        return false;
     }
 
     // --- Input delay ---
@@ -3123,7 +3139,7 @@ void conker::netsession::on_port_read(int port) {
     }
     conker::netsession::watch_poll("start", f);
     if (ram != nullptr) {
-        if (diag_dumps_on()) {
+        if (diag_copies_on()) {
             // (only for the memory comparisons: an 8 MB copy every frame, 160 MB kept)
             RawCopy& rc = raw_ring[f % raw_ring_size];
             rc.frame = f;
