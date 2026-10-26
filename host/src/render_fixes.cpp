@@ -110,6 +110,25 @@ extern "C" void conker_depth_copy_camera(uint8_t* rdram, recomp_context* ctx) {
         ctx->r10 = 0;
     }
 }
+// 0.10.21: online the copy above is skipped, so the row the camera scans for what stands between it and its player (func_1512B1B8
+// scans camera +0x8BC, a copy of one row of the depth buffer, and func_1512B630 notes the occluders in D_800DC0C0) held whatever was
+// in that buffer: the teddies' cameras in a 4 player game found occluders there all the time, swung aside to see past them, and every
+// 45 frames, as a timer ran out (+0x5FE, func_1512B730), started over behind the player (func_15128774): the snapping. The row is
+// filled with the farthest depth (0xFFFC, "nothing in front") before every scan, for every camera on every machine: the same
+// everywhere, and no camera swings for an occluder that isn't there. (The game's swing round a wall Conker walks behind is lost online.)
+extern "C" void conker_depth_row_neutral(uint8_t* rdram, recomp_context* ctx) {
+    if (!conker::netsession::active()) {
+        return;
+    }
+    const uint32_t row = (uint32_t)MEM_W(0x8BC, ctx->r4);
+    if ((row >> 24) != 0x80 || (row & 0x7FFFFFu) + 292u * 2u > 0x800000u) {
+        return;
+    }
+    for (uint32_t i = 0; i < 292; i++) {
+        MEM_H(i * 2, (gpr)(int32_t)row) = (int16_t)(uint16_t)0xFFFCu;
+    }
+}
+
 // func_151742EC at 0x1517432C: $t6 (its camera argument) nonzero returns before any copy.
 extern "C" void conker_depth_copy_probes(uint8_t* rdram, recomp_context* ctx) {
     static const bool skip = SDL_getenv("CONKER_SKIP_DEPTH_PROBES") != nullptr;

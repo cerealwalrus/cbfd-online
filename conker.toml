@@ -1142,3 +1142,10 @@ func = "func_1512E8E0"
 before_vram = 0x1512E8E0
 text = "{ extern void conker_cam_probe(uint8_t*, recomp_context*, int); conker_cam_probe(rdram, ctx, 9); }"
 
+
+# 0.10.21: online, the camera's depth row (camera +0x8BC, 292 samples) reads as "nothing in front" as the camera scans it for what's
+# between it and the player (func_1512B1B8, $a0 the camera; host/src/render_fixes.cpp, conker_depth_row_neutral).
+[[patches.hook]]
+func = "func_1512B1B8"
+before_vram = 0x1512B1B8
+text = "{ extern void conker_depth_row_neutral(uint8_t*, recomp_context*); conker_depth_row_neutral(rdram, ctx); }"
