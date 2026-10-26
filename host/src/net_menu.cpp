@@ -691,6 +691,40 @@ extern "C" void conker_coop_frame(uint8_t* rdram, recomp_context* ctx) {
         coop_dumped = false;
         return;
     }
+    // (0.10.80, measuring, to take Conker's idle animations out) each player's character's animation (+0x84) as it changes, with how
+    // many frames the player's controller had been still; the idle's animations are the ones that start after a long stillness
+    {
+        static uint16_t last_anim[4] = { 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF };
+        static uint32_t still_since[4] = { 0, 0, 0, 0 };
+        static uint32_t last_input[4][3] = {};
+        static int anim_logs = 0;
+        const int count = std::min(std::max(coop_players, 1), 4);
+        const uint32_t now = conker::netsession::frame();
+        for (int k = 0; k < count; k++) {
+            const uint32_t object = 0x800CC2D0u + (uint32_t)k * 0x32Cu;
+            // the player's controller as the game has it this frame (D_800BE930 the buttons, D_800BE918's +2 and +3 the stick)
+            const uint32_t input[3] = { (uint32_t)(uint16_t)MEM_HU(0, (gpr)(int32_t)(0x800BE930u + 2u * (uint32_t)k)),
+                (uint32_t)(uint8_t)MEM_BU(2, (gpr)(int32_t)(0x800BE918u + 6u * (uint32_t)k)), (uint32_t)(uint8_t)MEM_BU(3, (gpr)(int32_t)(0x800BE918u + 6u * (uint32_t)k)) };
+            const bool still = input[0] == 0 && (int8_t)input[1] > -8 && (int8_t)input[1] < 8 && (int8_t)input[2] > -8 && (int8_t)input[2] < 8;
+            if (!still || std::memcmp(input, last_input[k], sizeof(input)) != 0) {
+                if (!still) {
+                    still_since[k] = now;
+                }
+                std::memcpy(last_input[k], input, sizeof(input));
+            }
+            const uint16_t anim = (uint16_t)MEM_HU(0x84, (gpr)(int32_t)object);
+            if (anim != last_anim[k]) {
+                if (last_anim[k] != 0xFFFF && anim_logs < 600) {
+                    anim_logs++;
+                    char line[160];
+                    std::snprintf(line, sizeof(line), "[coop anim] f=%u player %d: animation %04X -> %04X, still for %u frames", (unsigned)now, k + 1,
+                        (unsigned)last_anim[k], (unsigned)anim, (unsigned)(now - still_since[k]));
+                    conker::netsession::log(line);
+                }
+                last_anim[k] = anim;
+            }
+        }
+    }
     // (0.10.32) each player's weapon mode (+0x78 of the character's +0x31C, func_15063570's 0x3B the shotgun), logged as it changes;
     // and should the first player's be the shotgun's with another player's still none (handed out before conker_coop_weapon could
     // see it), that player is given it too, once a stage (every machine at the same frame: the game's state)
