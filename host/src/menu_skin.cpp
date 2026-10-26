@@ -156,6 +156,13 @@ namespace {
     bool user_checked = false;        // the check running was asked for with Check for updates
     std::chrono::steady_clock::time_point up_to_date_until{};
     bool update_quit_sent = false;
+    // (0.10.47) the update check's answer, as a radio transmission over the bottom right corner for a few seconds
+    recompui::Element* toast = nullptr;
+    recompui::Label* toast_header = nullptr;
+    recompui::Label* toast_message = nullptr;
+    std::chrono::steady_clock::time_point toast_until{};
+    bool toast_showing = false;
+    bool newer_announced = false;
     bool bars_made = false;
 
     constexpr float title_bar_height = 51.0f, hazard_height = 9.0f, status_bar_height = 57.0f;
@@ -220,7 +227,9 @@ namespace {
             result.hover->set_height(100.0f, recompui::Unit::Percent);
             result.hover->display_hide();
         }
-        result.button->add_clicked_callback([pressed](float, float) { pressed(); });
+        // (0.10.47) on the press: RmlUi gives a click to the nearest element that can take focus, and these can't (so the d-pad
+        // doesn't go to them), so their clicks went to the page and did nothing
+        result.button->add_pressed_callback([pressed](float, float) { pressed(); });
         return result;
     }
 
@@ -276,7 +285,7 @@ namespace {
                     size_images[i]->set_height(100.0f, recompui::Unit::Percent);
                     size_images[i]->display_hide();
                 }
-                size_button->add_clicked_callback([](float, float) { conker::window_chrome::toggle_fill(); });
+                size_button->add_pressed_callback([](float, float) { conker::window_chrome::toggle_fill(); });
             }
             close_button = make_window_button(buttons, load("chrome/close"), load("chrome/close_hover"), []() {
                 // as the window's own X did: quits
@@ -354,8 +363,53 @@ namespace {
         make_separator(right);
         update_button = recompui::get_current_context().create_element<recompui::Clickable>(right);
         update_button->set_focusable(false);
-        update_button->add_clicked_callback([](float, float) { update_clicked = true; });
+        update_button->add_pressed_callback([](float, float) { update_clicked = true; });
         update_label = make_text(update_button, "CHECK FOR UPDATES", 2.4f);
+
+        // (0.10.47) the transmission: the kit's update bar (610 x 66 at 2x), 780 x 78 dp, above the status bar at the right
+        const std::string transmission = load("chrome/transmission");
+        toast = make_div(menu);
+        toast->set_position(recompui::Position::Absolute);
+        toast->set_right(40.0f);
+        toast->set_bottom(hazard_height + status_bar_height + 24.0f);
+        toast->set_width(780.0f);
+        toast->set_height(78.0f);
+        toast->set_pointer_events(recompui::PointerEvents::None);
+        StyleAccess::z_index(toast, 101);
+        if (!transmission.empty()) {
+            recompui::Image* back = make_layer(toast, transmission);
+            back->set_top(0);
+            back->set_left(0);
+            back->set_width(100.0f, recompui::Unit::Percent);
+            back->set_height(100.0f, recompui::Unit::Percent);
+        }
+        else {
+            toast->set_background_color(recompui::Color{ 30, 31, 20, 240 });
+        }
+        recompui::Element* row = make_div(toast);
+        row->set_position(recompui::Position::Relative);
+        row->set_display(recompui::Display::Flex);
+        row->set_flex_direction(recompui::FlexDirection::Row);
+        row->set_align_items(recompui::AlignItems::Center);
+        row->set_height(100.0f, recompui::Unit::Percent);
+        row->set_padding_left(30.0f);
+        row->set_padding_right(24.0f);
+        row->set_gap(20.0f);
+        const std::string icon = load("chrome/update");
+        if (!icon.empty()) {
+            make_icon(row, icon, 50.0f);
+        }
+        recompui::Element* lines = make_div(row);
+        lines->set_display(recompui::Display::Flex);
+        lines->set_flex_direction(recompui::FlexDirection::Column);
+        lines->set_gap(4.0f);
+        toast_header = make_text(lines, "INCOMING TRANSMISSION", 3.0f);
+        toast_header->set_font_family("Black Ops One");
+        toast_header->set_font_size(22.0f);
+        toast_header->set_color(hazard_yellow);
+        toast_message = make_text(lines, "", 1.5f);
+        toast_message->set_color(recompui::Color{ 239, 228, 191, 255 });
+        toast->set_display(recompui::Display::None);
         // the check, from the start (once a run; Online started it before)
         conker::updates::check_in_background();
         // (0.10.46) whether UDP 47000 can be reached from outside (and opened on the router over UPnP)
@@ -382,6 +436,18 @@ namespace {
             }
         }
         return out;
+    }
+
+    void show_toast(const std::string& header, const std::string& message) {
+        if (toast == nullptr) {
+            return;
+        }
+        toast_header->set_text_unsafe(header);
+        toast_message->set_text_unsafe(message);
+        toast->set_display(recompui::Display::Block);
+        toast_showing = true;
+        toast_until = std::chrono::steady_clock::now() + std::chrono::seconds(7);
+        std::printf("[launcher] %s: %s\n", header.c_str(), message.c_str());
     }
 
     void update_bars() {
@@ -436,16 +502,38 @@ namespace {
             else if (newer) {
                 SDL_OpenURL(page.c_str());
             }
-            else if (check != 0) {
+            else {
+                // (a check is running already: its answer is told when it comes)
                 user_checked = true;
-                conker::updates::check_again();
+                if (check != 0) {
+                    conker::updates::check_again();
+                }
             }
         }
         if (user_checked && conker::updates::check_state() != 0) {
+            // (0.10.47) the answer, told
             user_checked = false;
-            if (!conker::updates::newer_available(nullptr, nullptr) && conker::updates::check_state() == 1) {
-                up_to_date_until = std::chrono::steady_clock::now() + std::chrono::seconds(4);
+            std::string found_tag;
+            if (conker::updates::newer_available(&found_tag, nullptr)) {
+                newer_announced = true;
+                show_toast("INCOMING TRANSMISSION", "NEW UPDATE AVAILABLE: " + plain(found_tag) + " - CLICK INSTALL UPDATE");
             }
+            else if (conker::updates::check_state() == 1) {
+                up_to_date_until = std::chrono::steady_clock::now() + std::chrono::seconds(4);
+                show_toast("HQ REPORTS", std::string("YOU'RE UP TO DATE - v") + conker::updates::current_version() + " IS THE LATEST");
+            }
+            else {
+                show_toast("NO SIGNAL", "COULDN'T REACH GITHUB TO CHECK FOR UPDATES");
+            }
+        }
+        else if (newer && !newer_announced && up.state == 0) {
+            // found by the check as the launcher started
+            newer_announced = true;
+            show_toast("INCOMING TRANSMISSION", "NEW UPDATE AVAILABLE: " + plain(tag) + " - CLICK INSTALL UPDATE");
+        }
+        if (toast_showing && std::chrono::steady_clock::now() >= toast_until) {
+            toast_showing = false;
+            toast->set_display(recompui::Display::None);
         }
         if (up.state == 4 && !update_quit_sent) {
             // the update is ready: the game closes and the script starts the new one (as the Online screen does)
@@ -468,9 +556,11 @@ namespace {
             static const char* const colours[] = { "#efe4bf", "#7dff6a", "#ff5a3c", "#f2b51b" };
             static const char* const words[] = { "CHECKING", "OPEN - CAN HOST", "CLOSED - CAN'T HOST", "UNVERIFIED" };
             const int state = port.state >= 0 && port.state <= 3 ? port.state : 3;
-            netcode = "NETCODE " + value("UDP 47000") + " <span style=\"color: " + colours[state] + ";\">" + words[state] + "</span>";
+            // (0.10.47: the spaces inside the spans; RmlUi drops a text of only a space between two of them)
+            netcode = "NETCODE " + value("UDP 47000 ") + "<span style=\"color: " + colours[state] + ";\">" + words[state] +
+                (!port.detail.empty() && state != 1 ? " " : "") + "</span>";
             if (!port.detail.empty() && state != 1) {
-                netcode += " " + value("(" + plain_detail(port.detail) + ")");
+                netcode += value("(" + plain_detail(port.detail) + ")");
             }
         }
         std::string update_text;

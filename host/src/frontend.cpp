@@ -1236,6 +1236,8 @@ void conker::frontend::init(recomp::GameEntry& game) {
     }
     // (0.10.44) Share Tech Mono (SIL Open Font License, see assets/ShareTechMono-OFL.txt): the launcher's title and status bars
     recompui::register_extra_font("ShareTechMono-Regular.ttf");
+    // (0.10.47) Black Ops One (SIL Open Font License, assets/BlackOpsOne-OFL.txt): the update transmission's heading
+    recompui::register_extra_font("BlackOpsOne-Regular.ttf");
     apply_conker_theme();
     recompui::register_ui_exports();
     recompinput::players::set_single_player_mode(true);

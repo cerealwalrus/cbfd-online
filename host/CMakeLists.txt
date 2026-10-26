@@ -250,7 +250,7 @@ if (UNIX)
     target_link_options(ConkerRecomp PRIVATE -rdynamic)
 elseif (WIN32)
     # The crash handler symbolises the stack with DbgHelp.
-    target_link_libraries(ConkerRecomp PRIVATE DbgHelp ws2_32 winhttp bcrypt iphlpapi)
+    target_link_libraries(ConkerRecomp PRIVATE DbgHelp ws2_32 winhttp bcrypt)
     # Media Foundation: the launcher's background video (background_video.cpp)
     target_link_libraries(ConkerRecomp PRIVATE mfplat mfreadwrite mfuuid ole32)
     # Mods replace recompiled functions by patching their machine code, so identical

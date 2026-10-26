@@ -444,7 +444,7 @@ namespace conker {
         Status status();
     }
 
-    // hq_ping.cpp (0.10.45): the launcher's PING to the tavern. keep_going every frame the launcher is up (it pings every 5 s while
+    // hq_ping.cpp (0.10.45): the launcher's PING (0.10.47: to GitHub). keep_going every frame the launcher is up (it pings every 5 s while
     // it's called); last_ms: the last round trip in ms, -1 no answer, -2 none yet.
     namespace hq_ping {
         void keep_going();

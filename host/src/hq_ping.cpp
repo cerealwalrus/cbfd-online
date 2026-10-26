@@ -1,5 +1,7 @@
-// (0.10.45) The launcher status bar's PING: an ICMP echo (a real ping) to the tavern, conkerstavern.servebeer.com (CONKER_PING_HOST
-// changes it), every 5 seconds while the launcher is up, on a thread of its own. Windows only (elsewhere it stays "--").
+// (0.10.45) The launcher status bar's PING, every 5 seconds while the launcher is up, on a thread of its own. Windows only (elsewhere it
+// stays "--").
+// (0.10.47) To GitHub again, api.github.com (the update check's), which doesn't answer ICMP echoes: the time a TCP connection to its
+// port 443 takes to open (one round trip, as a ping's). CONKER_PING_HOST changes the host.
 
 #if defined(_WIN32)
 #ifndef NOMINMAX
@@ -8,8 +10,6 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
-#include <iphlpapi.h>
-#include <icmpapi.h>
 #endif
 
 #include <atomic>
@@ -33,41 +33,41 @@ namespace {
 
     std::string host_name() {
         const char* text = SDL_getenv("CONKER_PING_HOST");
-        return text != nullptr && *text != 0 ? std::string(text) : std::string("conkerstavern.servebeer.com");
+        return text != nullptr && *text != 0 ? std::string(text) : std::string("api.github.com");
     }
 
 #if defined(_WIN32)
-    // one echo: the round trip in ms, or -1 (no answer, or the name didn't resolve)
+    // one TCP connection opened (and closed at once): the time it took in ms, or -1 (no answer within 2 s, or the name didn't resolve)
     int ping_once(const std::string& host) {
         addrinfo hints{};
         hints.ai_family = AF_INET;
-        hints.ai_socktype = SOCK_DGRAM;
+        hints.ai_socktype = SOCK_STREAM;
         addrinfo* found = nullptr;
-        if (getaddrinfo(host.c_str(), nullptr, &hints, &found) != 0 || found == nullptr) {
+        if (getaddrinfo(host.c_str(), "443", &hints, &found) != 0 || found == nullptr) {
             return -1;
         }
-        const IPAddr address = ((sockaddr_in*)found->ai_addr)->sin_addr.S_un.S_addr;
+        sockaddr_in address = *(sockaddr_in*)found->ai_addr;
         freeaddrinfo(found);
-        HANDLE icmp = IcmpCreateFile();
-        if (icmp == INVALID_HANDLE_VALUE) {
+        SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        if (s == INVALID_SOCKET) {
             return -1;
         }
-        char data[32] = "conker field launcher ping";
-        alignas(8) char reply[sizeof(ICMP_ECHO_REPLY) + sizeof(data) + 8 + 64] = {};
+        u_long non_blocking = 1;
+        ioctlsocket(s, FIONBIO, &non_blocking);
         int ms = -1;
-        const ULONGLONG sent_at = GetTickCount64();
-        if (IcmpSendEcho(icmp, address, data, (WORD)sizeof(data), nullptr, reply, (DWORD)sizeof(reply), 1500) > 0) {
-            const ICMP_ECHO_REPLY* echo = (const ICMP_ECHO_REPLY*)reply;
-            if (echo->Status == IP_SUCCESS) {
-                // (RoundTripTime is 0 for under a millisecond; the tick count is the fallback if it looks wrong)
-                ms = (int)echo->RoundTripTime;
-                const int ticks = (int)(GetTickCount64() - sent_at);
-                if (ms > ticks + 20) {
-                    ms = ticks;
-                }
+        const auto sent_at = std::chrono::steady_clock::now();
+        if (connect(s, (sockaddr*)&address, sizeof(address)) == 0 || WSAGetLastError() == WSAEWOULDBLOCK) {
+            fd_set write_set, error_set;
+            FD_ZERO(&write_set);
+            FD_ZERO(&error_set);
+            FD_SET(s, &write_set);
+            FD_SET(s, &error_set);
+            timeval wait{ 2, 0 };
+            if (select(0, nullptr, &write_set, &error_set, &wait) > 0 && FD_ISSET(s, &write_set) && !FD_ISSET(s, &error_set)) {
+                ms = (int)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - sent_at).count();
             }
         }
-        IcmpCloseHandle(icmp);
+        closesocket(s);
         return ms;
     }
 #endif
