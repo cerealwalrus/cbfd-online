@@ -6,6 +6,8 @@
 //   plank_selected.png  behind the option that is selected (hover or focus)
 //   arrow.png           at the left of the selected option
 //   title.png           over the top of the screen, centred (replaces the default title)
+//   logo.png            (0.10.36) with the video: the logo the background picture has, cut out of it, shown where the picture has it
+//                       (in place of the launcher's title).
 //   background.mp4      (0.10.33) a video for the whole screen, behind everything, played without sound and looped (background_video.cpp).
 //                       With it the background picture isn't used, and the options keep their own planks (plank.png) in the
 //                       launcher's column.
@@ -130,6 +132,19 @@ void conker::menu_skin::apply(recompui::LauncherMenu* menu, recompui::GameOption
         options->set_top(first_plank_top - 24.0f);
         options->set_width(plank_width);
         options->set_gap(plank_pitch - plank_height);
+        // (0.10.36) the picture's logo over the video, at the picture's place for it: 617 x 383 dp from 40 dp down, its middle 25 dp
+        // left of the planks' (on the picture it is 26 dp right of the middle and the planks 51)
+        const std::string logo = load("logo");
+        if (!logo.empty()) {
+            menu->remove_default_title();
+            recompui::Image* image = make_layer(menu, logo);
+            image->set_top(40.0f);
+            image->set_left(50.0f, recompui::Unit::Percent);
+            image->set_translate_2D(-50.0f, 0.0f, recompui::Unit::Percent);
+            image->set_margin_left(-25.0f);
+            image->set_width(617.0f);
+            image->set_height(383.0f);
+        }
     }
     const bool layout = stage || video_on;   // the picture's layout (with the video, every plank is plank.png)
 

@@ -9,6 +9,7 @@ skipped; with none of them the launcher keeps its flat wooden look.
   plank_selected.png  the same, for the option that is selected (the mouse is over it, or the controller is on it).
   arrow.png           a small arrow shown at the left of the selected option (about 80 x 80 pixels).
   title.png           over the top of the screen, centred, about 46% of the screen's width, keeping its shape.
+  logo.png            with background.mp4: the logo at the top (the background picture's, cut out of it), in place of the title.
   background.mp4      a video for the whole screen behind everything, played without its sound and looped (Windows: its own video
                       decoder plays it). With it background.png isn't used, and the options keep their planks (plank.png).
   background.png      the whole screen behind everything. A 4:3 picture (1448 x 1086) shown in the middle of the window (bars at the
