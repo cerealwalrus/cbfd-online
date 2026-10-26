@@ -508,6 +508,10 @@ extern "C" void conker_mouse_camera_collide(uint8_t* rdram, recomp_context* ctx)
         nearest = (i == 0) ? d : std::min(nearest, d);
         farthest = (i == 0) ? d : std::max(farthest, d);
     }
+    // (0.10.86: co-op's normal camera is nearer than the game's nearest, net_menu.cpp's conker_coop_camera_distance: not pushed back out)
+    if (conker::netsession::active() && conker::netmenu::coop_running(rdram)) {
+        nearest = std::min(nearest, wanted_distance);
+    }
     orbit.wanted = std::clamp(orbit.wanted * (notches != 0 ? std::pow(zoom_step, (float)-notches) : 1.0f), nearest, farthest);
     orbit.yaw += mouse_x * degrees_per_pixel * degrees_to_radians + stick_yaw;
     if (first && orbit.c_turning) {

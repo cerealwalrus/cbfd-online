@@ -713,6 +713,47 @@ extern "C" void conker_coop_look_strafe(uint8_t* rdram, recomp_context* ctx) {
     }
 }
 
+// 0.10.86: co-op, the normal camera nearer Conker (530 across and 400 up, the farthest of the game's distances: far for the stage).
+// func_15124B18 sets a follow camera's distance from the game's table (D_800A34B0, by +0x1B4 of the camera): across (+0x374) and
+// the height (+0x348, +0x34C), then returns (0x15124C30, $a0 the camera). There, for a player's camera in co-op whose Conker has no
+// weapon out (his control block's +0x78 0), they're taken to coop_camera_share of the table's. The look (R), the shotgun's camera and
+// the rest set theirs elsewhere and are left as they are. From the game's memory, the same on every machine.
+namespace {
+    constexpr float coop_camera_share = 0.65f;
+}
+
+extern "C" void conker_coop_camera_distance(uint8_t* rdram, recomp_context* ctx) {
+    if (!conker::netsession::active() || !conker::netmenu::coop_running(rdram) || coop_players < 2) {
+        return;
+    }
+    const gpr camera = ctx->r4;
+    const uint32_t object = (uint32_t)MEM_W(0x3D0, camera);
+    if (object < 0x800CC2D0u || (object - 0x800CC2D0u) % 0x32Cu != 0 || (object - 0x800CC2D0u) / 0x32Cu >= (uint32_t)std::min(coop_players, 4)) {
+        return;
+    }
+    const uint32_t control = (uint32_t)MEM_W(0x31C, (gpr)(int32_t)object);
+    if ((control >> 24) != 0x80 || (control & 0x7FFFFFu) >= 0x7FFF00u || MEM_BU(0x78, (gpr)(int32_t)control) != 0) {
+        return;
+    }
+    for (const int offset : { 0x374, 0x348, 0x34C }) {
+        float value;
+        uint32_t bits = (uint32_t)MEM_W(offset, camera);
+        std::memcpy(&value, &bits, sizeof(value));
+        value *= coop_camera_share;
+        std::memcpy(&bits, &value, sizeof(bits));
+        MEM_W(offset, camera) = (int32_t)bits;
+    }
+    static int logged = 0;
+    if (logged < 8) {
+        logged++;
+        char line[140];
+        std::snprintf(line, sizeof(line), "[coop camera] f=%u player %d: the normal camera's distance %.0f (preset %d)", (unsigned)conker::netsession::frame(),
+            (int)((object - 0x800CC2D0u) / 0x32Cu) + 1, [&]() { float v; uint32_t b = (uint32_t)MEM_W(0x374, camera); std::memcpy(&v, &b, 4); return v; }(),
+            (int)MEM_H(0x1B4, camera));
+        conker::netsession::log(line);
+    }
+}
+
 extern "C" void conker_coop_frame(uint8_t* rdram, recomp_context* ctx) {
     coop_frames.fetch_add(1);
     if (!conker::netsession::active() || !conker::netmenu::coop_running(rdram)) {

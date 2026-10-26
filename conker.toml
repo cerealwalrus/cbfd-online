@@ -1357,3 +1357,10 @@ text = "{ extern void conker_coop_weapon(uint8_t*, recomp_context*, int); conker
 func = "func_1504CB98"
 before_vram = 0x1504DC88
 text = "{ extern void conker_coop_look_strafe(uint8_t*, recomp_context*); conker_coop_look_strafe(rdram, ctx); }"
+
+# 0.10.86: co-op, the normal camera (no weapon out) nearer Conker (host/src/net_menu.cpp, conker_coop_camera_distance):
+# func_15124B18 has set the camera's ($a0) distance from the game's table, about to return.
+[[patches.hook]]
+func = "func_15124B18"
+before_vram = 0x15124C30
+text = "{ extern void conker_coop_camera_distance(uint8_t*, recomp_context*); conker_coop_camera_distance(rdram, ctx); }"
