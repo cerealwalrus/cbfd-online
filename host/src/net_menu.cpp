@@ -641,6 +641,7 @@ namespace {
 }
 
 extern "C" void func_15063570(uint8_t* rdram, recomp_context* ctx);
+extern "C" void func_1505E650(uint8_t* rdram, recomp_context* ctx);
 
 namespace {
     uint32_t coop_modes[4] = { 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu };
@@ -722,6 +723,49 @@ extern "C" void conker_coop_frame(uint8_t* rdram, recomp_context* ctx) {
                     conker::netsession::log(line);
                 }
                 last_anim[k] = anim;
+            }
+        }
+    }
+    // (0.10.81) no idle for the players' Conkers: the 0.10.80 log's animations that a still Conker went through on his own (from
+    // standing, 0x0F: his fidgets, the Gameboy 0x171-0x17A, the yawns and the sleep 0x87-0x8A...) are taken back to standing as they
+    // start, while his controller is still (a player who moves or is hit plays as the game has it). From the game's own state (the
+    // animation, the game's copy of the controller) at the same point of every machine's frame, as the game itself does it
+    // (func_1505E650(character, 0x0F, 1.0, 6.0, 0, 0, 0), as func_1506B268 does).
+    {
+        const int count = std::min(std::max(coop_players, 1), 4);
+        for (int k = 0; k < count; k++) {
+            const uint32_t object = 0x800CC2D0u + (uint32_t)k * 0x32Cu;
+            const uint16_t anim = (uint16_t)MEM_HU(0x84, (gpr)(int32_t)object);
+            const bool idle = anim == 0x5E || anim == 0x5F || anim == 0x60 || anim == 0xB3 || anim == 0xFA || (anim >= 0x171 && anim <= 0x17A) ||
+                anim == 0x67 || anim == 0x73 || anim == 0x82 || anim == 0x83 || anim == 0x86 || (anim >= 0x87 && anim <= 0x8A) || anim == 0x9A ||
+                anim == 0x9B || anim == 0xBB;
+            if (!idle || (int32_t)MEM_W(0, (gpr)(int32_t)object) == 0) {
+                continue;
+            }
+            const uint16_t buttons = (uint16_t)MEM_HU(0, (gpr)(int32_t)(0x800BE930u + 2u * (uint32_t)k));
+            const int8_t stick_x = (int8_t)MEM_BU(2, (gpr)(int32_t)(0x800BE918u + 6u * (uint32_t)k));
+            const int8_t stick_y = (int8_t)MEM_BU(3, (gpr)(int32_t)(0x800BE918u + 6u * (uint32_t)k));
+            if (buttons != 0 || stick_x <= -8 || stick_x >= 8 || stick_y <= -8 || stick_y >= 8) {
+                continue;
+            }
+            const recomp_context saved = *ctx;
+            ctx->r29 = (gpr)(int32_t)0x80F4C000;   // a stack of ours (local_audio.cpp's, not in use while this runs)
+            ctx->r4 = (gpr)(int32_t)object;
+            ctx->r5 = 0x0F;
+            ctx->r6 = (gpr)(int32_t)0x3F800000;   // 1.0
+            ctx->r7 = (gpr)(int32_t)0x40C00000;   // 6.0
+            MEM_W(0x10, ctx->r29) = 0;
+            MEM_W(0x14, ctx->r29) = 0;
+            MEM_W(0x18, ctx->r29) = 0;
+            func_1505E650(rdram, ctx);
+            *ctx = saved;
+            static int logged = 0;
+            if (logged < 20) {
+                logged++;
+                char line[120];
+                std::snprintf(line, sizeof(line), "[coop anim] f=%u player %d: the idle's animation %04X taken back to standing", (unsigned)conker::netsession::frame(),
+                    k + 1, (unsigned)anim);
+                conker::netsession::log(line);
             }
         }
     }
