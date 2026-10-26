@@ -273,6 +273,8 @@ namespace conker {
         // 0.10.31: online, the co-op campaign stage (net_menu.cpp, conker_coop_start) is being played, with two or more players: the
         // online pause menu takes it as a match, and the view shows the first camera's picture while a cutscene plays.
         bool coop_running(uint8_t* rdram);
+        // (0.10.60) this frame's HUD drawn for player k (1-3) in co-op: where its commands are in the display list
+        bool coop_hud_range(int k, uint32_t* start, uint32_t* end);
     }
 
     // notices.cpp: a line in the top-left corner for a few seconds, one at a time (an unlock, a save state's

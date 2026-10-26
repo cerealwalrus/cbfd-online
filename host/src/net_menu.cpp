@@ -807,3 +807,137 @@ extern "C" void conker_coop_near_test(uint8_t* rdram, recomp_context* ctx, int w
     MEM_B(0, (gpr)(int32_t)0x800D1892) = 1;
     coop_near_test_changed = true;
 }
+
+// 0.10.60: co-op, a HUD of their own for players 2 to 4 (health and the rest), as player 1's. The one-player game's HUD (its module at
+// 0x1508F060-0x15093xxx) is for one Conker: its state is a block of the game's memory (D_800D23D0-D_800D28A0: what it shows, its
+// timers, its matrices), its update (func_1508F0A4, from func_15019414, every frame of the one-player game) and its drawing
+// (func_1508FD38, from func_150198FC, the full screen's pass) read player 1's character (gObjects[0], its health +0x1CA...).
+// So for each other player, every frame, on every machine alike (all of it the game's own state, so the machines stay the same):
+// their own copy of the HUD's block is put in its place and their character swapped into gObjects[0]'s place (and back after), and
+// the update run, then the drawing (each one's commands after player 1's, in the same pass). Each machine's view then shows its own
+// player's (net_view.cpp, with the HUD ranges: coop_hud_range).
+extern "C" void func_1508F0A4(uint8_t* rdram, recomp_context* ctx);
+extern "C" void func_1508FD38(uint8_t* rdram, recomp_context* ctx);
+
+namespace {
+    constexpr uint32_t hud_block = 0x800D23D0, hud_block_end = 0x800D28A0;
+    constexpr uint32_t hud_list_head = 0x800D245C;   // the HUD's list of things it has allocated (its pieces flying off), in the block
+    std::vector<uint8_t> hud_copies[4];
+    uint32_t hud_copies_for = 0xFFFFFFFFu;   // the scene load (coop_loaded_at) the copies were made at
+    uint32_t hud_ranges[4][2] = {};          // this frame's drawing for each player: [start, end) in the display list
+    int hud_ranges_frame_players = 0;
+
+    void hud_swap_block(uint8_t* rdram, std::vector<uint8_t>& copy) {
+        for (uint32_t i = 0; i < hud_block_end - hud_block; i++) {
+            const gpr address = (gpr)(int32_t)(hud_block + i);
+            const uint8_t was = (uint8_t)MEM_BU(0, address);
+            MEM_B(0, address) = (int8_t)copy[i];
+            copy[i] = was;
+        }
+    }
+
+    void hud_swap_characters(uint8_t* rdram, int k) {
+        const uint32_t a = 0x800CC2D0u, b = 0x800CC2D0u + (uint32_t)k * 0x32Cu;
+        for (uint32_t i = 0; i < 0x32Cu; i += 4) {
+            const int32_t x = MEM_W(i, (gpr)(int32_t)a), y = MEM_W(i, (gpr)(int32_t)b);
+            MEM_W(i, (gpr)(int32_t)a) = y;
+            MEM_W(i, (gpr)(int32_t)b) = x;
+        }
+    }
+
+    // the HUD's state for players 2-4: made from player 1's as a stage (re)loads, without player 1's allocated pieces
+    bool hud_ready(uint8_t* rdram) {
+        if (!conker::netsession::active() || !conker::netmenu::coop_running(rdram) || coop_players < 2) {
+            return false;
+        }
+        if (MEM_BU(0, (gpr)(int32_t)0x800BE616) != 0) {
+            return false;   // (a multiplayer match: no one-player HUD)
+        }
+        const uint32_t loaded = coop_loaded_at.load();
+        if (hud_copies_for != loaded) {
+            hud_copies_for = loaded;
+            for (int k = 1; k < 4; k++) {
+                hud_copies[k].assign(hud_block_end - hud_block, 0);
+                for (uint32_t i = 0; i < hud_block_end - hud_block; i++) {
+                    hud_copies[k][i] = (uint8_t)MEM_BU(0, (gpr)(int32_t)(hud_block + i));
+                }
+                for (int i = 0; i < 4; i++) {
+                    hud_copies[k][hud_list_head - hud_block + (uint32_t)i] = 0;
+                }
+            }
+            conker::netsession::log("[coop hud] the other players' HUDs made from player 1's");
+        }
+        return true;
+    }
+}
+
+// at func_15019414's entry (the frame's HUD update, which runs player 1's after this)
+extern "C" void conker_coop_hud_update(uint8_t* rdram, recomp_context* ctx) {
+    if (!hud_ready(rdram)) {
+        return;
+    }
+    const int count = std::min(std::max(coop_players, 1), 4);
+    const recomp_context saved = *ctx;
+    for (int k = 1; k < count; k++) {
+        hud_swap_block(rdram, hud_copies[k]);
+        hud_swap_characters(rdram, k);
+        func_1508F0A4(rdram, ctx);
+        *ctx = saved;
+        hud_swap_characters(rdram, k);
+        hud_swap_block(rdram, hud_copies[k]);
+    }
+}
+
+// after func_150198FC's call of func_1508FD38 (player 1's HUD drawn: $v0 the list's end), the others' drawn after it
+extern "C" void conker_coop_hud_draw(uint8_t* rdram, recomp_context* ctx) {
+    hud_ranges_frame_players = 0;
+    if (!hud_ready(rdram)) {
+        return;
+    }
+    const int count = std::min(std::max(coop_players, 1), 4);
+    const recomp_context saved = *ctx;
+    uint32_t gfx = (uint32_t)ctx->r2;
+    hud_ranges[0][1] = gfx;
+    for (int k = 1; k < count; k++) {
+        hud_swap_block(rdram, hud_copies[k]);
+        hud_swap_characters(rdram, k);
+        ctx->r4 = (gpr)(int32_t)gfx;
+        hud_ranges[k][0] = gfx;
+        func_1508FD38(rdram, ctx);
+        gfx = (uint32_t)ctx->r2;
+        hud_ranges[k][1] = gfx;
+        *ctx = saved;
+        hud_swap_characters(rdram, k);
+        hud_swap_block(rdram, hud_copies[k]);
+    }
+    ctx->r2 = (gpr)(int32_t)gfx;
+    hud_ranges_frame_players = count;
+    // (measuring) every 600 frames: each player's range, and its viewports (DC 080008) and scissors (ED) as drawn
+    if (coop_frames.load() % 600 == 0) {
+        for (int k = 1; k < count; k++) {
+            char line[600];
+            int n = std::snprintf(line, sizeof(line), "[coop hud] f=%u player %d's HUD %08X..%08X:", (unsigned)conker::netsession::frame(), k + 1,
+                (unsigned)hud_ranges[k][0], (unsigned)hud_ranges[k][1]);
+            int shown = 0;
+            for (uint32_t a = hud_ranges[k][0]; a < hud_ranges[k][1] && shown < 24 && n < (int)sizeof(line) - 24; a += 8) {
+                const uint32_t w0 = (uint32_t)MEM_W(0, (gpr)(int32_t)a), w1 = (uint32_t)MEM_W(4, (gpr)(int32_t)a);
+                const uint32_t op = w0 >> 24;
+                if (op == 0xDC || op == 0xED || op == 0xDE || op == 0xE4) {
+                    n += std::snprintf(line + n, sizeof(line) - (size_t)n, " %08X %08X", (unsigned)w0, (unsigned)w1);
+                    shown++;
+                }
+            }
+            conker::netsession::log(line);
+        }
+    }
+}
+
+// net_view.cpp: this frame's HUD drawing for player `k` (0-3), or false
+bool conker::netmenu::coop_hud_range(int k, uint32_t* start, uint32_t* end) {
+    if (k < 1 || k >= hud_ranges_frame_players || k >= 4) {
+        return false;
+    }
+    *start = hud_ranges[k][0];
+    *end = hud_ranges[k][1];
+    return *end > *start;
+}

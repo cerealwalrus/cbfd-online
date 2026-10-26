@@ -1211,6 +1211,17 @@ func = "func_151E2834"
 before_vram = 0x151E2834
 text = "{ extern int conker_coop_start(uint8_t*, recomp_context*); if (conker_coop_start(rdram, ctx)) { return; } }"
 
+# 0.10.60: co-op, a HUD for each player (host/src/net_menu.cpp, conker_coop_hud_update / conker_coop_hud_draw).
+[[patches.hook]]
+func = "func_15019414"
+before_vram = 0x15019414
+text = "{ extern void conker_coop_hud_update(uint8_t*, recomp_context*); conker_coop_hud_update(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_150198FC"
+before_vram = 0x15019B70
+text = "{ extern void conker_coop_hud_draw(uint8_t*, recomp_context*); conker_coop_hud_draw(rdram, ctx); }"
+
 # 0.10.59: co-op, the zombies' "near the player" test measures to the player they're after (host/src/net_menu.cpp, conker_coop_near_test).
 [[patches.hook]]
 func = "func_150779D4"

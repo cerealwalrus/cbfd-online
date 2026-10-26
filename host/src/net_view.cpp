@@ -279,6 +279,48 @@ namespace {
     }
 
     // The whole frame's display list, from the first pass to its end (`end`), rewritten for this machine's view.
+    // 0.10.60: co-op, the other players' HUDs (net_menu.cpp draws them after player 1's, each with its own player's state): drawn as
+    // player 1's is, for player 1's camera (its viewport, its scissor), so on this machine its own player's is turned to its own camera's
+    // before the rewrite (which then shows it full screen, as this machine's), and the other players' are taken out (no-ops).
+    void coop_hud_prepare(uint8_t* rdram, uint32_t base, int players, int local) {
+        const uint32_t first = base, mine = base + (uint32_t)local * camera_size;
+        const uint32_t first_s0 = scissor_word0(get_float(rdram, first, field_left), get_float(rdram, first, field_top));
+        const uint32_t first_s1 = scissor_word1(get_float(rdram, first, field_right), get_float(rdram, first, field_bottom));
+        const uint32_t mine_s0 = scissor_word0(get_float(rdram, mine, field_left), get_float(rdram, mine, field_top));
+        const uint32_t mine_s1 = scissor_word1(get_float(rdram, mine, field_right), get_float(rdram, mine, field_bottom));
+        static int logged = 0;
+        for (int k = 1; k < players && k < 4; k++) {
+            uint32_t from = 0, to = 0;
+            if (!conker::netmenu::coop_hud_range(k, &from, &to) || (from >> 24) != 0x80 || to - from > 0x20000u) {
+                continue;
+            }
+            int viewports = 0, scissors = 0;
+            for (uint32_t a = from; a < to; a += 8) {
+                const uint32_t w0 = (uint32_t)MEM_W(0, (gpr)(int32_t)a), w1 = (uint32_t)MEM_W(4, (gpr)(int32_t)a);
+                if (k != local) {
+                    MEM_W(0, (gpr)(int32_t)a) = 0;
+                    MEM_W(4, (gpr)(int32_t)a) = 0;
+                    continue;
+                }
+                if ((w0 >> 24) == 0xDC && (w0 & 0x00FFFFFFu) == 0x080008u && w1 >= first + field_viewports && w1 < first + field_viewports + 0x40) {
+                    MEM_W(4, (gpr)(int32_t)a) = (int32_t)(w1 - first + mine);
+                    viewports++;
+                } else if ((w0 >> 24) == 0xED && w0 == first_s0 && w1 == first_s1) {
+                    MEM_W(0, (gpr)(int32_t)a) = (int32_t)mine_s0;
+                    MEM_W(4, (gpr)(int32_t)a) = (int32_t)mine_s1;
+                    scissors++;
+                }
+            }
+            if (k == local && logged < 6) {
+                logged++;
+                char line[160];
+                std::snprintf(line, sizeof(line), "[net view] co-op: this player's HUD %08X..%08X, %d viewports and %d scissors turned to camera %d", (unsigned)from,
+                    (unsigned)to, viewports, scissors, local);
+                conker::netsession::log(line);
+            }
+        }
+    }
+
     void rewrite_frame(uint8_t* rdram, const std::vector<Pass>& frame, uint32_t end, uint32_t base, int players, int local, bool log_it) {
         uint32_t start = 0xFFFFFFFFu;
         for (const Pass& pass : frame) {
@@ -1600,6 +1642,9 @@ void conker::netview::frame_end(uint8_t* rdram, uint32_t list_end) {
     std::vector<uint8_t> before;
     if (can_journal) {
         before.assign(rdram + (start & 0x7FFFFFu), rdram + (list_end & 0x7FFFFFu));
+    }
+    if (conker::netmenu::coop_running(rdram)) {
+        coop_hud_prepare(rdram, base, players, local);
     }
     rewrite_frame(rdram, frame, list_end, base, players, local, log_it);
     if (can_journal) {
