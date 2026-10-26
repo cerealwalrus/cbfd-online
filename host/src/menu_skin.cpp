@@ -233,6 +233,8 @@ void conker::menu_skin::apply(recompui::LauncherMenu* menu, recompui::GameOption
         if (recompui::Label* label = option->get_label()) {
             label->set_position(recompui::Position::Relative);
             StyleAccess::z_index(label, 5);
+            // (0.10.38) a black outline round the letters on the planks, so they read over the wood and the video
+            label->set_attribute("style", "font-effect: outline(3dp #000000);");
         }
         skinned.push_back(entry);
         index++;
