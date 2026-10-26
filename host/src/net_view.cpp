@@ -168,6 +168,8 @@ namespace {
     };
     std::mutex journal_mutex;
     std::deque<Journal> journals;
+    // (0.10.69) the journals last put back, for a list sent to the renderer again after that (render_begin)
+    std::deque<Journal> restored;
     uint32_t matrix_next = 0, viewport_next = 0;
     int dumps_done = 0;
     uint64_t frames_rewritten = 0;
@@ -1693,10 +1695,7 @@ void conker::netview::frame_end(uint8_t* rdram, uint32_t list_end) {
         start = std::min(start, pass.gfx);
     }
     static const bool keep_rewrite = SDL_getenv("CONKER_NET_KEEPREWRITE") != nullptr;
-    // (0.10.68) not in co-op: there the rewrite stays in the list (the game writes the buffer anew two frames on). With the pause
-    // menu open the 0.10.67 test sent a buffer's list to the renderer again after its rewrite had been put back, and that list
-    // showed as the game drew it, the split screen (the flicker, in the log as "a task's list ... isn't a rewritten frame's").
-    const bool can_journal = !keep_rewrite && !conker::netmenu::coop_running(rdram) && (start >> 24) == 0x80 && (list_end >> 24) == 0x80 && list_end > start &&
+    const bool can_journal = !keep_rewrite && (start >> 24) == 0x80 && (list_end >> 24) == 0x80 && list_end > start &&
         list_end - start <= 0x100000u && (list_end & 0x7FFFFFu) <= 0x800000u;
     std::vector<uint8_t> before;
     if (can_journal) {
@@ -1791,7 +1790,54 @@ void conker::netview::render_done(uint8_t* rdram, uint32_t data_ptr) {
                 std::memcpy(rdram + (word[0] & 0x7FFFFFu), &word[1], 4);
             }
         }
+        restored.push_back(std::move(journals.front()));
         journals.pop_front();
+        while (restored.size() > 4) {
+            restored.pop_front();
+        }
+    }
+}
+
+// (0.10.69) before the renderer reads a task's list: a list sent again after its rewrite was put back (the 0.10.67 test, with the
+// pause menu open: "a task's list ... isn't a rewritten frame's") would show as the game drew it, the split screen. If the list is
+// one put back and every one of its words is still as it was put back (the game hasn't begun writing that buffer again), the
+// rewrite goes in again for this read, and is put back after it (render_done) as before.
+void conker::netview::render_begin(uint8_t* rdram, uint32_t data_ptr) {
+    std::lock_guard<std::mutex> lock(journal_mutex);
+    const uint32_t task = data_ptr & 0x1FFFFFFFu;
+    for (const Journal& journal : journals) {
+        const uint32_t start = journal.start & 0x1FFFFFFFu;
+        if (start >= task && start - task < 0x8000u) {
+            return;   // (a rewritten list, as it should be)
+        }
+    }
+    for (size_t n = restored.size(); n-- > 0;) {
+        const Journal& journal = restored[n];
+        const uint32_t start = journal.start & 0x1FFFFFFFu;
+        if (start < task || start - task >= 0x8000u) {
+            continue;
+        }
+        for (const auto& word : journal.words) {
+            uint32_t current;
+            std::memcpy(&current, rdram + (word[0] & 0x7FFFFFu), 4);
+            if (current != word[1]) {
+                return;   // (the buffer is the game's again)
+            }
+        }
+        for (const auto& word : journal.words) {
+            std::memcpy(rdram + (word[0] & 0x7FFFFFu), &word[2], 4);
+        }
+        Journal again = journal;
+        restored.erase(restored.begin() + (std::ptrdiff_t)n);
+        journals.push_front(std::move(again));
+        static int logs = 0;
+        if (logs < 20 && conker::netsession::active()) {
+            logs++;
+            char line[120];
+            std::snprintf(line, sizeof(line), "[net view] the list %08X sent again: its rewrite put in again for it", (unsigned)data_ptr);
+            conker::netsession::log(line);
+        }
+        return;
     }
 }
 

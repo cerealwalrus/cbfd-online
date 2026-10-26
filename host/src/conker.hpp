@@ -503,6 +503,7 @@ namespace conker {
         void port_read();
         // After the renderer has read a task's display list (frontend.cpp's wrapper around send_dl): the words the
         // view rewrote in it are put back, so the game's memory is the same on every machine.
+        void render_begin(uint8_t* rdram, uint32_t data_ptr);   // (0.10.69) before the renderer reads a task's list
         void render_done(uint8_t* rdram, uint32_t data_ptr);
         // True while a frame is being drawn with this machine's view: no snapshot is taken or loaded then.
         bool busy();

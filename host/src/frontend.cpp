@@ -596,6 +596,7 @@ namespace {
         }
         void enable_instant_present() override { real->enable_instant_present(); }
         void send_dl(const OSTask* task) override {
+            conker::netview::render_begin(rdram, (uint32_t)task->t.data_ptr);
             real->send_dl(task);
             conker::netview::render_done(rdram, (uint32_t)task->t.data_ptr);
         }
