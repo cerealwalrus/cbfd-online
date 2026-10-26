@@ -1149,3 +1149,16 @@ text = "{ extern void conker_cam_probe(uint8_t*, recomp_context*, int); conker_c
 func = "func_1512B1B8"
 before_vram = 0x1512B1B8
 text = "{ extern void conker_depth_row_neutral(uint8_t*, recomp_context*); conker_depth_row_neutral(rdram, ctx); }"
+
+# 0.10.23: online, with three or four players anyone may change to either team on the teams screen (host/src/mp_characters.cpp):
+# the most players on one team ($a1, loaded on both paths by here) raised to all but one ...
+[[patches.hook]]
+func = "func_151E1744"
+before_vram = 0x151E18E4
+text = "{ extern void conker_team_caps(uint8_t*, recomp_context*); conker_team_caps(rdram, ctx); }"
+
+# ... and the computer players the screen adds past the mode's most characters (three against one) taken off again ($s0 the list's length).
+[[patches.hook]]
+func = "func_151E1744"
+before_vram = 0x151E1E4C
+text = "{ extern void conker_team_trim(uint8_t*, recomp_context*); conker_team_trim(rdram, ctx); }"
