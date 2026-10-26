@@ -1115,3 +1115,66 @@ extern "C" int conker_coop_out(uint8_t* rdram, recomp_context* ctx) {
     conker::netsession::log(line);
     return 1;
 }
+
+
+// 0.10.67: co-op, the pause screen without the one-player game's HUD. The pause screen (func_151EB06C, drawn on the machine whose
+// pause menu is open only) draws Conker's chocolate bar (func_150900F0), the sprites beside it and the lives count (func_150859AC,
+// func_151EADFC) itself, between 0x151EB5E8 and 0x151EB81C; so 0.10.66's hiding of the HUD's own drawing left them. In co-op, with
+// this machine's menu open, the drawing commands those parts emit are taken out (vertices, triangles, matrices, display list calls,
+// rectangles), the state they set (colours, modes, textures) left as it is for what the pause screen draws after them. The DE and
+// EF the pause screen writes at 0x151EB768 (its own setup for the rest) are kept. This machine's display list only.
+namespace {
+    uint32_t pause_hud_start = 0, pause_hud_middle = 0;
+
+    void pause_hud_strip(uint8_t* rdram, uint32_t from, uint32_t to) {
+        if ((from >> 24) != 0x80 || to <= from || to - from > 0x4000u) {
+            return;
+        }
+        for (uint32_t a = from; a + 8 <= to; a += 8) {
+            const uint32_t op = (uint32_t)MEM_W(0, (gpr)(int32_t)a) >> 24;
+            switch (op) {
+                case 0x01: case 0x05: case 0x06: case 0x07:   // vertices, triangles
+                case 0xDA: case 0xD8:                          // matrices
+                case 0xDE:                                     // display list calls
+                case 0xE4: case 0xE5: case 0xF6:               // rectangles
+                    MEM_W(0, (gpr)(int32_t)a) = 0;
+                    MEM_W(4, (gpr)(int32_t)a) = 0;
+                    break;
+                default:
+                    break;
+            }
+        }
+    }
+
+    bool pause_hud_wanted() {
+        return conker::netsession::active() && coop_started && coop_players >= 2 && menu_open.load();
+    }
+}
+
+extern "C" void conker_coop_pause_hud(uint8_t* rdram, recomp_context* ctx, int where) {
+    if (!pause_hud_wanted()) {
+        pause_hud_start = pause_hud_middle = 0;
+        return;
+    }
+    if (where == 0) {
+        pause_hud_start = (uint32_t)ctx->r16;
+        pause_hud_middle = 0;
+    } else if (where == 1) {
+        pause_hud_middle = (uint32_t)ctx->r2;
+    } else if (where == 2) {
+        const uint32_t end = (uint32_t)ctx->r16;
+        if (pause_hud_start != 0 && pause_hud_middle >= pause_hud_start && end >= pause_hud_middle + 16u) {
+            pause_hud_strip(rdram, pause_hud_start, pause_hud_middle);
+            pause_hud_strip(rdram, pause_hud_middle + 16u, end);
+            static int logged = 0;
+            if (logged < 3) {
+                logged++;
+                char line[160];
+                std::snprintf(line, sizeof(line), "[coop] the pause screen's chocolate and lives taken out: %08X..%08X and ..%08X",
+                    (unsigned)pause_hud_start, (unsigned)pause_hud_middle, (unsigned)end);
+                conker::netsession::log(line);
+            }
+        }
+        pause_hud_start = pause_hud_middle = 0;
+    }
+}
