@@ -1077,6 +1077,28 @@ func = "func_151DDC20"
 before_vram = 0x151DE538
 text = "{ ctx->r11 = ADD32(S32(0X8009 << 16), -0X1D4); ctx->r25 = MEM_B(ctx->r11, 0X0); goto L_151DE670; }"
 
+# 0.10.75: the pause screen's drawing on the machine whose menu is open: its bounds (host/src/net_menu.cpp, conker_pause_bounds), its
+# allocations from a pool (heap_watch.cpp), its sounds not played (conker_pause_sound).
+[[patches.hook]]
+func = "func_151EB06C"
+before_vram = 0x151EB06C
+text = "{ extern void conker_pause_bounds(uint8_t*, recomp_context*, int); conker_pause_bounds(rdram, ctx, 0); }"
+
+[[patches.hook]]
+func = "func_151EB06C"
+before_vram = 0x151EB91C
+text = "{ extern void conker_pause_bounds(uint8_t*, recomp_context*, int); conker_pause_bounds(rdram, ctx, 2); }"
+
+[[patches.hook]]
+func = "func_151DDC20"
+before_vram = 0x151DDC20
+text = "{ extern int conker_pause_menu_enter(uint8_t*, recomp_context*); if (conker_pause_menu_enter(rdram, ctx)) { return; } }"
+
+[[patches.hook]]
+func = "func_10010F30"
+before_vram = 0x10010F30
+text = "{ extern int conker_pause_sound(uint8_t*, recomp_context*); if (conker_pause_sound(rdram, ctx)) { return; } }"
+
 # Online (host/src/heap_watch.cpp): the game's heap is only the game thread's, the same on every machine, and doesn't run out.
 # func_10003C6C (allocate) begins: the audio cache's, the streamed sounds' and other threads' allocations come from a pool of their own.
 [[patches.hook]]

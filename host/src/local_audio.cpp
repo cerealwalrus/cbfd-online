@@ -453,6 +453,15 @@ namespace {
     }
 
     void on_start_inner(uint8_t* rdram, recomp_context* ctx) {
+        // (0.10.75) co-op: Conker's Gameboy (his idle, sounds 0x29C-0x29F every 8 frames) silent, for every player. Only this machine's
+        // volume: the game's slots and handles are as it has them.
+        if (conker::netmenu::coop_running(rdram)) {
+            const uint32_t sound = (uint32_t)ctx->r5 & 0xFFFFu;
+            if (sound >= 0x29Cu && sound <= 0x29Fu) {
+                ctx->r6 = 0;
+                return;
+            }
+        }
         const uint32_t sp = (uint32_t)ctx->r29;
         const uint32_t ra = word(rdram, sp + 0x2C);
         const uint32_t caller_s0 = word(rdram, sp + 0x24);
@@ -619,6 +628,19 @@ namespace {
     void on_stream_start(uint8_t* rdram, recomp_context* ctx) {
         const uint32_t sp = (uint32_t)ctx->r29;   // func_1001263C hasn't made its frame yet: its caller's
         const uint32_t ra = (uint32_t)ctx->r31;
+        // (0.10.75, measuring) co-op: the streamed sounds started, to tell which is the Gameboy's music
+        if (conker::netmenu::coop_running(rdram)) {
+            static int logged = 0;
+            if (logged < 60) {
+                logged++;
+                const uint32_t object = (ra == 0x10012760u || ra == 0x100127BCu) ? word(rdram, sp + 0x44) : 0;
+                char line[160];
+                std::snprintf(line, sizeof(line), "[audio] f=%u co-op: a streamed sound starts: a0 %08X a1 %08X a2 %08X from %08X, object %08X (player %d)",
+                    (unsigned)conker::netsession::frame(), (unsigned)(uint32_t)ctx->r4, (unsigned)(uint32_t)ctx->r5, (unsigned)(uint32_t)ctx->r6, (unsigned)ra,
+                    (unsigned)object, object != 0 ? character_player(rdram, object) : -1);
+                conker::netsession::log(line);
+            }
+        }
         uint32_t object = 0;
         int player = -1;
         if (ra == 0x10012760u || ra == 0x100127BCu) {

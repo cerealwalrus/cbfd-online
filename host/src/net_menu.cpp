@@ -73,7 +73,46 @@ namespace {
     bool coop_pause_screen();   // (below, with the co-op stage's state)
 }
 
+namespace {
+    std::atomic<bool> in_pause_screen{ false };   // (0.10.75) func_151EB06C, with this machine's menu open
+    std::atomic<bool> in_pause_menu{ false };     // func_151DDC20, the same
+}
+
+bool conker::netmenu::local_pause_drawing() {
+    return in_pause_screen.load() || in_pause_menu.load();
+}
+
+// (0.10.75) the pause screen's two functions begin (where 0: func_151EB06C, 1: func_151DDC20) and end (2, 3)
+extern "C" void conker_pause_bounds(uint8_t* rdram, recomp_context* ctx, int where) {
+    (void)rdram;
+    (void)ctx;
+    const bool on = conker::netsession::active() && menu_open.load();
+    switch (where) {
+        case 0: in_pause_screen = on; break;
+        case 1: in_pause_menu = on; break;
+        case 2: in_pause_screen = false; break;
+        case 3: in_pause_menu = false; break;
+        default: break;
+    }
+}
+
+// (0.10.75) func_10010F30 (a sound with no place) begins: the pause menu's own sounds (its cursor, its choices), played on this
+// machine alone, took a game's sound slot that the other machines' games didn't: the slots' handles went apart, a character's "is
+// my sound still playing?" (func_100107F8, the Gameboy's beeps every 8 frames) answered differently, and with it whether the RNG
+// was asked (the 0.10.74 log: the host's game asked once more at frame 3392, from 1506E598). Returns 1 to skip it.
+extern "C" int conker_pause_sound(uint8_t* rdram, recomp_context* ctx) {
+    (void)rdram;
+    if (!conker::netmenu::local_pause_drawing()) {
+        return 0;
+    }
+    ctx->r2 = 0;
+    return 1;
+}
+
 extern "C" void conker_net_pause_hook(uint8_t* rdram, recomp_context* ctx, int which) {
+    if (which == 7) {
+        in_pause_menu = false;   // (0.10.75: func_151DDC20's end)
+    }
     if (!menu_open) {
         if (which == 7) {
             put_back(rdram);   // (the menu closed this frame: a slot it borrowed still goes back)
@@ -1250,3 +1289,11 @@ extern "C" void conker_coop_pause_sprites(uint8_t* rdram, recomp_context* ctx) {
 // match, so every N corrupted the game's memory, on that machine alone, with two of the RNG's numbers: the co-op test's desyncs (the
 // flicker was the resyncs), and the renderer's crash (a gfx task overwritten). As the check passing does: the picked button 2 back
 // (L_151DE670), nothing read, nothing written.
+
+// (0.10.75) func_151DDC20 (the pause menu) begins: in co-op, on a machine whose menu isn't open, it isn't run at all. The co-op stage's
+// own pause is never on (Start opens the online menu), so the menu runs only for this machine's online menu; in the frames after that
+// closes it still ran, drawing its buttons as they left (the stray QUIT and joystick at the bottom). Returns 1 to skip it.
+extern "C" int conker_pause_menu_enter(uint8_t* rdram, recomp_context* ctx) {
+    conker_pause_bounds(rdram, ctx, 1);
+    return (coop_pause_screen() && !menu_open.load()) ? 1 : 0;
+}

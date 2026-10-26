@@ -462,7 +462,10 @@ extern "C" int conker_heap_alloc_begin(uint8_t* rdram, recomp_context* ctx) {
     }
     const bool other_thread = on_other_thread();
     const bool cache = from == 0x10009ED8u;
-    if (!other_thread && !cache && !starting_stream(rdram, ctx, from)) {
+    // (0.10.75) the pause screen's allocations with this machine's menu open (its textures, func_1510D0EC's cache: kept loaded):
+    // this machine's alone, so from the pool, not the game's heap
+    const bool pause = on_game_thread() && conker::netmenu::local_pause_drawing();
+    if (!other_thread && !cache && !pause && !starting_stream(rdram, ctx, from)) {
         if (on_game_thread()) {
             // (0.10.27, measuring) noted, for conker_heap_alloc_end
             pending_ask = Asked{};

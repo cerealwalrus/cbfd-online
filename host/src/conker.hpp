@@ -276,6 +276,9 @@ namespace conker {
         // (0.10.60) this frame's HUD drawn for player k (1-3) in co-op: where its commands are in the display list
         bool coop_hud_range(int k, uint32_t* start, uint32_t* end);
         void coop_hud_clear();
+        // (0.10.75) the game thread is in the pause screen's drawing (func_151EB06C, func_151DDC20) with this machine's menu open: what
+        // it does there is this machine's alone (heap_watch.cpp gives its allocations a pool of their own; its sounds aren't played)
+        bool local_pause_drawing();
     }
 
     // notices.cpp: a line in the top-left corner for a few seconds, one at a time (an unlock, a save state's
