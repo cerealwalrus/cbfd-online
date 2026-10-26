@@ -1,7 +1,7 @@
 // The settings a new player starts with: the launcher's settings tabs as the game's author has them. They are only defaults: a
 // setting the player has changed (saved in the tab's json in the config folder) is never touched. conker_config.cpp's seed_defaults
 // puts these into the tabs' files, before the tabs load them: each flat tab file gets the keys it doesn't have yet, and the controls
-// file is written when there is none. To change what new players get, replace the text of a tab here (a copy of its json).
+// file is written when there is none (0.10.19: the author's files of 25 October 2026, the Online tab too). To change what new players get, replace the text of a tab here (a copy of its json).
 
 namespace conker {
     namespace default_settings {
@@ -10,7 +10,7 @@ namespace conker {
 {
  "background_input_mode": "On",
  "debug_mode": false,
- "joystick_deadzone": 5
+ "joystick_deadzone": 4
 }
 )CONKERJSON";
 
@@ -24,14 +24,15 @@ namespace conker {
  "developer_mode": false,
  "ds_option": 0,
  "hpfb_option": "Off",
- "hr_option": "Original",
- "msaa_option": "MSAA2X",
+ "hr_option": "Expand",
+ "msaa_option": "None",
  "overscan_borders": "Hidden",
  "res_option": "Auto",
  "rr_manual_value": 60,
- "rr_option": "Display",
+ "rr_option": "Original",
  "show_fps": "Off",
  "texture_pack": "ModsMenu",
+ "vsync": "Off",
  "wm_option": "Windowed"
 }
 )CONKERJSON";
@@ -46,7 +47,7 @@ namespace conker {
  "camera_invert_turning": "None",
  "camera_turn_speed": 100,
  "look_stick_invert": "None",
- "look_stick_response": "Smooth",
+ "look_stick_response": "Direct",
  "stick_free_camera": "On"
 }
 )CONKERJSON";
@@ -557,5 +558,12 @@ namespace conker {
 }
 )CONKERJSON";
 
+
+        extern const char* const online_json;
+        const char* const online_json = R"CONKERJSON(
+{
+ "online_chat_key": "Y"
+}
+)CONKERJSON";
     }
 }

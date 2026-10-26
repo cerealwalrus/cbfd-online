@@ -20,6 +20,7 @@ namespace conker {
     namespace default_settings {
         extern const char* const general_json;
         extern const char* const graphics_json;
+        extern const char* const online_json;
         extern const char* const camera_json;
         extern const char* const controls_json;
     }
@@ -191,6 +192,7 @@ namespace {
             { "general", conker::default_settings::general_json },
             { "graphics", conker::default_settings::graphics_json },
             { "camera", conker::default_settings::camera_json },
+            { "online", conker::default_settings::online_json },   // (0.10.19)
         };
         for (const auto& tab : flat_tabs) {
             try {
