@@ -1178,3 +1178,16 @@ extern "C" void conker_coop_pause_hud(uint8_t* rdram, recomp_context* ctx, int w
         pause_hud_start = pause_hud_middle = 0;
     }
 }
+
+
+// 0.10.68: co-op, the pause menu laid out as a match's. func_151DDC20 (the pause menu, run on the machine whose menu is open only)
+// lays out the one-player game's two buttons (CONT and RESTART) where D_800BE616 is 0, as the co-op stage is, and a match's three
+// (CONT, RESTART, QUIT) otherwise; the online menu's hooks (conker_net_pause_hook) are made for the match's: RESTART hidden, QUIT in
+// its place and lit when it's picked, its confirmation QUIT with Y and N. Before the branch at 0x151DDFE4 ($t9 the flag): in co-op,
+// with this machine's menu open, the match's layout. What QUIT then does is the menu's own (net_session.cpp, the quit state 7).
+extern "C" void conker_coop_pause_layout(uint8_t* rdram, recomp_context* ctx) {
+    (void)rdram;
+    if (conker::netsession::active() && coop_started && coop_players >= 2 && menu_open.load()) {
+        ctx->r25 = 1;
+    }
+}

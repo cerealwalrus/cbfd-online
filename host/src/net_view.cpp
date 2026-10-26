@@ -1693,7 +1693,10 @@ void conker::netview::frame_end(uint8_t* rdram, uint32_t list_end) {
         start = std::min(start, pass.gfx);
     }
     static const bool keep_rewrite = SDL_getenv("CONKER_NET_KEEPREWRITE") != nullptr;
-    const bool can_journal = !keep_rewrite && (start >> 24) == 0x80 && (list_end >> 24) == 0x80 && list_end > start &&
+    // (0.10.68) not in co-op: there the rewrite stays in the list (the game writes the buffer anew two frames on). With the pause
+    // menu open the 0.10.67 test sent a buffer's list to the renderer again after its rewrite had been put back, and that list
+    // showed as the game drew it, the split screen (the flicker, in the log as "a task's list ... isn't a rewritten frame's").
+    const bool can_journal = !keep_rewrite && !conker::netmenu::coop_running(rdram) && (start >> 24) == 0x80 && (list_end >> 24) == 0x80 && list_end > start &&
         list_end - start <= 0x100000u && (list_end & 0x7FFFFFu) <= 0x800000u;
     std::vector<uint8_t> before;
     if (can_journal) {
