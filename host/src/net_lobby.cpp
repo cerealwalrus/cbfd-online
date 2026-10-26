@@ -10,6 +10,8 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
+#include <vector>
 #include <deque>
 #include <mutex>
 #include <string>
@@ -72,6 +74,41 @@ namespace {
         }
     }
     std::string port_text = "47000";
+
+    // 0.10.11: whether the game's ROM is ready to play. The runtime's list of valid ROMs (recomp::is_rom_valid) is made once, as the
+    // program starts, and Load ROM or Add ROM store the ROM without adding to it: someone running the launcher for the first time
+    // loaded their ROM and then Online told them to load it first. So with none listed, the ROM stored is checked (whole, the US ROM
+    // or a hack of it the game takes) and the runtime's list made again. -1: still being written, try again in a moment.
+    int rom_ready(const std::u8string& game_id) {
+        if (recomp::is_rom_valid(game_id)) {
+            return 1;
+        }
+        std::error_code error;
+        const std::filesystem::path stored = conker::roms::stored_rom_path();
+        if (stored.empty() || !std::filesystem::exists(stored, error)) {
+            return 0;
+        }
+        const auto written = std::filesystem::last_write_time(stored, error);
+        if (error) {
+            return 0;
+        }
+        if (std::filesystem::file_time_type::clock::now() - written < std::chrono::seconds(1)) {
+            return -1;
+        }
+        std::vector<uint8_t> data;
+        try {
+            std::ifstream file(stored, std::ios::binary);
+            data.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+        }
+        catch (...) {
+            return 0;
+        }
+        if (data.empty() || !conker::roms::accept(data)) {
+            return 0;
+        }
+        recomp::check_all_stored_roms();
+        return recomp::is_rom_valid(game_id) ? 1 : 0;
+    }
 
     // The address and port last used are kept too (they would reset to the defaults at every start otherwise).
     std::filesystem::path address_path() {
@@ -366,7 +403,12 @@ void conker::netlobby::update(const std::u8string& game_id) {
         }
         for (Action a : todo) {
             if (a == Action::Show) {
-                if (!recomp::is_rom_valid(game_id)) {
+                const int ready = rom_ready(game_id);
+                if (ready < 0) {
+                    recompui::message_box("The ROM is still being saved: choose Online again in a moment.");
+                    continue;
+                }
+                if (ready == 0) {
                     recompui::message_box("Load the game's ROM first: choose Load ROM (the first option) and pick it.");
                     continue;
                 }
