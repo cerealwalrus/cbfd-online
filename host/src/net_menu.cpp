@@ -1191,3 +1191,11 @@ extern "C" void conker_coop_pause_layout(uint8_t* rdram, recomp_context* ctx) {
         ctx->r25 = 1;
     }
 }
+
+// 0.10.70: and at L_151DE00C, the buttons where the one-player game has them (the y offset at $sp+0x8C, 5; the match's -0x24 makes
+// room for its score table, which co-op hasn't): below PAUSED, not beside it
+extern "C" void conker_coop_pause_buttons_y(uint8_t* rdram, recomp_context* ctx) {
+    if (conker::netsession::active() && coop_started && coop_players >= 2 && menu_open.load()) {
+        MEM_W(0x8C, ctx->r29) = 5;
+    }
+}

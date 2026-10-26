@@ -1053,6 +1053,11 @@ func = "func_151DDC20"
 before_vram = 0x151DDFE4
 text = "{ extern void conker_coop_pause_layout(uint8_t*, recomp_context*); conker_coop_pause_layout(rdram, ctx); }"
 
+[[patches.hook]]
+func = "func_151DDC20"
+before_vram = 0x151DE00C
+text = "{ extern void conker_coop_pause_buttons_y(uint8_t*, recomp_context*); conker_coop_pause_buttons_y(rdram, ctx); }"
+
 # Online (host/src/heap_watch.cpp): the game's heap is only the game thread's, the same on every machine, and doesn't run out.
 # func_10003C6C (allocate) begins: the audio cache's, the streamed sounds' and other threads' allocations come from a pool of their own.
 [[patches.hook]]

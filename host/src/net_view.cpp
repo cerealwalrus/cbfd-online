@@ -170,6 +170,33 @@ namespace {
     std::deque<Journal> journals;
     // (0.10.69) the journals last put back, for a list sent to the renderer again after that (render_begin)
     std::deque<Journal> restored;
+    // (0.10.70, measuring the pause flicker) the last frames' lists and the renderer's tasks, logged when a task's list isn't a
+    // rewritten frame's
+    std::mutex events_mutex;
+    std::deque<std::string> events;
+    void note_event(const char* text) {
+        std::lock_guard<std::mutex> lock(events_mutex);
+        events.emplace_back(text);
+        while (events.size() > 24) {
+            events.pop_front();
+        }
+    }
+    void dump_events(const char* why) {
+        static int dumps = 0;
+        if (dumps >= 12 || !conker::netsession::active()) {
+            return;
+        }
+        dumps++;
+        std::deque<std::string> copy;
+        {
+            std::lock_guard<std::mutex> lock(events_mutex);
+            copy = events;
+        }
+        conker::netsession::log((std::string("[net view] events before ") + why + ":").c_str());
+        for (const auto& line : copy) {
+            conker::netsession::log(("[net view]   " + line).c_str());
+        }
+    }
     uint32_t matrix_next = 0, viewport_next = 0;
     int dumps_done = 0;
     uint64_t frames_rewritten = 0;
@@ -1639,6 +1666,11 @@ void conker::netview::frame_end(uint8_t* rdram, uint32_t list_end) {
         }
     }
     if (!view_is_full() || frame.empty()) {
+        if (view_is_full()) {
+            char note[120];
+            std::snprintf(note, sizeof(note), "f=%u list end %08X: no passes, not rewritten", (unsigned)conker::netsession::frame(), list_end);
+            note_event(note);
+        }
         return;
     }
     const int players = players_now(rdram);
@@ -1678,10 +1710,16 @@ void conker::netview::frame_end(uint8_t* rdram, uint32_t list_end) {
         }
     }
     if (players <= 1 || players > max_cameras || local < 0 || local >= players) {
+        char note[120];
+        std::snprintf(note, sizeof(note), "f=%u list end %08X: %d players, local %d, not rewritten", (unsigned)conker::netsession::frame(), list_end, players, local);
+        note_event(note);
         return;
     }
     const uint32_t base = (uint32_t)MEM_W(0, cameras_pointer);
     if ((base >> 24) != 0x80 || (base & 0x7FFFFFu) + (players + 1) * camera_size > 0x800000u) {
+        char note[120];
+        std::snprintf(note, sizeof(note), "f=%u list end %08X: cameras at %08X, not rewritten", (unsigned)conker::netsession::frame(), list_end, base);
+        note_event(note);
         return;
     }
     if (dumps_done == 0) {
@@ -1733,11 +1771,19 @@ void conker::netview::frame_end(uint8_t* rdram, uint32_t list_end) {
                 journal.words.push_back({ start + (uint32_t)off, a, b });
             }
         }
+        char note[160];
+        std::snprintf(note, sizeof(note), "f=%u list %08X..%08X rewritten, %zu passes, %zu words journaled, local %d", (unsigned)conker::netsession::frame(),
+            start, list_end, frame.size(), journal.words.size(), local);
+        note_event(note);
         std::lock_guard<std::mutex> lock(journal_mutex);
         journals.push_back(std::move(journal));
         while (journals.size() > 4) {
             journals.pop_front();
         }
+    } else {
+        char note[160];
+        std::snprintf(note, sizeof(note), "f=%u list %08X..%08X rewritten, not journaled", (unsigned)conker::netsession::frame(), start, list_end);
+        note_event(note);
     }
     frames_rewritten++;
 }
@@ -1763,6 +1809,7 @@ void conker::netview::render_done(uint8_t* rdram, uint32_t data_ptr) {
         }
     }
     if (match == journals.size()) {
+        dump_events("a list that isn't a rewritten frame's");
         static int unmatched_logs = 0;
         if (unmatched_logs < 40 && conker::netsession::active()) {
             unmatched_logs++;
@@ -1803,6 +1850,11 @@ void conker::netview::render_done(uint8_t* rdram, uint32_t data_ptr) {
 // one put back and every one of its words is still as it was put back (the game hasn't begun writing that buffer again), the
 // rewrite goes in again for this read, and is put back after it (render_done) as before.
 void conker::netview::render_begin(uint8_t* rdram, uint32_t data_ptr) {
+    {
+        char note[120];
+        std::snprintf(note, sizeof(note), "a task for the list %08X (game frame %u)", (unsigned)data_ptr, (unsigned)conker::netsession::frame());
+        note_event(note);
+    }
     std::lock_guard<std::mutex> lock(journal_mutex);
     const uint32_t task = data_ptr & 0x1FFFFFFFu;
     for (const Journal& journal : journals) {
@@ -1821,6 +1873,10 @@ void conker::netview::render_begin(uint8_t* rdram, uint32_t data_ptr) {
             uint32_t current;
             std::memcpy(&current, rdram + (word[0] & 0x7FFFFFu), 4);
             if (current != word[1]) {
+                char note[160];
+                std::snprintf(note, sizeof(note), "  (a list put back, but its word at %08X is %08X now, not %08X: not rewritten again)", (unsigned)word[0],
+                    (unsigned)current, (unsigned)word[1]);
+                note_event(note);
                 return;   // (the buffer is the game's again)
             }
         }
