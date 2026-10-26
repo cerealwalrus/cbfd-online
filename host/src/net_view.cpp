@@ -660,7 +660,11 @@ namespace {
                     if (rw > 16.5f || rh > 12.5f) {
                         continue;
                     }
-                    if (rcy >= 0.5f * (top + bottom) - 10.0f && rcy <= 0.5f * (top + bottom) + 8.0f && std::fabs(rcx - 0.5f * (left + right)) < 40.0f) {
+                    // (0.10.25: with three or four players, the timer along the bottom middle of this machine's own quarter)
+                    const bool timer_here = players >= 3 ?
+                        (rcx >= o_l && rcx <= o_r && rcy <= o_b && rcy > o_b - 16.0f && std::fabs(rcx - 0.5f * (o_l + o_r)) < 40.0f) :
+                        (rcy >= 0.5f * (top + bottom) - 10.0f && rcy <= 0.5f * (top + bottom) + 8.0f && std::fabs(rcx - 0.5f * (left + right)) < 40.0f);
+                    if (timer_here) {
                         race_timer_left = std::min(race_timer_left, std::min(r_xl, r_xh));
                     } else if (rcx >= o_l && rcx <= o_r && rcy >= o_t + 32.0f && rcy < o_t + 72.0f && rcx < o_l + 90.0f && rcy <= o_b) {
                         bool found = false;
@@ -1026,6 +1030,12 @@ namespace {
                             if (in_rect(l, t, r, b)) {
                                 dx = (int32_t)std::lround((0.5f * (left + right) - 0.5f * (l + r)) * 4.0f);
                                 dy = (int32_t)std::lround((0.5f * (top + bottom) - 0.5f * (t + b)) * 4.0f);
+                                if (players >= 3) {
+                                    // 0.10.25: with three or four players the game lays the race's pause screen out down the left half (the
+                                    // first and third quarters, from top to bottom): moved across only, to the middle, as one piece (moved
+                                    // by each quarter's middle, its two halves went their separate ways, one down and one up, off the view)
+                                    dy = 0;
+                                }
                                 kind_name = "menu: pause moved to the middle";
                                 break;
                             }
@@ -1038,7 +1048,7 @@ namespace {
                     // every machine. Another camera's is hidden and this machine's goes to the top middle of the full view, as in play.
                     // (Only the score's own size of piece, a character up to 16 x 12, within 32 of the quarter's middle and 18 of its top:
                     // the pause screen's pictures (PAUSED, QUIT, CONT.) are 32 square, its table is lower and nearer the middle.)
-                    if (!hide && dx == 0 && dy == 0 && players >= 3 && op != 0xF6 && width <= 16.5f && height <= 12.5f) {
+                    if (!hide && dx == 0 && dy == 0 && players >= 3 && op != 0xF6 && width <= 16.5f && height <= 16.5f) {
                         for (int k = 0; k < players; k++) {
                             const uint32_t record = base + k * camera_size;
                             const float l = get_float(rdram, record, field_left), r = get_float(rdram, record, field_right);
@@ -1047,7 +1057,8 @@ namespace {
                                 continue;
                             }
                             if (k == local) {
-                                dx = (int32_t)((0.5f * (left + right) - 0.5f * (l + r)) * 4.0f);
+                                // (0.10.25: at the first quarter's place, left of PAUSED: at the top middle it was behind the word)
+                                dx = (int32_t)((left + 0.25f * (right - left) - 0.5f * (l + r)) * 4.0f);
                                 dy = (int32_t)((top - t) * 4.0f);
                                 kind_name = "menu: score at the top";
                             } else {
@@ -1058,7 +1069,7 @@ namespace {
                         }
                     }
                     static int war_menu_logged = 0;
-                    if (!race_menu && players >= 3 && war_menu_logged < 400 && op != 0xF6 && width <= 16.5f && height <= 12.5f) {
+                    if (!race_menu && players >= 3 && war_menu_logged < 400 && op != 0xF6 && width <= 16.5f && height <= 16.5f) {
                         char line[160];
                         std::snprintf(line, sizeof(line), "[net view] pause rect %08X%s: %08X %08X (centre %g,%g, %gx%g)%s %s", address, nested ? " (called)" : (pause_outside ? " (outside)" : ""),
                             w0, w1, cx, cy, width, height, bar ? " bar" : "", kind_name);
@@ -1073,6 +1084,19 @@ namespace {
                         conker::netsession::log(line);
                         race_menu_logged++;
                     }
+                } else if (radar_camera >= 0 && race_frame && players >= 3) {
+                    // 0.10.25: the race with three or four players. The game draws the track map (and its dots) twice only, at the top right
+                    // of the first and third quarters: the first one's goes to the full view's top right on every machine (the second and
+                    // fourth players had none), the other hidden
+                    if (radar_camera == 0) {
+                        const uint32_t record = base;
+                        dx = (int32_t)((right - get_float(rdram, record, field_right)) * 4.0f);
+                        dy = (int32_t)((top - get_float(rdram, record, field_top)) * 4.0f);
+                        kind_name = "race map";
+                    } else {
+                        hide = true;
+                        kind_name = "other race map";
+                    }
                 } else if (radar_camera >= 0) {
                     if (radar_camera == local) {
                         dx = (int32_t)((right - get_float(rdram, own, field_right)) * 4.0f);
@@ -1084,6 +1108,57 @@ namespace {
                     }
                 } else if (leave) {
                     kind_name = "left alone";
+                } else if (race_frame && players >= 3 && !bar) {
+                    // 0.10.25: the race with three or four players, each quarter's HUD: this machine's quarter's pieces to the full view as
+                    // with two players (the place at the top middle, the lap and its bricks at the top left, the lap times under it, the
+                    // timer, along the quarter's bottom middle, under the lap), another quarter's hidden. (The general rules took the lap's
+                    // "P 1/3" for the aim, to the middle of the view, and showed the timers of two quarters along the bottom.)
+                    const float own_mid = 0.5f * (own_l + own_r);
+                    if (!in_rect(own_l, own_t, own_r, own_b)) {
+                        hide = true;
+                        kind_name = "race: other quarter";
+                    } else if (cy < own_t + 18.0f && std::fabs(cx - own_mid) < 40.0f) {
+                        dx = (int32_t)((0.5f * (left + right) - own_mid) * 4.0f);
+                        dy = (int32_t)((top - own_t) * 4.0f);
+                        kind_name = "race: place";
+                    } else if (cy > own_b - 16.0f && std::fabs(cx - own_mid) < 40.0f) {
+                        dx = (int32_t)std::lround(((left + 6.5f) - (own_mid - 16.0f)) * 4.0f);
+                        if (race_timer_left != 0x7FFFFFFF) {
+                            dx = race_rows_left - race_timer_left;
+                        }
+                        dy = (int32_t)std::lround(((top + 34.0f) - (own_b - 13.0f)) * 4.0f);
+                        kind_name = "race: timer";
+                    } else if (cy >= own_t + 32.0f && cy < own_t + 72.0f && cx < own_l + 90.0f && width <= 16.5f && height <= 12.5f) {
+                        dx = (int32_t)((left - own_l) * 4.0f) + 1;
+                        for (const auto& row : race_lap_rows) {
+                            if (std::fabs(row.first - cy) <= 3.0f) {
+                                dx = race_rows_left - row.second;
+                                break;
+                            }
+                        }
+                        dy = (int32_t)((top - own_t + 13.0f) * 4.0f);
+                        kind_name = "race: lap time";
+                    } else if (cy < own_t + 32.0f && cx < own_l + 64.0f) {
+                        dx = (int32_t)((left - own_l) * 4.0f);
+                        dy = (int32_t)((top - own_t) * 4.0f);
+                        kind_name = "race: lap";
+                    } else if (cx >= own_l + 30.0f && cx <= own_r - 30.0f && cy >= own_t + 8.0f && cy <= own_b - 8.0f) {
+                        // (away from the quarter's edges: the countdown and the like, with the view)
+                        dx = hud_shift_x;
+                        dy = hud_shift;
+                        kind_name = "race: with the view";
+                    } else {
+                        dx = (int32_t)(((cx < own_mid) ? (left - own_l) : (right - own_r)) * 4.0f);
+                        dy = (int32_t)(((cy < (own_t + own_b) * 0.5f) ? (top - own_t) : (bottom - own_b)) * 4.0f);
+                        kind_name = "race: own";
+                    }
+                    static int race4_logged = 0;
+                    if (race4_logged < 300) {
+                        char line[160];
+                        std::snprintf(line, sizeof(line), "[net view] race HUD rect %08X: %08X %08X (centre %g,%g, %gx%g) %s", address, w0, w1, cx, cy, width, height, kind_name);
+                        conker::netsession::log(line);
+                        race4_logged++;
+                    }
                 } else if (!bar && in_rect(own_l, own_t, own_r, own_b) && cy < own_t + 18.0f && std::fabs(cx - (own_l + own_r) * 0.5f) < 64.0f) {
                     // the top middle of this machine's camera's rectangle: the deathmatch's score and place ("1 (1st)"). It was taken for a
                     // sprite of the world and moved down with the view, to the middle of the screen: it goes to the top of the full view, in
@@ -1201,11 +1276,12 @@ namespace {
                     // Expand: the side it goes to (1 left, 2 right)
                     int edge = 0;
                     if (expand_hud && !menu_open) {
-                        if (std::strcmp(kind_name, "radar or weapon") == 0) {
+                        if (std::strcmp(kind_name, "radar or weapon") == 0 || std::strcmp(kind_name, "race map") == 0) {
                             edge = 2;
-                        } else if (std::strcmp(kind_name, "own") == 0) {
+                        } else if (std::strcmp(kind_name, "own") == 0 || std::strcmp(kind_name, "race: own") == 0) {
                             edge = cx < (own_l + own_r) * 0.5f ? 1 : 2;
-                        } else if (std::strcmp(kind_name, "race timer") == 0) {
+                        } else if (std::strcmp(kind_name, "race timer") == 0 || std::strcmp(kind_name, "race: timer") == 0 ||
+                                std::strcmp(kind_name, "race: lap") == 0 || std::strcmp(kind_name, "race: lap time") == 0) {
                             edge = 1;   // (with the lap, at the left edge)
                         }
                     }
