@@ -212,7 +212,7 @@ void conker::menu_skin::apply(recompui::LauncherMenu* menu, recompui::GameOption
             option->set_width(330.0f);
             option->set_padding(6.0f);
             option->set_rotation(0.0f);
-            option->set_background_color(recompui::Color{ 20, 12, 6, 190 });
+            option->set_background_color(recompui::Color{ 10, 14, 8, 190 });
             option->set_border_width(0.0f);
             if (recompui::Label* label = option->get_label()) {
                 label->set_font_size(26.0f);

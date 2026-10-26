@@ -113,7 +113,7 @@ namespace {
             line_labels[i]->set_padding_top(2.0f);
             line_labels[i]->set_padding_bottom(2.0f);
             line_labels[i]->set_border_radius(5.0f);
-            line_labels[i]->set_background_color(recompui::Color{ 12, 8, 4, 170 });
+            line_labels[i]->set_background_color(recompui::Color{ 6, 9, 4, 170 });
             line_labels[i]->set_display(recompui::Display::None);
         }
         lines_context.close();
@@ -133,7 +133,7 @@ namespace {
         bar->set_gap(10.0f);
         bar->set_padding(10.0f);
         bar->set_border_radius(8.0f);
-        bar->set_background_color(recompui::Color{ 12, 8, 4, 220 });
+        bar->set_background_color(recompui::Color{ 6, 9, 4, 220 });
         input_context.create_element<recompui::Label>(bar, "Say:", recompui::LabelStyle::Normal);
         input = input_context.create_element<recompui::TextInput>(bar);
         input->set_flex_grow(1.0f);
@@ -199,7 +199,7 @@ namespace {
                 const Line* line = visible[k];
                 if (line->slot < 0) {
                     line_labels[i]->set_text(line->text);
-                    line_labels[i]->set_color(recompui::Color{ 255, 226, 90, 255 });
+                    line_labels[i]->set_color(recompui::Color{ 236, 206, 112, 255 });
                 }
                 else {
                     line_labels[i]->set_text(conker::netsession::player_name(line->slot) + ": " + line->text);

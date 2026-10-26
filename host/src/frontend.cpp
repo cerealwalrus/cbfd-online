@@ -458,21 +458,27 @@ namespace {
             set(a50, Color{ r, g, b, 128 });
             set(a80, Color{ r, g, b, 204 });
         };
-        set(theme::color::Background1, Color{ 34, 24, 16, 255 });
-        set(theme::color::Background2, Color{ 46, 33, 22, 255 });
-        set(theme::color::Background3, Color{ 58, 42, 28, 255 });
-        set(theme::color::BGOverlay, Color{ 12, 8, 4, 170 });
-        set(theme::color::ModalOverlay, Color{ 42, 29, 19, 240 });
-        set(theme::color::Elevated, Color{ 96, 68, 40, 255 });
-        set(theme::color::Border, Color{ 22, 14, 8, 255 });
-        set(theme::color::Text, Color{ 224, 220, 210, 255 });
-        set(theme::color::TextActive, Color{ 255, 226, 90, 255 });
-        set(theme::color::TextDim, Color{ 204, 198, 186, 255 });
+        // (0.10.42) Conker's war: dark army green panels (the launcher's metal plates' green), the khaki of their icons for the
+        // lettering, and their worn brass for what's picked (was the bar's dark wood and orange)
+        set(theme::color::Background1, Color{ 22, 28, 18, 255 });
+        set(theme::color::Background2, Color{ 30, 38, 24, 255 });
+        set(theme::color::Background3, Color{ 40, 50, 31, 255 });
+        set(theme::color::BGOverlay, Color{ 6, 9, 4, 170 });
+        set(theme::color::ModalOverlay, Color{ 26, 33, 21, 240 });
+        set(theme::color::Elevated, Color{ 66, 80, 46, 255 });
+        set(theme::color::Border, Color{ 10, 14, 8, 255 });
+        set(theme::color::Text, Color{ 226, 222, 204, 255 });
+        set(theme::color::TextActive, Color{ 236, 206, 112, 255 });
+        set(theme::color::TextDim, Color{ 196, 196, 176, 255 });
         with_alphas(theme::color::Primary, theme::color::PrimaryA5, theme::color::PrimaryA20, theme::color::PrimaryA30,
-            theme::color::PrimaryA50, theme::color::PrimaryA80, 232, 128, 20);
-        set(theme::color::PrimaryL, Color{ 255, 204, 96, 255 });
-        set(theme::color::PrimaryD, Color{ 150, 72, 6, 255 });
-        set(theme::color::SecondaryL, Color{ 255, 232, 96, 255 });
+            theme::color::PrimaryA50, theme::color::PrimaryA80, 190, 160, 72);
+        set(theme::color::PrimaryL, Color{ 230, 206, 128, 255 });
+        set(theme::color::PrimaryD, Color{ 112, 92, 36, 255 });
+        set(theme::color::SecondaryL, Color{ 240, 220, 140, 255 });
+        with_alphas(theme::color::Secondary, theme::color::SecondaryA5, theme::color::SecondaryA20, theme::color::SecondaryA30,
+            theme::color::SecondaryA50, theme::color::SecondaryA80, 176, 150, 64);
+        set(theme::color::SecondaryD, Color{ 130, 108, 40, 255 });
+        set(theme::color::BGShadow2, Color{ 6, 10, 4, 184 });
         // Lilita One has the one weight: no bold to ask for
         theme::set_typography_preset(theme::Typography::Header1, 68.0f, 0.04f, 400);
         theme::set_typography_preset(theme::Typography::Header2, 52.0f, 0.04f, 400);
@@ -488,18 +494,18 @@ namespace {
     // when it's the one selected (the pulse between orange and yellow is RecompFrontend's own).
     void style_plank(recompui::GameOption* option, int index) {
         using recompui::Color;
-        option->set_background_color(Color{ 66, 46, 27, 255 });
+        option->set_background_color(Color{ 44, 54, 33, 255 });
         option->set_border_width(3.0f);
-        option->set_border_color(Color{ 20, 12, 6, 255 });
+        option->set_border_color(Color{ 12, 16, 9, 255 });
         option->set_border_radius(7.0f);
         option->set_padding(10.0f);
         option->set_margin_bottom(8.0f);
         option->set_color(Color{ 224, 220, 210, 255 });
         option->set_rotation((index % 2 == 0) ? -0.6f : 0.6f);
-        option->hover_style.set_background_color(Color{ 104, 74, 43, 255 });
-        option->hover_style.set_color(Color{ 255, 226, 90, 255 });
-        option->focus_style.set_background_color(Color{ 112, 80, 46, 255 });
-        option->focus_style.set_color(Color{ 255, 226, 90, 255 });
+        option->hover_style.set_background_color(Color{ 70, 84, 50, 255 });
+        option->hover_style.set_color(Color{ 236, 206, 112, 255 });
+        option->focus_style.set_background_color(Color{ 76, 92, 54, 255 });
+        option->focus_style.set_color(Color{ 236, 206, 112, 255 });
         if (recompui::Label* label = option->get_label()) {
             label->set_text_transform(recompui::TextTransform::Uppercase);
             label->set_font_size(44.0f);
