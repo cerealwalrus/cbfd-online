@@ -9,6 +9,9 @@ skipped; with none of them the launcher keeps its flat wooden look.
   plank_selected.png  the same, for the option that is selected (the mouse is over it, or the controller is on it).
   arrow.png           a small arrow shown at the left of the selected option (about 80 x 80 pixels).
   title.png           over the top of the screen, centred, about 46% of the screen's width, keeping its shape.
+  plates/             with background.mp4: plate_<name>.png and plate_<name>_selected.png for each option, in the launcher's
+                      order (singleplayer, online, controls, settings, mods, exit), and plate_plain for Version and Add ROM: in place
+                      of the planks, the lettering right of the plate's icon.
   logo.png            with background.mp4: the logo at the top (the background picture's, cut out of it), in place of the title.
   background.mp4      a video for the whole screen behind everything, played without its sound and looped (Windows: its own video
                       decoder plays it). With it background.png isn't used, and the options keep their planks (plank.png).
