@@ -736,7 +736,14 @@ extern "C" void conker_coop_frame(uint8_t* rdram, recomp_context* ctx) {
     // nothing in play is touched (a hit, a fall, a shot while standing). The frames still are counted from the game's own copy of
     // the controller in the game's frame, and start over with the hooks' state (a resync: on every machine at its frame) and with a
     // scene's load, so every machine counts the same.
+    // (0.10.83) the 0.10.82 log: players 2-4 still idled (0x55-0x57, 0x11/0x26/0x29, 0x47/0x49/0x81, 0x19F, the Gameboy 0x171 at
+    // only 250 frames still after the stage's load) as the list missed most of the idle's animations. So now any animation that a
+    // still Conker starts from standing is the idle's, whatever its number: it's taken back to standing at once (the chain that
+    // follows never starts), after his controller has been still for 1.5 s (45 frames), while his health hasn't changed for 2 s
+    // and he isn't down (control block +0x120 0): a hit, a death or anything the game does to a player is left as the game has it.
     static uint32_t still_frames[4] = { 0, 0, 0, 0 };
+    static uint32_t calm_frames[4] = { 0, 0, 0, 0 };
+    static uint8_t last_health[4] = { 0, 0, 0, 0 };
     static uint16_t previous_anim[4] = { 0, 0, 0, 0 };
     static uint32_t still_generation = 0xFFFFFFFFu, still_scene = 0xFFFFFFFFu;
     if (still_generation != conker::netsession::hook_generation() || still_scene != coop_loaded_at.load()) {
@@ -744,6 +751,8 @@ extern "C" void conker_coop_frame(uint8_t* rdram, recomp_context* ctx) {
         still_scene = coop_loaded_at.load();
         for (int k = 0; k < 4; k++) {
             still_frames[k] = 0;
+            calm_frames[k] = 0;
+            last_health[k] = 0;
             previous_anim[k] = 0;
         }
     }
@@ -754,32 +763,29 @@ extern "C" void conker_coop_frame(uint8_t* rdram, recomp_context* ctx) {
             const uint16_t anim = (uint16_t)MEM_HU(0x84, (gpr)(int32_t)object);
             const uint16_t before = previous_anim[k];
             previous_anim[k] = anim;
-            {
-                const uint16_t b = (uint16_t)MEM_HU(0, (gpr)(int32_t)(0x800BE930u + 2u * (uint32_t)k));
-                const int8_t x = (int8_t)MEM_BU(2, (gpr)(int32_t)(0x800BE918u + 6u * (uint32_t)k));
-                const int8_t y = (int8_t)MEM_BU(3, (gpr)(int32_t)(0x800BE918u + 6u * (uint32_t)k));
-                still_frames[k] = (b == 0 && x > -8 && x < 8 && y > -8 && y < 8) ? still_frames[k] + 1 : 0;
-            }
-            const bool from_standing = before == 0x0F || before == 0x0D || before == 0x0E;
-            if (!from_standing || still_frames[k] < 300) {
-                continue;
-            }
-            const bool idle = anim == 0x5E || anim == 0x5F || anim == 0x60 || anim == 0xB3 || anim == 0xFA || (anim >= 0x171 && anim <= 0x17A) ||
-                anim == 0x67 || anim == 0x73 || anim == 0x82 || anim == 0x83 || anim == 0x86 || (anim >= 0x87 && anim <= 0x8A) || anim == 0x9A ||
-                anim == 0x9B || anim == 0xBB;
-            if (!idle || (int32_t)MEM_W(0, (gpr)(int32_t)object) == 0) {
-                continue;
-            }
             const uint16_t buttons = (uint16_t)MEM_HU(0, (gpr)(int32_t)(0x800BE930u + 2u * (uint32_t)k));
             const int8_t stick_x = (int8_t)MEM_BU(2, (gpr)(int32_t)(0x800BE918u + 6u * (uint32_t)k));
             const int8_t stick_y = (int8_t)MEM_BU(3, (gpr)(int32_t)(0x800BE918u + 6u * (uint32_t)k));
-            if (buttons != 0 || stick_x <= -8 || stick_x >= 8 || stick_y <= -8 || stick_y >= 8) {
+            const bool still = buttons == 0 && stick_x > -8 && stick_x < 8 && stick_y > -8 && stick_y < 8;
+            still_frames[k] = still ? still_frames[k] + 1 : 0;
+            const uint8_t health = (uint8_t)MEM_BU(0x1CA, (gpr)(int32_t)object);
+            calm_frames[k] = (health == last_health[k]) ? calm_frames[k] + 1 : 0;
+            last_health[k] = health;
+            const auto standing = [](uint16_t a) { return a == 0x0F || a == 0x0D || a == 0x0E; };
+            if (!still || still_frames[k] < 45 || calm_frames[k] < 60 || !standing(before) || standing(anim)) {
+                continue;
+            }
+            if ((int32_t)MEM_W(0, (gpr)(int32_t)object) == 0 || health == 0) {
+                continue;
+            }
+            const uint32_t control = (uint32_t)MEM_W(0x31C, (gpr)(int32_t)object);
+            if ((control >> 24) != 0x80 || (control & 0x7FFFFFu) >= 0x7FFF00u || (uint8_t)MEM_BU(0x120, (gpr)(int32_t)control) != 0) {
                 continue;
             }
             const recomp_context saved = *ctx;
             ctx->r29 = (gpr)(int32_t)0x80F4C000;   // a stack of ours (local_audio.cpp's, not in use while this runs)
             ctx->r4 = (gpr)(int32_t)object;
-            ctx->r5 = 0x0F;
+            ctx->r5 = 0x0F;   // standing
             ctx->r6 = (gpr)(int32_t)0x3F800000;   // 1.0
             ctx->r7 = (gpr)(int32_t)0x40C00000;   // 6.0
             MEM_W(0x10, ctx->r29) = 0;
@@ -789,11 +795,11 @@ extern "C" void conker_coop_frame(uint8_t* rdram, recomp_context* ctx) {
             *ctx = saved;
             previous_anim[k] = (uint16_t)MEM_HU(0x84, (gpr)(int32_t)object);
             static int logged = 0;
-            if (logged < 20) {
+            if (logged < 40) {
                 logged++;
-                char line[120];
-                std::snprintf(line, sizeof(line), "[coop anim] f=%u player %d: the idle's animation %04X taken back to standing", (unsigned)conker::netsession::frame(),
-                    k + 1, (unsigned)anim);
+                char line[140];
+                std::snprintf(line, sizeof(line), "[coop anim] f=%u player %d: the idle's animation %04X taken back to standing %04X (still %u frames)",
+                    (unsigned)conker::netsession::frame(), k + 1, (unsigned)anim, (unsigned)before, (unsigned)still_frames[k]);
                 conker::netsession::log(line);
             }
         }
