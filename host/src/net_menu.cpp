@@ -20,6 +20,8 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <string>
+#include <vector>
 
 #include "recomp.h"
 
@@ -304,6 +306,8 @@ bool conker::netmenu::boot_screen_held(uint8_t* rdram) {
 namespace {
     bool coop_pending = false;
     bool coop_pending_frame_set = false;
+    bool coop_started = false;   // (0.10.31) the stage was started with two or more players; off at the barrels again
+    int coop_players = 0;
     // The scene table's index (D_80087430, 20 bytes each) of the stage: Zombie Grave Shoot (0.10.29), the graveyard, where Gregg gives
     // Conker the shotgun and the zombies come (scene 0x41, entry 0xD004). (Zombie Fest, the mansion's, is 0xAB.)
     constexpr int16_t coop_stage = 0xA7;
@@ -343,6 +347,8 @@ extern "C" int conker_coop_start(uint8_t* rdram, recomp_context* ctx) {
     const recomp_context saved = *ctx;
     func_151E30C4(rdram, ctx);
     *ctx = saved;
+    coop_started = players >= 2;
+    coop_players = players;
     if (players >= 2) {
         // 0.10.30, stage 2: every player who joined is a player of the stage, each with a Conker of their own (character 0, the
         // one-player game's) and a camera of their own: the scene's request (func_1501C730, mode 6) left with the player mask at
@@ -383,6 +389,7 @@ extern "C" void conker_online_no_back(uint8_t* rdram, recomp_context* ctx) {
         return;
     }
     const gpr gs = (gpr)(int32_t)state;
+    coop_started = false;   // (0.10.31) back in the bar: no co-op stage running
     if (MEM_B(0x3E, gs) != 1) {
         return;
     }
@@ -421,4 +428,76 @@ extern "C" void conker_online_no_back(uint8_t* rdram, recomp_context* ctx) {
             logged++;
         }
     }
+}
+
+bool conker::netmenu::coop_running(uint8_t* rdram) {
+    // (no netsession::active() here: net_session.cpp's input calls this with its lock held; coop_started is only ever set online)
+    if (rdram == nullptr || !coop_started) {
+        return false;
+    }
+    const int32_t scene = (int32_t)MEM_W(0, (gpr)(int32_t)0x800BE9F0);
+    return scene != 0x1D && scene != 0x25;
+}
+
+// 0.10.31, measuring only (stage 3's groundwork): in the co-op stage, the players' characters (gObjects, 0x800CC2D0, 0x32C each) and
+// the players' table (D_800D2138, 524 bytes, func_15085710's) are watched every frame, and a byte that changes is logged for its
+// first four changes only: what changes rarely (a weapon given, a mode set) shows, the positions and animations that change all the
+// time don't. Player 1 is given the shotgun by the stage; player 2 isn't: the difference shows where the game keeps it.
+namespace {
+    constexpr uint32_t coop_objects = 0x800CC2D0;
+    constexpr uint32_t coop_object_size = 0x32C;
+    constexpr uint32_t coop_table = 0x800D2138;
+    constexpr uint32_t coop_table_size = 524;
+    std::vector<uint8_t> coop_last;
+    std::vector<uint8_t> coop_changes;
+    int coop_lines = 0;
+}
+
+extern "C" void conker_coop_frame(uint8_t* rdram) {
+    if (!conker::netsession::active() || !conker::netmenu::coop_running(rdram)) {
+        coop_last.clear();
+        return;
+    }
+    const uint32_t players = (uint32_t)std::min(std::max(coop_players, 1), 4);
+    const uint32_t total = players * coop_object_size + coop_table_size;
+    std::vector<uint8_t> now(total);
+    for (uint32_t i = 0; i < players * coop_object_size; i++) {
+        now[i] = (uint8_t)MEM_BU(0, (gpr)(int32_t)(coop_objects + i));
+    }
+    for (uint32_t i = 0; i < coop_table_size; i++) {
+        now[players * coop_object_size + i] = (uint8_t)MEM_BU(0, (gpr)(int32_t)(coop_table + i));
+    }
+    if (coop_last.size() != total) {
+        coop_last = now;
+        coop_changes.assign(total, 0);
+        char line[120];
+        std::snprintf(line, sizeof(line), "[coop watch] f=%u watching %u players' characters and the players' table", (unsigned)conker::netsession::frame(),
+            (unsigned)players);
+        conker::netsession::log(line);
+        return;
+    }
+    std::string text;
+    for (uint32_t i = 0; i < total && coop_lines < 4000; i++) {
+        if (now[i] == coop_last[i]) {
+            continue;
+        }
+        if (coop_changes[i] < 4) {
+            coop_changes[i]++;
+            char part[48];
+            if (i < players * coop_object_size) {
+                std::snprintf(part, sizeof(part), " p%u+%03X:%02X>%02X", (unsigned)(i / coop_object_size), (unsigned)(i % coop_object_size),
+                    (unsigned)coop_last[i], (unsigned)now[i]);
+            } else {
+                std::snprintf(part, sizeof(part), " tbl+%03X:%02X>%02X", (unsigned)(i - players * coop_object_size), (unsigned)coop_last[i], (unsigned)now[i]);
+            }
+            text += part;
+        }
+    }
+    if (!text.empty()) {
+        for (size_t at = 0; at < text.size(); at += 900) {
+            conker::netsession::log(("[coop watch] f=" + std::to_string(conker::netsession::frame()) + text.substr(at, 900)).c_str());
+            coop_lines++;
+        }
+    }
+    coop_last.swap(now);
 }

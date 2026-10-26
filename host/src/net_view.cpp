@@ -1570,7 +1570,13 @@ void conker::netview::frame_end(uint8_t* rdram, uint32_t list_end) {
     // CONKER_NET_VIEWSLOT=n (a test): every machine shows player n's view, whoever it plays, so that the two machines
     // rewrite their display lists the same way.
     static const int forced_slot = []() { const char* text = SDL_getenv("CONKER_NET_VIEWSLOT"); return text != nullptr ? std::atoi(text) : -1; }();
-    const int local = forced_slot >= 0 ? forced_slot : conker::netsession::local_slot();
+    int local = forced_slot >= 0 ? forced_slot : conker::netsession::local_slot();
+    // 0.10.31: the co-op campaign stage: while a cutscene plays (a slot's byte at D_800C35EA is 1) its camera is the first player's,
+    // so every machine shows the first camera's picture (the second player's own camera was shown: no cutscene there)
+    if (conker::netmenu::coop_running(rdram) &&
+            (MEM_BU(0, (gpr)(int32_t)0x800C35EA) == 1 || MEM_BU(1, (gpr)(int32_t)0x800C35EA) == 1)) {
+        local = 0;
+    }
     if (players <= 1 || players > max_cameras || local < 0 || local >= players) {
         return;
     }

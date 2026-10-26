@@ -262,6 +262,9 @@ namespace conker {
         // Online, the boot's black screen on the way to the multiplayer menu (0.9.80): while it's held, every controller reads as
         // nothing (0.9.81, net_session.cpp's input, online only: it doesn't check).
         bool boot_screen_held(uint8_t* rdram);
+        // 0.10.31: online, the co-op campaign stage (net_menu.cpp, conker_coop_start) is being played, with two or more players: the
+        // online pause menu takes it as a match, and the view shows the first camera's picture while a cutscene plays.
+        bool coop_running(uint8_t* rdram);
     }
 
     // notices.cpp: a line in the top-left corner for a few seconds, one at a time (an unlock, a save state's

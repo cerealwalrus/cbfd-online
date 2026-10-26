@@ -2973,7 +2973,9 @@ void conker::netsession::on_port_read(int port) {
                 last_wait = wait;
             }
         }
-        const bool in_match = ram != nullptr && ram[(0x800BE616u ^ 3u) & 0x7FFFFFu] != 0 && ram[(0x800BEAC0u ^ 3u) & 0x7FFFFFu] == 0;
+        // (0.10.31: and the co-op campaign stage, as a match: the pause menu over it is this player's alone, the game going on)
+        const bool in_match = ram != nullptr && (ram[(0x800BE616u ^ 3u) & 0x7FFFFFu] != 0 || conker::netmenu::coop_running(ram)) &&
+            ram[(0x800BEAC0u ^ 3u) & 0x7FFFFFu] == 0;
         // the controller, as the pause menu wants it: the stick from the stick or the D-pad, the buttons only on the
         // frame they go down
         const auto stick = [](float v, bool minus, bool plus) { return plus ? 80 : minus ? -80 : (int)std::lround(std::max(-1.0f, std::min(1.0f, v)) * 80.0f); };
