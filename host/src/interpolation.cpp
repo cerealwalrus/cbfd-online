@@ -144,6 +144,13 @@ extern "C" void conker_shadow_matrix_group_begin(uint8_t* rdram, recomp_context*
 // drawn in this one either (see the top): handing back where its commands started drops
 // everything it wrote, the group's commands too.
 extern "C" void conker_shadow_matrix_group_end(uint8_t* rdram, recomp_context* ctx) {
+    // (0.10.62) Online co-op: no characters' shadows. The one-player game makes the shadows' silhouettes for one view, so with four
+    // players player 1's machine laid them out of step with the Conkers and the others showed none: everything this camera's
+    // shadow pass wrote is dropped (on every machine alike).
+    if (conker::netsession::active() && conker::netmenu::coop_running(rdram)) {
+        ctx->r2 = shadow_dl_start;
+        return;
+    }
     const auto last = shadow_last_drawn.find(shadow_index);
     const bool back_after_gap = last == shadow_last_drawn.end() || game_frames - last->second > 1;
     shadow_last_drawn[shadow_index] = game_frames;
