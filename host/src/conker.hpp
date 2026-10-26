@@ -12,6 +12,8 @@
 #include <functional>
 #include "librecomp/game.hpp"
 #include "ultramodern/input.hpp"
+
+struct SDL_Window;
 #include "ultramodern/renderer_context.hpp"
 
 namespace recomp::config {
@@ -424,6 +426,12 @@ namespace conker {
         void check_in_background();
         // True once it has found a release newer than this build; the tag and the page to get it from.
         bool newer_available(std::string* tag, std::string* page);
+        // (0.10.44) 0 while the check runs (or before it starts), 1 it reached GitHub and found the newest release, 2 it didn't.
+        int check_state();
+        // (0.10.44) the time GitHub took to answer the check, in ms (its quickest answer), or -1.
+        int answer_time_ms();
+        // (0.10.44) checks again (the launcher's Check for updates), once the last check has finished and nothing is installing.
+        void check_again();
         // This build's version (version.hpp).
         const char* current_version();
         // Windows: whether the newer release has a .zip that start_install can fetch.
@@ -436,6 +444,23 @@ namespace conker {
             std::string message;
         };
         Status status();
+    }
+
+    // window_chrome.cpp (0.10.44): on Windows the launcher's window has no Windows title bar: the launcher draws its own (menu_skin.cpp)
+    // and the window is dragged by it (SDL's hit test). Once the game starts the Windows border is back. CONKER_NATIVE_WINDOW=1 keeps it.
+    namespace window_chrome {
+        // Before the window is made: whether it's borderless, and (fill: it was to open maximized) where it goes, the desktop's work area.
+        bool wanted();
+        bool start_rect(bool fill, int* x, int* y, int* width, int* height);
+        // After it's made.
+        void attach(SDL_Window* window, bool filled);
+        // True while the launcher draws the title bar.
+        bool custom();
+        // From the launcher's buttons (any thread): done on the main thread, in update.
+        void minimize();
+        void toggle_fill();
+        // Every frame, on the main thread (frontend.cpp's update_gfx).
+        void update(bool game_started);
     }
 
     // net_lobby.cpp: the launcher's Online screen (the lobby), see net_session.cpp's lobby functions.

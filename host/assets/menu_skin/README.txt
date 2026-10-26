@@ -15,6 +15,11 @@ skipped; with none of them the launcher keeps its flat wooden look.
   logo.png            with background.mp4: the logo at the top (the background picture's, cut out of it), in place of the title.
   background.mp4      a video for the whole screen behind everything, played without its sound and looped (Windows: its own video
                       decoder plays it). With it background.png isn't used, and the options keep their planks (plank.png).
+  chrome/             the title bar's and status bar's pieces (from the War-Room launcher kit): star.png, minimize.png and
+                      minimize_hover.png, close.png and close_hover.png (each 46 x 34 at 3x), lamp_green/yellow/red.png (the status
+                      lamp with its glow), hazard.png (the yellow and black stripes over the status bar, 7680 x 18). The lettering is
+                      Share Tech Mono (assets/ShareTechMono-Regular.ttf). On Windows the title bar takes the place of the Windows one;
+                      set CONKER_NATIVE_WINDOW=1 to keep the Windows title bar instead.
   background.png      the whole screen behind everything. A 4:3 picture (1448 x 1086) shown in the middle of the window (bars at the
                       sides on a wide screen). With it the launcher lays its options out on the picture's five planks: Start Game,
                       Online, Controls, Settings and Mods sit on them, Exit on a sixth plank added under them, and Version and Add

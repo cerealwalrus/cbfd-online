@@ -14,6 +14,8 @@
 //   background.mp4      (0.10.33) a video for the whole screen, behind everything, played without sound and looped (background_video.cpp).
 //                       With it the background picture isn't used, and the options keep their own planks (plank.png) in the
 //                       launcher's column.
+//   chrome/*.png        (0.10.44) the title bar's and status bar's pieces: star, minimize(_hover), close(_hover), lamp_green/yellow/red,
+//                       hazard (the stripes over the status bar). The bars are drawn whatever else is here (window_chrome.cpp).
 //   background.png      the whole screen, behind everything. It is a 4:3 picture (1448 x 1086) shown 1440 x 1080 dp in the middle of the
 //                       window; with it the options are laid out to sit on its five planks (a sixth is added under them, and Version
 //                       and Add ROM become small buttons in the top-left corner). See the constants below.
@@ -22,7 +24,10 @@
 
 #include <cstdio>
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <filesystem>
+#include <functional>
 #include <fstream>
 #include <iterator>
 #include <string>
@@ -34,6 +39,9 @@
 #include "elements/ui_image.h"
 #include "util/file.h"
 #include "elements/ui_label.h"
+#include "elements/ui_clickable.h"
+
+#include <SDL.h>
 
 #include "conker.hpp"
 
@@ -121,8 +129,346 @@ namespace {
     }
 }
 
+// (0.10.44) The title bar along the top (on Windows, in place of the Windows one: window_chrome.cpp) and the status bar along the
+// bottom, as the War-Room launcher kit's mockup has them: Share Tech Mono lettering, khaki, the values lighter.
+namespace {
+    struct BarButton {
+        recompui::Clickable* button = nullptr;
+        recompui::Image* hover = nullptr;
+        bool showing = false;
+    };
+    BarButton minimize_button, close_button;
+    recompui::Clickable* update_button = nullptr;
+    recompui::Label* link_label = nullptr;
+    recompui::Label* ping_label = nullptr;
+    recompui::Label* update_label = nullptr;
+    recompui::Image* lamps[3] = {};   // green, yellow, red
+    int lamp_shown = -1;
+    std::string link_shown, ping_shown, update_shown;
+    bool update_hover_shown = false;
+    std::atomic<bool> update_clicked{ false };
+    bool user_checked = false;        // the check running was asked for with Check for updates
+    std::chrono::steady_clock::time_point up_to_date_until{};
+    bool update_quit_sent = false;
+    bool bars_made = false;
+
+    constexpr float title_bar_height = 51.0f, hazard_height = 9.0f, status_bar_height = 57.0f;
+    const recompui::Color khaki{ 169, 155, 108, 255 };
+    const recompui::Color hazard_yellow{ 242, 181, 27, 255 };
+
+    recompui::Element* make_div(recompui::Element* parent) {
+        return recompui::get_current_context().create_element<recompui::Element>(parent, 0, "div", false);
+    }
+
+    // the lettering is the program's own, so it can have spans for the lighter values
+    std::string value(const std::string& text) {
+        return "<span style=\"color: #efe4bf;\">" + text + "</span>";
+    }
+
+    recompui::Label* make_text(recompui::Element* parent, const std::string& rml, float letter_spacing) {
+        recompui::Label* label = recompui::get_current_context().create_element<recompui::Label>(parent, std::string(), recompui::LabelStyle::Small);
+        label->set_font_family("Share Tech Mono");
+        label->set_font_size(19.5f);
+        label->set_font_weight(400);
+        label->set_letter_spacing(letter_spacing);
+        label->set_color(khaki);
+        label->set_white_space(recompui::WhiteSpace::Nowrap);
+        label->set_pointer_events(recompui::PointerEvents::None);
+        label->set_text_unsafe(rml);
+        return label;
+    }
+
+    void make_separator(recompui::Element* parent) {
+        recompui::Element* line = make_div(parent);
+        line->set_width(1.5f);
+        line->set_height(24.0f);
+        line->set_background_color(recompui::Color{ 58, 59, 38, 255 });
+    }
+
+    recompui::Image* make_icon(recompui::Element* parent, const std::string& key, float size) {
+        recompui::Image* image = recompui::get_current_context().create_element<recompui::Image>(parent, key);
+        image->set_width(size);
+        image->set_height(size);
+        image->set_pointer_events(recompui::PointerEvents::None);
+        return image;
+    }
+
+    // minimize or close: its picture (69 x 51 dp, from the kit's 46 x 34) and the lit one shown while the mouse is on it
+    BarButton make_window_button(recompui::Element* parent, const std::string& normal, const std::string& lit, std::function<void()> pressed) {
+        BarButton result;
+        result.button = recompui::get_current_context().create_element<recompui::Clickable>(parent);
+        result.button->set_position(recompui::Position::Relative);
+        result.button->set_width(69.0f);
+        result.button->set_height(title_bar_height);
+        result.button->set_focusable(false);   // (not one the d-pad goes to)
+        recompui::Image* image = make_layer(result.button, normal);
+        image->set_top(0);
+        image->set_left(0);
+        image->set_width(100.0f, recompui::Unit::Percent);
+        image->set_height(100.0f, recompui::Unit::Percent);
+        if (!lit.empty()) {
+            result.hover = make_layer(result.button, lit);
+            result.hover->set_top(0);
+            result.hover->set_left(0);
+            result.hover->set_width(100.0f, recompui::Unit::Percent);
+            result.hover->set_height(100.0f, recompui::Unit::Percent);
+            result.hover->display_hide();
+        }
+        result.button->add_clicked_callback([pressed](float, float) { pressed(); });
+        return result;
+    }
+
+    void make_bars(recompui::LauncherMenu* menu) {
+        if (bars_made) {
+            return;
+        }
+        bars_made = true;
+        if (conker::window_chrome::custom()) {
+            recompui::Element* bar = make_div(menu);
+            bar->set_position(recompui::Position::Absolute);
+            bar->set_top(0);
+            bar->set_left(0);
+            bar->set_right(0);
+            bar->set_height(title_bar_height);
+            bar->set_display(recompui::Display::Flex);
+            bar->set_flex_direction(recompui::FlexDirection::Row);
+            bar->set_align_items(recompui::AlignItems::Center);
+            bar->set_padding_left(24.0f);
+            bar->set_gap(15.0f);
+            bar->set_background_color(recompui::Color{ 12, 12, 8, 209 });
+            bar->set_border_bottom_width(1.5f);
+            bar->set_border_bottom_color(recompui::Color{ 44, 45, 28, 255 });
+            StyleAccess::z_index(bar, 100);
+            const std::string star = load("chrome/star");
+            if (!star.empty()) {
+                make_icon(bar, star, 24.0f);
+            }
+            make_text(bar, "FIELD LAUNCHER", 3.5f);
+            recompui::Element* buttons = make_div(bar);
+            buttons->set_display(recompui::Display::Flex);
+            buttons->set_flex_direction(recompui::FlexDirection::Row);
+            buttons->set_margin_left_auto();
+            buttons->set_gap(3.0f);
+            buttons->set_height(title_bar_height);
+            minimize_button = make_window_button(buttons, load("chrome/minimize"), load("chrome/minimize_hover"), []() { conker::window_chrome::minimize(); });
+            close_button = make_window_button(buttons, load("chrome/close"), load("chrome/close_hover"), []() {
+                // as the window's own X did: quits
+                SDL_Event quit;
+                SDL_zero(quit);
+                quit.type = SDL_QUIT;
+                SDL_PushEvent(&quit);
+            });
+        }
+
+        // the status bar: the stripes, then the bar
+        recompui::Element* bottom = make_div(menu);
+        bottom->set_position(recompui::Position::Absolute);
+        bottom->set_left(0);
+        bottom->set_right(0);
+        bottom->set_bottom(0);
+        bottom->set_display(recompui::Display::Flex);
+        bottom->set_flex_direction(recompui::FlexDirection::Column);
+        StyleAccess::z_index(bottom, 100);
+        const std::string hazard = load("chrome/hazard");
+        if (!hazard.empty()) {
+            recompui::Element* strip = make_div(bottom);
+            strip->set_position(recompui::Position::Relative);
+            strip->set_height(hazard_height);
+            strip->set_overflow(recompui::Overflow::Hidden);
+            recompui::Image* stripes = make_layer(strip, hazard);   // 7680 x 18: the kit's stripes, 2560 px wide (3840 dp)
+            stripes->set_top(0);
+            stripes->set_left(0);
+            stripes->set_width(3840.0f);
+            stripes->set_height(hazard_height);
+        }
+        recompui::Element* bar = make_div(bottom);
+        bar->set_height(status_bar_height);
+        bar->set_display(recompui::Display::Flex);
+        bar->set_flex_direction(recompui::FlexDirection::Row);
+        bar->set_align_items(recompui::AlignItems::Center);
+        bar->set_padding_left(30.0f);
+        bar->set_padding_right(30.0f);
+        bar->set_gap(33.0f);
+        bar->set_background_color(recompui::Color{ 10, 10, 7, 230 });
+        bar->set_border_top_width(1.5f);
+        bar->set_border_top_color(recompui::Color{ 44, 45, 28, 255 });
+        {
+            // the lamp: 45 dp pictures (with their glow) for a 15 dp lamp, all in one place, one shown
+            recompui::Element* lamp = make_div(bar);
+            lamp->set_position(recompui::Position::Relative);
+            lamp->set_width(15.0f);
+            lamp->set_height(15.0f);
+            const char* names[3] = { "chrome/lamp_green", "chrome/lamp_yellow", "chrome/lamp_red" };
+            for (int i = 0; i < 3; i++) {
+                const std::string key = load(names[i]);
+                if (key.empty()) {
+                    continue;
+                }
+                lamps[i] = make_layer(lamp, key);
+                lamps[i]->set_left(-15.0f);
+                lamps[i]->set_top(-15.0f);
+                lamps[i]->set_width(45.0f);
+                lamps[i]->set_height(45.0f);
+                lamps[i]->display_hide();
+            }
+        }
+        link_label = make_text(bar, "HQ LINK " + value("CONNECTING"), 2.4f);
+        make_separator(bar);
+        ping_label = make_text(bar, "PING " + value("--"), 2.4f);
+        make_separator(bar);
+        make_text(bar, "NETCODE " + value("UDP"), 2.4f);
+        recompui::Element* right = make_div(bar);
+        right->set_display(recompui::Display::Flex);
+        right->set_flex_direction(recompui::FlexDirection::Row);
+        right->set_align_items(recompui::AlignItems::Center);
+        right->set_margin_left_auto();
+        right->set_gap(33.0f);
+        make_text(right, std::string("BUILD ") + value(std::string("v") + conker::updates::current_version()), 2.4f);
+        make_separator(right);
+        update_button = recompui::get_current_context().create_element<recompui::Clickable>(right);
+        update_button->set_focusable(false);
+        update_button->add_clicked_callback([](float, float) { update_clicked = true; });
+        update_label = make_text(update_button, "CHECK FOR UPDATES", 2.4f);
+        // the check, from the start (once a run; Online started it before)
+        conker::updates::check_in_background();
+    }
+
+    // tags are GitHub's: only letters, digits and dots go into the lettering
+    std::string plain(const std::string& text) {
+        std::string out;
+        for (char c : text) {
+            if ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '.' || c == '-') {
+                out += c;
+            }
+        }
+        return out;
+    }
+
+    void update_bars() {
+        for (BarButton* entry : { &minimize_button, &close_button }) {
+            if (entry->button == nullptr || entry->hover == nullptr) {
+                continue;
+            }
+            const bool lit = entry->button->is_style_enabled(recompui::hover_state);
+            if (lit != entry->showing) {
+                entry->showing = lit;
+                if (lit) {
+                    entry->hover->display_show();
+                }
+                else {
+                    entry->hover->display_hide();
+                }
+            }
+        }
+        if (link_label == nullptr) {
+            return;
+        }
+        std::string tag, page;
+        const int check = conker::updates::check_state();
+        const bool newer = conker::updates::newer_available(&tag, &page);
+        const conker::updates::Status up = conker::updates::status();
+        const bool installable = conker::updates::install_possible();
+
+        if (update_clicked.exchange(false)) {
+            if (up.state == 1 || up.state == 2 || up.state == 4) {
+                // busy
+            }
+            else if (newer && installable) {
+                conker::updates::start_install();
+            }
+            else if (newer) {
+                SDL_OpenURL(page.c_str());
+            }
+            else if (check != 0) {
+                user_checked = true;
+                conker::updates::check_again();
+            }
+        }
+        if (user_checked && conker::updates::check_state() != 0) {
+            user_checked = false;
+            if (!conker::updates::newer_available(nullptr, nullptr) && conker::updates::check_state() == 1) {
+                up_to_date_until = std::chrono::steady_clock::now() + std::chrono::seconds(4);
+            }
+        }
+        if (up.state == 4 && !update_quit_sent) {
+            // the update is ready: the game closes and the script starts the new one (as the Online screen does)
+            update_quit_sent = true;
+            SDL_Event quit;
+            SDL_zero(quit);
+            quit.type = SDL_QUIT;
+            SDL_PushEvent(&quit);
+        }
+
+        const int lamp = check == 0 ? 1 : (check == 1 ? 0 : 2);
+        const std::string link = "HQ LINK " + value(check == 0 ? "CONNECTING" : (check == 1 ? "ONLINE" : "OFFLINE"));
+        const int ms = conker::updates::answer_time_ms();
+        const std::string ping = "PING " + value(check == 1 && ms >= 0 ? std::to_string(ms) + " MS" : "--");
+        std::string update_text;
+        bool update_lit = false;
+        if (up.state == 1) {
+            update_text = "DOWNLOADING " + value(std::to_string(up.percent) + "%");
+        }
+        else if (up.state == 2) {
+            update_text = "CHECKING THE DOWNLOAD";
+        }
+        else if (up.state == 4) {
+            update_text = "RESTARTING TO UPDATE";
+        }
+        else if (up.state == 3 && newer) {
+            update_text = "UPDATE FAILED - " + value("RETRY");
+            update_lit = true;
+        }
+        else if (newer) {
+            update_text = std::string(installable ? "INSTALL UPDATE " : "UPDATE ON GITHUB ") + value(plain(tag));
+            update_lit = true;
+        }
+        else if (check == 0) {
+            update_text = "CHECKING FOR UPDATES";
+        }
+        else if (std::chrono::steady_clock::now() < up_to_date_until) {
+            update_text = "UP TO DATE";
+        }
+        else {
+            update_text = "CHECK FOR UPDATES";
+        }
+        const bool hovered = update_button != nullptr && update_button->is_style_enabled(recompui::hover_state);
+        update_lit = update_lit || hovered;
+
+        if (lamp != lamp_shown) {
+            for (int i = 0; i < 3; i++) {
+                if (lamps[i] != nullptr) {
+                    if (i == lamp) {
+                        lamps[i]->display_show();
+                    }
+                    else {
+                        lamps[i]->display_hide();
+                    }
+                }
+            }
+            lamp_shown = lamp;
+        }
+        if (link != link_shown) {
+            link_label->set_text_unsafe(link);
+            link_shown = link;
+        }
+        if (ping != ping_shown) {
+            ping_label->set_text_unsafe(ping);
+            ping_shown = ping;
+        }
+        if (update_text != update_shown) {
+            update_label->set_text_unsafe(update_text);
+            update_shown = update_text;
+        }
+        if (update_lit != update_hover_shown) {
+            update_label->set_color(update_lit ? hazard_yellow : khaki);
+            update_hover_shown = update_lit;
+        }
+    }
+}
+
 void conker::menu_skin::apply(recompui::LauncherMenu* menu, recompui::GameOptionsMenu* options, const std::vector<recompui::GameOption*>& corner) {
     skinned.clear();
+    make_bars(menu);
     const std::string plank = load("plank");
     const std::string plank_selected = load("plank_selected");
     const std::string arrow = load("arrow");
@@ -142,6 +488,10 @@ void conker::menu_skin::apply(recompui::LauncherMenu* menu, recompui::GameOption
         plain_plate = { load("plates/plate_plain"), load("plates/plate_plain_selected") };
     }
     const bool plates_on = !plates.empty() && !plates[0].first.empty();
+    // (0.10.44) with the plates, everything between the title bar (51 dp) and the status bar (the bottom 68 dp): the logo 504 x 330 dp
+    // from 60 dp down, the plates 553 x 86 from 400 dp down, 100 apart, and the corner buttons from 60 dp down
+    const float plate_top = plates_on ? 400.0f : first_plank_top, plate_height = plates_on ? 86.0f : plank_height;
+    const float plate_width = plates_on ? 553.0f : plank_width, plate_pitch = plates_on ? 100.0f : plank_pitch;
     if (video_on) {
         recompui::Image* image = make_layer(menu->get_background_wrapper(), video_key);
         image->set_top(0);
@@ -151,10 +501,10 @@ void conker::menu_skin::apply(recompui::LauncherMenu* menu, recompui::GameOption
         // (0.10.34) the options laid out as on the picture's planks (each on its own plank.png), under the launcher's title, and
         // Version and Add ROM small buttons in the top-left corner
         options->unset_bottom();
-        options->set_top(first_plank_top - 24.0f);
-        options->set_width(plank_width);
+        options->set_top(plate_top - 24.0f);
+        options->set_width(plate_width);
         options->set_margin_left(plates_on ? 0.0f : plank_centre_offset);   // (where the picture has its planks; the plates in the middle)
-        options->set_gap(plank_pitch - plank_height);
+        options->set_gap(plate_pitch - plate_height);
         // (0.10.36; 0.10.37 the whole sign) the picture's logo over the video, where the picture has it: its pixels 457 to 1046
         // across and 26 to 415 down (of 1448 x 1086, shown 1440 x 1080 dp), so 586 x 387 dp from 26 dp down, its middle 27 dp
         // right of the screen's
@@ -163,8 +513,8 @@ void conker::menu_skin::apply(recompui::LauncherMenu* menu, recompui::GameOption
         if (!logo.empty()) {
             menu->remove_default_title();
             recompui::Image* image = make_layer(menu->get_background_wrapper(), logo);
-            const float logo_width = plates_on ? 600.0f : 586.0f, logo_height = plates_on ? 393.0f : 387.0f;
-            image->set_top(plates_on ? 32.0f : 26.0f);
+            const float logo_width = plates_on ? 504.0f : 586.0f, logo_height = plates_on ? 330.0f : 387.0f;
+            image->set_top(plates_on ? 60.0f : 26.0f);
             image->set_left(50.0f, recompui::Unit::Percent);
             image->set_margin_left((plates_on ? 0.0f : 27.0f) - logo_width / 2.0f);
             image->set_width(logo_width);
@@ -208,7 +558,7 @@ void conker::menu_skin::apply(recompui::LauncherMenu* menu, recompui::GameOption
             // small buttons in the top-left corner (they're out of the column: the menu is where its first plank is)
             option->set_position(recompui::Position::Absolute);
             option->set_left(-470.0f);
-            option->set_top(-420.0f + 56.0f * (float)corner_index++);
+            option->set_top((plates_on ? 60.0f - plate_top : -420.0f) + 56.0f * (float)corner_index++);
             option->set_width(330.0f);
             option->set_padding(6.0f);
             option->set_rotation(0.0f);
@@ -253,8 +603,8 @@ void conker::menu_skin::apply(recompui::LauncherMenu* menu, recompui::GameOption
             option->set_rotation(0.0f);
             option->set_padding(0.0f);
             option->set_margin_bottom(0.0f);
-            option->set_height(layout ? plank_height : 84.0f);
-            option->set_min_height(layout ? plank_height : 84.0f);
+            option->set_height(layout ? plate_height : 84.0f);
+            option->set_min_height(layout ? plate_height : 84.0f);
             if (recompui::Label* label = option->get_label()) {
                 label->set_font_size(40.0f);
             }
@@ -269,7 +619,7 @@ void conker::menu_skin::apply(recompui::LauncherMenu* menu, recompui::GameOption
                 fit_plank(entry.selected, false);
                 entry.selected->display_hide();
             }
-            option->set_padding_left(96.0f);
+            option->set_padding_left(94.0f);
             option->set_padding_right(40.0f);
         }
         if (!own_plate && !plank.empty() && !picture_has_plank) {
@@ -303,6 +653,7 @@ void conker::menu_skin::apply(recompui::LauncherMenu* menu, recompui::GameOption
 
 // Every frame the launcher is up (from update_launcher, with the launcher's context open).
 void conker::menu_skin::update() {
+    update_bars();
     if (video_on) {
         uint32_t width = 0, height = 0;
         if (conker::background_video::take_frame(video_frame, width, height)) {

@@ -37,6 +37,8 @@ namespace {
     std::mutex status_mutex;
     conker::updates::Status install_status;
     std::atomic<bool> installing{ false };
+    // (0.10.44) how long GitHub took to answer the check (its quickest answer, in ms), for the launcher's status bar; -1: none yet
+    std::atomic<int> answer_ms{ -1 };
 
     std::string repo_name() {
         const char* text = SDL_getenv("CONKER_UPDATE_REPO");
@@ -185,8 +187,14 @@ namespace {
                 DWORD feature = WINHTTP_DISABLE_REDIRECTS;
                 WinHttpSetOption(request, WINHTTP_OPTION_DISABLE_FEATURE, &feature, sizeof(feature));
             }
+            const ULONGLONG sent_at = GetTickCount64();
             if (WinHttpSendRequest(request, headers != nullptr ? headers : WINHTTP_NO_ADDITIONAL_HEADERS, headers != nullptr ? (DWORD)-1L : 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) &&
                 WinHttpReceiveResponse(request, nullptr)) {
+                const int took = (int)std::min<ULONGLONG>(GetTickCount64() - sent_at, 99999);
+                const int before = answer_ms.load();
+                if (before < 0 || took < before) {
+                    answer_ms = took;
+                }
                 DWORD status = 0, size = sizeof(status);
                 WinHttpQueryHeaders(request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX, &status, &size, WINHTTP_NO_HEADER_INDEX);
                 answer.status = (int)status;
@@ -369,6 +377,29 @@ bool conker::updates::newer_available(std::string* tag, std::string* page) {
         *page = "https://github.com/" + repo_name() + "/releases/latest";
     }
     return true;
+}
+
+// (0.10.44) the launcher's status bar
+int conker::updates::check_state() {
+    if (!finished.load()) {
+        return 0;
+    }
+    std::lock_guard lock{ result_mutex };
+    return latest_tag.empty() ? 2 : 1;
+}
+
+int conker::updates::answer_time_ms() {
+    return answer_ms.load();
+}
+
+void conker::updates::check_again() {
+    if (!finished.load() || installing.load()) {
+        return;
+    }
+    answer_ms = -1;
+    finished = false;
+    started = false;
+    check_in_background();
 }
 
 const char* conker::updates::current_version() {

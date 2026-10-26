@@ -282,14 +282,26 @@ namespace {
         const int height = conker::frontend::window_height > 0 ? conker::frontend::window_height : 900;
         // 0.10.5: windowed, the window opens maximized (1600 x 900 is its size when it's restored). Not with --window WxH, which asks
         // for that size; in Fullscreen RT64 makes it full screen once it's up, as before.
-        if (conker::frontend::window_width <= 0 || conker::frontend::window_height <= 0) {
+        const bool open_maximized = conker::frontend::window_width <= 0 || conker::frontend::window_height <= 0;
+        // (0.10.44) on Windows the launcher draws its own title bar (window_chrome.cpp): no Windows border, and in place of maximized
+        // the window fills the desktop's work area (a maximized window with no border would cover the taskbar)
+        const bool own_chrome = conker::window_chrome::wanted();
+        int x = SDL_WINDOWPOS_CENTERED, y = SDL_WINDOWPOS_CENTERED, open_width = width, open_height = height;
+        bool filled = false;
+        if (own_chrome) {
+            flags |= SDL_WINDOW_BORDERLESS;
+            filled = conker::window_chrome::start_rect(open_maximized, &x, &y, &open_width, &open_height);
+        }
+        else if (open_maximized) {
             flags |= SDL_WINDOW_MAXIMIZED;
         }
-        window = SDL_CreateWindow(conker::window_title, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-            width, height, flags);
+        window = SDL_CreateWindow(conker::window_title, x, y, open_width, open_height, flags);
         if (window == nullptr) {
             std::fprintf(stderr, "[frontend] SDL_CreateWindow failed: %s\n", SDL_GetError());
             return {};
+        }
+        if (own_chrome) {
+            conker::window_chrome::attach(window, filled);
         }
 #if defined(_WIN32)
         SDL_SysWMinfo info;
@@ -310,6 +322,7 @@ namespace {
 
     void update_gfx(void*) {
         recompinput::handle_events();
+        conker::window_chrome::update(ultramodern::is_game_started());
         conker::texture_packs::update_unpacking();
         conker::fps_counter::update();
         conker::notices::update();
@@ -1220,6 +1233,8 @@ void conker::frontend::init(recomp::GameEntry& game) {
     else {
         recompui::register_primary_font("LilitaOne-Regular.ttf", "Lilita One");
     }
+    // (0.10.44) Share Tech Mono (SIL Open Font License, see assets/ShareTechMono-OFL.txt): the launcher's title and status bars
+    recompui::register_extra_font("ShareTechMono-Regular.ttf");
     apply_conker_theme();
     recompui::register_ui_exports();
     recompinput::players::set_single_player_mode(true);
