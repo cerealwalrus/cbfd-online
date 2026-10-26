@@ -669,6 +669,36 @@ extern "C" void conker_mouse_camera(uint8_t* rdram, recomp_context* ctx) {
         return;
     }
     Orbit& orbit = *picked;
+    // 0.10.20, logging: every camera's mode (+0x0), its flags (+0x84: 0x8 has func_151284C4 start the camera over, func_15128774, each
+    // time a timer at +0x5FE runs out: the teddies' 45 frame snaps, 0.10.19's probe 3 from 15128530), the other words the mode sets
+    // (+0x2C, +0xDC, +0x134), the timer, and the flags of its first 12 modes (+0x88 on), when any of them changes (all four cameras, on
+    // every machine: the same everywhere).
+    if (conker::netsession::active() && camera_index >= 0 && camera_index < 4) {
+        static uint32_t last_sig[4] = {};
+        static int mode_logs = 0;
+        const uint32_t mode = (uint32_t)MEM_HU(0x0, camera);
+        const uint32_t flags = (uint32_t)MEM_W(0x84, camera);
+        uint32_t sig = mode * 2654435761u ^ flags ^ ((uint32_t)MEM_W(0x2C, camera) * 31u) ^ ((uint32_t)MEM_W(0xDC, camera) * 7u) ^ (uint32_t)MEM_W(0x134, camera);
+        for (int k = 0; k < 12; k++) {
+            sig = sig * 33u ^ (uint32_t)MEM_W(0x88 + k * 4, camera);
+        }
+        if (sig != last_sig[camera_index] && mode_logs < 300) {
+            last_sig[camera_index] = sig;
+            mode_logs++;
+            std::string text = "[camera] f=" + std::to_string(conker::netsession::frame()) + " camera " + std::to_string(camera_index) + " (player " +
+                std::to_string((unsigned)MEM_BU(0x23D, camera)) + "): mode " + std::to_string(mode);
+            char part[160];
+            std::snprintf(part, sizeof(part), " flags %08X 2C %08X DC %08X 134 %08X timer %d distance %.0f; the modes' flags:", flags,
+                (unsigned)(uint32_t)MEM_W(0x2C, camera), (unsigned)(uint32_t)MEM_W(0xDC, camera), (unsigned)(uint32_t)MEM_W(0x134, camera),
+                (int)MEM_H(0x5FE, camera), read_float(rdram, camera, 0x374));
+            text += part;
+            for (int k = 0; k < 12; k++) {
+                std::snprintf(part, sizeof(part), " %X", (unsigned)(uint32_t)MEM_W(0x88 + k * 4, camera));
+                text += part;
+            }
+            conker::netsession::log(text.c_str());
+        }
+    }
     // 0.10.10 (to find the 4 player game's camera jumps, the teddies' cameras 1 and 3 pulled right in for a frame or two about every
     // 35 frames): online, this machine's own camera, logged when the eye the view is built from jumps (closer or further from the
     // look-at point by a quarter, or moved 60 more than the look-at point did) and when the orbit starts or stops, with its state.
