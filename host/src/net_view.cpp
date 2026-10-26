@@ -328,6 +328,7 @@ namespace {
         // where this machine's camera's 3D passes and its HUD passes are (each ends where the next pass starts)
         std::vector<std::pair<uint32_t, uint32_t>> segments, hud_segments;
         std::vector<std::pair<uint32_t, uint32_t>> any_hud_segments;   // every camera's HUD passes
+        std::vector<std::array<uint32_t, 3>> any_hud_cameras;           // the same, with each pass's camera (0.10.22)
         // what the game draws after the cameras' 3D passes, for no camera (camera 255): among it each team's health bar, a
         // rectangle for each row of its bricks, at its camera's corner
         std::vector<std::pair<uint32_t, uint32_t>> bar_segments;
@@ -345,6 +346,7 @@ namespace {
             const uint32_t stop = next < frame.size() ? frame[next].gfx : end;
             if (frame[i].kind == 2) {
                 any_hud_segments.push_back({ frame[i].gfx, stop });
+                any_hud_cameras.push_back({ frame[i].gfx, stop, (uint32_t)frame[i].camera });
             }
             if (frame[i].camera != local) {
                 continue;
@@ -1024,6 +1026,48 @@ namespace {
                         }
                     } else {
                         kind_name = "menu: left alone";
+                        // 0.10.22: the war's pause with three or four players. The game draws each camera's score and place ("0 (1st)") at
+                        // the top middle of its quarter, over the pause screen: on the full view all four showed, on every machine. Another
+                        // camera's is hidden (when the pass it is drawn in is known, only from that camera's own HUD pass, so the pause
+                        // screen's pieces are never taken for it) and this machine's goes to the top middle of the full view, as in play.
+                        if (!bar && players >= 3 && width <= 16.5f && height <= 12.5f) {
+                            int pass_camera = -1;
+                            if (!nested) {
+                                for (const auto& item : any_hud_cameras) {
+                                    if (address >= item[0] && address < item[1]) {
+                                        pass_camera = (int)item[2];
+                                    }
+                                }
+                            }
+                            for (int k = 0; k < players; k++) {
+                                const uint32_t record = base + k * camera_size;
+                                const float l = get_float(rdram, record, field_left), r = get_float(rdram, record, field_right);
+                                const float t = get_float(rdram, record, field_top), b = get_float(rdram, record, field_bottom);
+                                if (r - l > 0.75f * (right - left) || !in_rect(l, t, r, b) || cy >= t + 18.0f || std::fabs(cx - 0.5f * (l + r)) >= 40.0f) {
+                                    continue;
+                                }
+                                if (pass_camera >= 0 && pass_camera != k) {
+                                    break;
+                                }
+                                if (k == local) {
+                                    dx = (int32_t)((0.5f * (left + right) - 0.5f * (l + r)) * 4.0f);
+                                    dy = (int32_t)((top - t) * 4.0f);
+                                    kind_name = "menu: score at the top";
+                                } else {
+                                    hide = true;
+                                    kind_name = "menu: other score hidden";
+                                }
+                                break;
+                            }
+                        }
+                    }
+                    static int war_menu_logged = 0;
+                    if (!race_menu && players >= 3 && war_menu_logged < 200) {
+                        char line[160];
+                        std::snprintf(line, sizeof(line), "[net view] pause rect %08X%s: %08X %08X (centre %g,%g, %gx%g)%s %s", address, nested ? " (called)" : "", w0, w1,
+                            cx, cy, width, height, bar ? " bar" : "", kind_name);
+                        conker::netsession::log(line);
+                        war_menu_logged++;
                     }
                     static int race_menu_logged = 0;
                     if (race_menu && race_menu_logged < 120) {
