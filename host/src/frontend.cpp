@@ -518,7 +518,9 @@ namespace {
         // would reach up into the title (Online makes eight).
         options->set_bottom(5.0f, recompui::Unit::Percent);
         recompui::update_game_mod_id(game.mod_game_id);
-        // The runtime has opened the mods by now: turn on the texture pack chosen in the settings.
+        // The runtime has opened the mods by now: the program's own texture pack on if it's just been put there (0.10.40), and
+        // the texture pack chosen in the settings.
+        conker::texture_packs::enable_bundled();
         conker::texture_packs::apply();
         // And unpack the GLideN64 packs not unpacked yet, showing the progress over the launcher.
         conker::texture_packs::unpack_gliden64_packs();
@@ -1215,6 +1217,8 @@ void conker::frontend::init(recomp::GameEntry& game) {
     apply_conker_theme();
     recompui::register_ui_exports();
     recompinput::players::set_single_player_mode(true);
+    // (0.10.40) the texture pack that comes with the program, into the mods folder (before the settings list the packs)
+    conker::texture_packs::install_bundled();
     conker::init_config();
 
     // Texture packs (texture_packs.cpp).

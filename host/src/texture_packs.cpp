@@ -12,6 +12,7 @@
 // choice is applied again when the launcher opens, once the runtime has opened the mods.
 
 #include <algorithm>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -22,6 +23,9 @@
 #include "recompui/config.h"
 #include "recompui/recompui.h"
 #include "recompui/renderer.h"
+
+#include "util/file.h"
+#include "librecomp/game.hpp"
 
 #include "conker.hpp"
 
@@ -134,5 +138,60 @@ void conker::texture_packs::apply() {
     }
     for (size_t i = 0; i < packs.size(); i++) {
         recomp::mods::enable_mod(packs[i].id, choice == first_pack + i);
+    }
+}
+
+namespace {
+    // The pack that comes with the program, its file in assets/packs and its mod id (its mod.json's), and the older copies of it
+    // (any .rtz whose name starts so) that it replaces.
+    const char* const bundled_file = "ConkerBFDReloaded-HD-Icons-v1.3.4-Mansion.rtz";
+    const char* const bundled_id = "conker_hd_icons";
+    const char* const bundled_family = "ConkerBFDReloaded-HD-Icons";
+    bool bundled_just_installed = false;
+}
+
+void conker::texture_packs::install_bundled() {
+    std::error_code ec;
+    const std::filesystem::path source = recompui::file::get_asset_path((std::string("packs/") + bundled_file).c_str());
+    if (!std::filesystem::exists(source, ec)) {
+        return;
+    }
+    const std::filesystem::path mods = recomp::mods::get_mods_directory();
+    const std::filesystem::path target = mods / bundled_file;
+    // the pack last put there (a line in the config folder): if it's this one and the user has since deleted it, it stays deleted
+    const std::filesystem::path record = recomp::get_config_path() / "bundled_texture_pack.txt";
+    std::string installed;
+    {
+        std::ifstream in(record);
+        std::getline(in, installed);
+    }
+    if (std::filesystem::exists(target, ec) || installed == bundled_file) {
+        return;
+    }
+    std::filesystem::create_directories(mods, ec);
+    // an older copy (the same mod id twice would clash): moved to mods/replaced, where the mod loader doesn't look
+    for (const auto& entry : std::filesystem::directory_iterator{ mods, std::filesystem::directory_options::skip_permission_denied, ec }) {
+        const std::filesystem::path& path = entry.path();
+        if (entry.is_regular_file(ec) && path.extension() == ".rtz" && path.filename().string().rfind(bundled_family, 0) == 0 &&
+                path.filename() != bundled_file) {
+            std::filesystem::create_directories(mods / "replaced", ec);
+            std::filesystem::rename(path, mods / "replaced" / path.filename(), ec);
+            std::printf("[packs] %s moved to mods/replaced (the program's own %s replaces it)\n", path.filename().string().c_str(), bundled_file);
+        }
+    }
+    std::filesystem::copy_file(source, target, std::filesystem::copy_options::overwrite_existing, ec);
+    if (ec) {
+        std::printf("[packs] couldn't put %s in the mods folder: %s\n", bundled_file, ec.message().c_str());
+        return;
+    }
+    std::ofstream(record) << bundled_file << "\n";
+    bundled_just_installed = true;
+    std::printf("[packs] %s put in the mods folder\n", bundled_file);
+}
+
+void conker::texture_packs::enable_bundled() {
+    if (bundled_just_installed) {
+        bundled_just_installed = false;
+        recomp::mods::enable_mod(bundled_id, true);
     }
 }

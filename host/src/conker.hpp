@@ -110,6 +110,12 @@ namespace conker {
         // Registers the texture pack content type and .rtz files with the mod loader, and has the mod
         // installer take .htc files.
         void register_type();
+        // 0.10.40: the texture pack that comes with the program (assets/packs: HD Icons, with the barrels' MANSION), put in the mods
+        // folder at startup if it isn't there (once: deleted later, it isn't put back; a newer one that comes replaces it), and an
+        // older copy of it moved out of the way (mods/replaced). Before the settings are made, so the Texture Pack setting lists it.
+        void install_bundled();
+        // At the launcher (the runtime has opened the mods): the pack installed just now is turned on.
+        void enable_bundled();
         // gliden64_packs.cpp: unpacks each GLideN64 texture cache (.htc) in the mods folder not unpacked
         // yet into a pack folder, on a thread of its own, and has the runtime open it.
         void unpack_gliden64_packs();
