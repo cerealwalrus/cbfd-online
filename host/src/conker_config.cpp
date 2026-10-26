@@ -103,7 +103,7 @@ namespace {
             "<recomp-color primary>Off</recomp-color> shows each frame as soon as it's ready, a few milliseconds sooner, "
             "but a fast-moving picture can tear (a line across the screen where two frames meet) unless the monitor has "
             "G-Sync or FreeSync on. Online, each player can choose their own: it changes nothing in the game itself.",
-            vsync_choices, VSync::On);
+            vsync_choices, VSync::Off);   // (0.10.16: Off unless chosen)
     }
 
     // Settings moved to another tab keep their ids, but each tab saves to its own json (<tab id>.json in
@@ -311,7 +311,7 @@ bool conker::model_detail::always_highest() {
 
 bool conker::vsync::enabled() {
     if (!conker::graphics_config_ready()) {
-        return true;
+        return false;
     }
     const auto value = recompui::config::get_graphics_config().get_option_value(vsync_id);
     return static_cast<VSync>(std::get<uint32_t>(value)) == VSync::On;
