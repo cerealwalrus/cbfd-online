@@ -43,6 +43,14 @@ namespace {
         }
     };
 
+    // (0.10.38) and Element's protected set_attribute (the label's inline style, for its outline)
+    struct ElementAccess : recompui::Element {
+        static void attribute(recompui::Element* element, const Rml::String& key, const Rml::String& value) {
+            void (recompui::Element::*set)(const Rml::String&, const Rml::String&) = &ElementAccess::set_attribute;
+            (element->*set)(key, value);
+        }
+    };
+
     struct SkinnedOption {
         recompui::GameOption* option = nullptr;
         recompui::Image* selected = nullptr;
@@ -234,7 +242,7 @@ void conker::menu_skin::apply(recompui::LauncherMenu* menu, recompui::GameOption
             label->set_position(recompui::Position::Relative);
             StyleAccess::z_index(label, 5);
             // (0.10.38) a black outline round the letters on the planks, so they read over the wood and the video
-            label->set_attribute("style", "font-effect: outline(3dp #000000);");
+            ElementAccess::attribute(label, "style", "font-effect: outline(3dp #000000);");
         }
         skinned.push_back(entry);
         index++;
