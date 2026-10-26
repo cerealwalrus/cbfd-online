@@ -731,11 +731,39 @@ extern "C" void conker_coop_frame(uint8_t* rdram, recomp_context* ctx) {
     // start, while his controller is still (a player who moves or is hit plays as the game has it). From the game's own state (the
     // animation, the game's copy of the controller) at the same point of every machine's frame, as the game itself does it
     // (func_1505E650(character, 0x0F, 1.0, 6.0, 0, 0, 0), as func_1506B268 does).
+    // (0.10.82) and only the idle itself: the animation must come straight from standing (0x0F, 0x0D, 0x0E: the game's idle starts
+    // from there) after the controller has been still for 10 s (300 frames; the game's own idle began after about 20 s in the log), so
+    // nothing in play is touched (a hit, a fall, a shot while standing). The frames still are counted from the game's own copy of
+    // the controller in the game's frame, and start over with the hooks' state (a resync: on every machine at its frame) and with a
+    // scene's load, so every machine counts the same.
+    static uint32_t still_frames[4] = { 0, 0, 0, 0 };
+    static uint16_t previous_anim[4] = { 0, 0, 0, 0 };
+    static uint32_t still_generation = 0xFFFFFFFFu, still_scene = 0xFFFFFFFFu;
+    if (still_generation != conker::netsession::hook_generation() || still_scene != coop_loaded_at.load()) {
+        still_generation = conker::netsession::hook_generation();
+        still_scene = coop_loaded_at.load();
+        for (int k = 0; k < 4; k++) {
+            still_frames[k] = 0;
+            previous_anim[k] = 0;
+        }
+    }
     {
         const int count = std::min(std::max(coop_players, 1), 4);
         for (int k = 0; k < count; k++) {
             const uint32_t object = 0x800CC2D0u + (uint32_t)k * 0x32Cu;
             const uint16_t anim = (uint16_t)MEM_HU(0x84, (gpr)(int32_t)object);
+            const uint16_t before = previous_anim[k];
+            previous_anim[k] = anim;
+            {
+                const uint16_t b = (uint16_t)MEM_HU(0, (gpr)(int32_t)(0x800BE930u + 2u * (uint32_t)k));
+                const int8_t x = (int8_t)MEM_BU(2, (gpr)(int32_t)(0x800BE918u + 6u * (uint32_t)k));
+                const int8_t y = (int8_t)MEM_BU(3, (gpr)(int32_t)(0x800BE918u + 6u * (uint32_t)k));
+                still_frames[k] = (b == 0 && x > -8 && x < 8 && y > -8 && y < 8) ? still_frames[k] + 1 : 0;
+            }
+            const bool from_standing = before == 0x0F || before == 0x0D || before == 0x0E;
+            if (!from_standing || still_frames[k] < 300) {
+                continue;
+            }
             const bool idle = anim == 0x5E || anim == 0x5F || anim == 0x60 || anim == 0xB3 || anim == 0xFA || (anim >= 0x171 && anim <= 0x17A) ||
                 anim == 0x67 || anim == 0x73 || anim == 0x82 || anim == 0x83 || anim == 0x86 || (anim >= 0x87 && anim <= 0x8A) || anim == 0x9A ||
                 anim == 0x9B || anim == 0xBB;
@@ -759,6 +787,7 @@ extern "C" void conker_coop_frame(uint8_t* rdram, recomp_context* ctx) {
             MEM_W(0x18, ctx->r29) = 0;
             func_1505E650(rdram, ctx);
             *ctx = saved;
+            previous_anim[k] = (uint16_t)MEM_HU(0x84, (gpr)(int32_t)object);
             static int logged = 0;
             if (logged < 20) {
                 logged++;
