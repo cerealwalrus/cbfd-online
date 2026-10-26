@@ -131,19 +131,20 @@ void conker::menu_skin::apply(recompui::LauncherMenu* menu, recompui::GameOption
         options->unset_bottom();
         options->set_top(first_plank_top - 24.0f);
         options->set_width(plank_width);
+        options->set_margin_left(plank_centre_offset);   // (where the picture has its planks)
         options->set_gap(plank_pitch - plank_height);
-        // (0.10.36) the picture's logo over the video, at the picture's place for it: 617 x 383 dp from 40 dp down, its middle 25 dp
-        // left of the planks' (on the picture it is 26 dp right of the middle and the planks 51)
+        // (0.10.36; 0.10.37 the whole sign) the picture's logo over the video, where the picture has it: its pixels 457 to 1046
+        // across and 26 to 415 down (of 1448 x 1086, shown 1440 x 1080 dp), so 586 x 387 dp from 26 dp down, its middle 27 dp
+        // right of the screen's
         const std::string logo = load("logo");
         if (!logo.empty()) {
             menu->remove_default_title();
-            recompui::Image* image = make_layer(menu, logo);
-            image->set_top(40.0f);
+            recompui::Image* image = make_layer(menu->get_background_wrapper(), logo);
+            image->set_top(26.0f);
             image->set_left(50.0f, recompui::Unit::Percent);
-            image->set_translate_2D(-50.0f, 0.0f, recompui::Unit::Percent);
-            image->set_margin_left(-25.0f);
-            image->set_width(617.0f);
-            image->set_height(383.0f);
+            image->set_margin_left(27.0f - 586.0f / 2.0f);
+            image->set_width(586.0f);
+            image->set_height(387.0f);
         }
     }
     const bool layout = stage || video_on;   // the picture's layout (with the video, every plank is plank.png)
