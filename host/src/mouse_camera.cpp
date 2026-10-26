@@ -51,6 +51,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 
 #include <SDL.h>
@@ -620,6 +621,50 @@ extern "C" void conker_mouse_camera(uint8_t* rdram, recomp_context* ctx) {
         return;
     }
     Orbit& orbit = *picked;
+    // 0.10.10 (to find the 4 player game's camera jumps, the teddies' cameras 1 and 3 pulled right in for a frame or two about every
+    // 35 frames): online, this machine's own camera, logged when the eye the view is built from jumps (closer or further from the
+    // look-at point by a quarter, or moved 60 more than the look-at point did) and when the orbit starts or stops, with its state.
+    if (conker::netsession::active() && camera_index == conker::netsession::local_slot()) {
+        static bool have_last = false;
+        static float last_eye[3] = {}, last_look[3] = {};
+        static int jump_logs = 0;
+        static bool was_engaged = false;
+        float eye[3], look[3];
+        for (int i = 0; i < 3; i++) {
+            eye[i] = read_float(rdram, camera, 0x2F8 + i * 4);
+            look[i] = read_float(rdram, camera, 0x2BC + i * 4);
+        }
+        auto gap = [](const float* a, const float* b) {
+            return std::sqrt((a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1]) + (a[2] - b[2]) * (a[2] - b[2]));
+        };
+        const float distance_now = gap(eye, look);
+        const float horizontal = read_float(rdram, camera, 0x374);
+        const float height = read_float(rdram, camera, 0x344) - (look[1] - read_float(rdram, camera, 0x2A8));
+        const float game_distance = std::sqrt(horizontal * horizontal + height * height);
+        const bool engaged_now = orbit.engaged && orbit.follow_camera_ran && !orbit.look_mode_ran;
+        if (have_last && jump_logs < 400) {
+            const float distance_was = gap(last_eye, last_look);
+            const float eye_moved = gap(eye, last_eye), look_moved = gap(look, last_look);
+            const bool jump = eye_moved - look_moved > 60.0f || std::fabs(distance_now - distance_was) > std::max(40.0f, 0.25f * distance_was);
+            if (jump || engaged_now != was_engaged) {
+                jump_logs++;
+                char line[420];
+                std::snprintf(line, sizeof(line),
+                    "[camera] f=%u camera %d %s: eye moved %.0f (look-at %.0f), distance %.0f -> %.0f; orbit %s, placed %d (collision moved it %.0f), "
+                    "follow %d look %d c-turn %d moved %d, game's distance %.0f, wanted %.0f shown %.0f tight %.0f wall %.0f/%d contact %d smooth %d resting %d, 23C %u",
+                    conker::netsession::frame(), camera_index, jump ? "jump" : (engaged_now ? "orbit on" : "orbit off"), eye_moved, look_moved, distance_was, distance_now,
+                    orbit.engaged ? "engaged" : "off", orbit.placed ? 1 : 0, orbit.placed ? gap(eye, orbit.placed_eye) : 0.0f,
+                    orbit.follow_camera_ran ? 1 : 0, orbit.look_mode_ran ? 1 : 0, orbit.c_turning ? 1 : 0, orbit.moved ? 1 : 0, game_distance,
+                    orbit.wanted, orbit.shown, orbit.tight, orbit.wall, orbit.wall_frames, orbit.contact ? 1 : 0, orbit.smooth_frames, orbit.resting ? 1 : 0,
+                    (unsigned)MEM_BU(0x23C, camera));
+                conker::netsession::log(line);
+            }
+        }
+        was_engaged = engaged_now;
+        have_last = true;
+        std::memcpy(last_eye, eye, sizeof(eye));
+        std::memcpy(last_look, look, sizeof(look));
+    }
     if (!orbit.follow_camera_ran || orbit.look_mode_ran) {
         orbit.engaged = false;
         orbit.aim = 0.0f;
