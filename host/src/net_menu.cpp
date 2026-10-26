@@ -299,6 +299,39 @@ bool conker::netmenu::boot_screen_held(uint8_t* rdram) {
     return scene == 0x25 || scene == 0x1D;
 }
 
+// 0.10.28: co-op (stage 1). Set by A on BACK (conker_online_no_back), off again once back at the barrels, zoomed out.
+namespace {
+    bool coop_pending = false;
+    bool coop_pending_frame_set = false;
+    // The scene table's index (D_80087430, 20 bytes each) of the stage: Zombie Fest (scene 0x3C, the mansion with the shotgun's zombies).
+    // (Zombie Grave Shoot, the graveyard's, is 0xA7.)
+    constexpr int16_t coop_stage = 0xAB;
+}
+
+extern "C" void func_151E30C4(uint8_t* rdram, recomp_context* ctx);
+
+// 0.10.28: the race lobby's start (func_151E4314, the mode's opening scene, or func_151E2834, the match: hook at each's entry), with a
+// co-op start asked for: the one-player game's start from the Chapters menu instead, func_151E30C4 with D_8008FDB4 1 (a scene from the
+// table) and D_8008FDAC the stage's index, as the Chapters menu leaves them. Every machine at the same frame (the game's state). Returns
+// 1 when it has started it (the function hooked then returns at once).
+extern "C" int conker_coop_start(uint8_t* rdram, recomp_context* ctx) {
+    if (!conker::netsession::active() || !coop_pending) {
+        return 0;
+    }
+    coop_pending = false;
+    MEM_B(0, (gpr)(int32_t)0x8008FDB4) = 1;
+    MEM_H(0, (gpr)(int32_t)0x8008FDAC) = coop_stage;
+    MEM_B(0, (gpr)(int32_t)0x8008FD74) = 3;
+    const recomp_context saved = *ctx;
+    func_151E30C4(rdram, ctx);
+    *ctx = saved;
+    char line[120];
+    std::snprintf(line, sizeof(line), "[coop] the race's start: the campaign stage (table %02X, scene %02X) instead", (unsigned)coop_stage,
+        (unsigned)MEM_W(0, (gpr)(int32_t)0x800BE9F4));
+    conker::netsession::log(line);
+    return 1;
+}
+
 // 0.9.82: online, the multiplayer barrels' BACK leads nowhere (the one-player game is out of reach from an online game). Hook at the
 // entry of func_151E6C1C, the barrels' camera, which acts on the menu's buttons of the frame (gs+0x20, the bar's: 0x10 A or Start, 0x20
 // B). With the multiplayer barrels (gs+0x3E 1): on BACK (gs+0x2B 0) A and B are taken out, so it isn't zoomed into (which turns the
@@ -319,6 +352,22 @@ extern "C" void conker_online_no_back(uint8_t* rdram, recomp_context* ctx) {
     }
     const uint16_t buttons = (uint16_t)MEM_HU(0x20, gs);
     uint16_t kept = buttons;
+    const bool zoomed_out = boot_float(rdram, state + 0x8) == 0.0f;
+    if (zoomed_out && !coop_pending_frame_set) {
+        coop_pending = false;   // back at the barrels: a co-op start asked for before is off
+    }
+    coop_pending_frame_set = false;
+    if (MEM_B(0x2B, gs) == 0 && zoomed_out && (buttons & 0x10u) != 0 && boot_float(rdram, state + 0x0) == 0.0f &&
+            boot_float(rdram, state + 0x4) == 0.0f && boot_float(rdram, state + 0xC) == 0.0f) {
+        // 0.10.28: co-op. A (or Start) on BACK, the barrels still: the RACE barrel's lobby (barrel 7, the race's screens, its character
+        // select with every player) as the placeholder lobby, and its start goes to the one-player campaign's scene instead
+        // (conker_coop_start). The A is the player's own press, kept: the game zooms into the RACE barrel with it.
+        coop_pending = true;
+        coop_pending_frame_set = true;
+        MEM_B(0x2B, gs) = 7;
+        conker::netsession::log("[coop] A on BACK: the race's lobby, for the co-op campaign stage");
+        return;
+    }
     if (MEM_B(0x2B, gs) == 0) {
         kept &= (uint16_t)~0x30u;
     }
