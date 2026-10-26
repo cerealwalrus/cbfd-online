@@ -1987,3 +1987,8 @@ extern "C" void conker_player_visibility(uint8_t* rdram, recomp_context* ctx, in
         ctx->r2 = (gpr)(int64_t)(int32_t)(product != 0xFE01u ? (product >> 8) : 0xFFu);
     }
 }
+
+std::mutex& conker::netview::render_mutex() {
+    static std::mutex m;
+    return m;
+}

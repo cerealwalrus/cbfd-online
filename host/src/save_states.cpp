@@ -220,6 +220,7 @@ namespace {
             const bool timed_out = clock::now() - net_job->at > net_gives_up_after;
             bool done = false;
             if (ultramodern::save_states::is_quiet() && !conker::netview::busy()) {
+                std::lock_guard<std::mutex> render_lock(conker::netview::render_mutex());   // (0.10.79) not while a list is drawn
                 std::string error;
                 if (net_job->save) {
                     ok = recomp::save_states::capture(rdram, net_job->state, error);
@@ -311,7 +312,9 @@ namespace {
         }
 
         std::string error;
+        std::unique_lock<std::mutex> render_lock(conker::netview::render_mutex());   // (0.10.79) not while a list is drawn
         const recomp::save_states::LoadResult result = recomp::save_states::restore(rdram, load_state, error);
+        render_lock.unlock();
         switch (result) {
             case recomp::save_states::LoadResult::Loaded:
                 log_line("[load] slot %d loaded after %u tries", request_slot, attempts);

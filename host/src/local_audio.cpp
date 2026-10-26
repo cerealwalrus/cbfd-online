@@ -465,12 +465,8 @@ namespace {
         if (conker::netmenu::coop_running(rdram)) {
             const uint32_t sound = (uint32_t)ctx->r5 & 0xFFFFu;
             if (gameboy_sound(sound)) {
-                const uint32_t object = word(rdram, (uint32_t)ctx->r29 + 0x24);
-                const int player = character_player(rdram, owner_of(rdram, object, sound));
-                if (player != conker::netsession::local_slot()) {
-                    ctx->r6 = 0;
-                    return;
-                }
+                ctx->r6 = 0;   // (0.10.79: every player's, this player's own too: the Gameboy isn't heard in co-op)
+                return;
             }
         }
         const uint32_t sp = (uint32_t)ctx->r29;

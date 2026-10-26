@@ -609,6 +609,7 @@ namespace {
                 }
                 return;
             }
+            std::lock_guard<std::mutex> render_lock(conker::netview::render_mutex());
             conker::netview::render_begin(rdram, (uint32_t)task->t.data_ptr);
             real->send_dl(task);
             conker::netview::render_done(rdram, (uint32_t)task->t.data_ptr);

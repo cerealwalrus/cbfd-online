@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <memory>
 #include <span>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -500,6 +501,9 @@ namespace conker {
 
     // net_view.cpp: the full-screen view online.
     namespace netview {
+        // (0.10.79) held while the renderer reads a task's display list (frontend.cpp) and while a snapshot is taken or loaded
+        // (save_states.cpp): a resync's load replaced the memory under the renderer as it read a list, which crashed it
+        std::mutex& render_mutex();
         // Around the frame's drawing (the hooks in func_1501878C), and at every port read.
         void frame_begin(uint8_t* rdram);
         void frame_end(uint8_t* rdram, uint32_t list_end);
