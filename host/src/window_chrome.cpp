@@ -102,6 +102,23 @@ namespace {
         return area;
     }
 
+    void minimize_now() {
+#if defined(_WIN32)
+        if (window_handle != nullptr) {
+            ReleaseCapture();
+            ShowWindow(window_handle, SW_MINIMIZE);
+            const bool iconic = IsIconic(window_handle) != 0;
+            std::printf("[window] minimizing: %s (style 0x%llx)\n", iconic ? "done" : "Windows didn't",
+                (unsigned long long)GetWindowLongPtr(window_handle, GWL_STYLE));
+            if (iconic) {
+                return;
+            }
+        }
+#endif
+        SDL_MinimizeWindow(chrome_window);
+        std::printf("[window] minimizing (SDL): %s\n", (SDL_GetWindowFlags(chrome_window) & SDL_WINDOW_MINIMIZED) != 0 ? "done" : "not yet");
+    }
+
     void set_filled(bool fill) {
         const SDL_Rect area = work_area(SDL_GetWindowDisplayIndex(chrome_window));
         if (fill) {
@@ -185,6 +202,15 @@ void conker::window_chrome::update(bool game_started, bool settings_full_screen)
         return;
     }
     const Uint32 flags = SDL_GetWindowFlags(chrome_window);
+    {
+        // (0.10.48) the log says when it's minimized and back, to see what brings it back if something does
+        static bool was_minimized = false;
+        const bool minimized = (flags & SDL_WINDOW_MINIMIZED) != 0;
+        if (minimized != was_minimized) {
+            was_minimized = minimized;
+            std::printf("[window] %s\n", minimized ? "minimized" : "shown again");
+        }
+    }
     if (game_started) {
         // the Windows border back for the game
         restored = true;
@@ -216,12 +242,9 @@ void conker::window_chrome::update(bool game_started, bool settings_full_screen)
     }
     if (full_screen(chrome_window)) {
         // (full screen: minimize still works, maximize / restore doesn't apply)
-        if (minimize_wanted.exchange(false)) {
-#if defined(_WIN32)
-            if (window_handle != nullptr) {
-                PostMessageW(window_handle, WM_SYSCOMMAND, SC_MINIMIZE, 0);
-            }
-#endif
+        if (minimize_wanted.load() && (SDL_GetGlobalMouseState(nullptr, nullptr) & SDL_BUTTON_LMASK) == 0) {
+            minimize_wanted = false;
+            minimize_now();
         }
         toggle_wanted = false;
         return;
@@ -239,18 +262,11 @@ void conker::window_chrome::update(bool game_started, bool settings_full_screen)
         SDL_RestoreWindow(chrome_window);
         set_filled(true);
     }
-    if (minimize_wanted.exchange(false)) {
-        // (0.10.45) as the taskbar does it: Windows' own minimize command
-        std::printf("[window] minimizing\n");
-#if defined(_WIN32)
-        if (window_handle != nullptr) {
-            PostMessageW(window_handle, WM_SYSCOMMAND, SC_MINIMIZE, 0);
-        }
-        else
-#endif
-        {
-            SDL_MinimizeWindow(chrome_window);
-        }
+    // (0.10.48) once the mouse button is let go (the button acts on the press, and the window has the mouse captured while it's
+    // held), minimized straight away by Windows (ShowWindow, which doesn't depend on the window's style); if it still isn't, SDL's way
+    if (minimize_wanted.load() && (SDL_GetGlobalMouseState(nullptr, nullptr) & SDL_BUTTON_LMASK) == 0) {
+        minimize_wanted = false;
+        minimize_now();
     }
     if (toggle_wanted.exchange(false) && (flags & SDL_WINDOW_MINIMIZED) == 0) {
         set_filled(!filled.load());

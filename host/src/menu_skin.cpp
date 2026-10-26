@@ -163,6 +163,10 @@ namespace {
     std::chrono::steady_clock::time_point toast_until{};
     bool toast_showing = false;
     bool newer_announced = false;
+    recompui::Clickable* toast_close = nullptr;
+    recompui::Image* toast_close_images[2] = {};   // normal, lit
+    bool toast_close_lit = false;
+    std::atomic<bool> toast_close_pressed{ false };
     bool bars_made = false;
 
     constexpr float title_bar_height = 51.0f, hazard_height = 9.0f, status_bar_height = 57.0f;
@@ -366,49 +370,76 @@ namespace {
         update_button->add_pressed_callback([](float, float) { update_clicked = true; });
         update_label = make_text(update_button, "CHECK FOR UPDATES", 2.4f);
 
-        // (0.10.47) the transmission: the kit's update bar (610 x 66 at 2x), 780 x 78 dp, above the status bar at the right
-        const std::string transmission = load("chrome/transmission");
+        // (0.10.47) the transmission, above the status bar at the right
+        // (0.10.48: narrower, 460 dp, drawn as the kit's .transmission is, so it isn't a stretched picture: dark, a thin olive border
+        // and a thick hazard yellow one at the left; the message wraps; a small close button at its top right)
         toast = make_div(menu);
         toast->set_position(recompui::Position::Absolute);
         toast->set_right(40.0f);
         toast->set_bottom(hazard_height + status_bar_height + 24.0f);
-        toast->set_width(780.0f);
-        toast->set_height(78.0f);
+        toast->set_width(460.0f);
+        toast->set_height_auto();
+        toast->set_background_color(recompui::Color{ 30, 31, 21, 245 });
+        toast->set_border_width(1.5f);
+        toast->set_border_color(recompui::Color{ 75, 77, 47, 255 });
+        toast->set_border_left_width(9.0f);
+        toast->set_border_left_color(hazard_yellow);
         toast->set_pointer_events(recompui::PointerEvents::None);
         StyleAccess::z_index(toast, 101);
-        if (!transmission.empty()) {
-            recompui::Image* back = make_layer(toast, transmission);
-            back->set_top(0);
-            back->set_left(0);
-            back->set_width(100.0f, recompui::Unit::Percent);
-            back->set_height(100.0f, recompui::Unit::Percent);
-        }
-        else {
-            toast->set_background_color(recompui::Color{ 30, 31, 20, 240 });
-        }
         recompui::Element* row = make_div(toast);
         row->set_position(recompui::Position::Relative);
         row->set_display(recompui::Display::Flex);
         row->set_flex_direction(recompui::FlexDirection::Row);
         row->set_align_items(recompui::AlignItems::Center);
-        row->set_height(100.0f, recompui::Unit::Percent);
-        row->set_padding_left(30.0f);
-        row->set_padding_right(24.0f);
-        row->set_gap(20.0f);
+        row->set_padding_top(14.0f);
+        row->set_padding_bottom(14.0f);
+        row->set_padding_left(18.0f);
+        row->set_padding_right(44.0f);   // (room for the close button)
+        row->set_gap(16.0f);
         const std::string icon = load("chrome/update");
         if (!icon.empty()) {
-            make_icon(row, icon, 50.0f);
+            recompui::Image* image = make_icon(row, icon, 44.0f);
+            image->set_flex_shrink(0.0f);
         }
         recompui::Element* lines = make_div(row);
         lines->set_display(recompui::Display::Flex);
         lines->set_flex_direction(recompui::FlexDirection::Column);
+        lines->set_flex(1.0f, 1.0f, 0.0f);
         lines->set_gap(4.0f);
-        toast_header = make_text(lines, "INCOMING TRANSMISSION", 3.0f);
+        toast_header = make_text(lines, "INCOMING TRANSMISSION", 2.0f);
         toast_header->set_font_family("Black Ops One");
-        toast_header->set_font_size(22.0f);
+        toast_header->set_font_size(19.0f);
         toast_header->set_color(hazard_yellow);
-        toast_message = make_text(lines, "", 1.5f);
+        toast_message = make_text(lines, "", 1.2f);
+        toast_message->set_font_size(18.0f);
+        toast_message->set_white_space(recompui::WhiteSpace::Normal);
         toast_message->set_color(recompui::Color{ 239, 228, 191, 255 });
+        {
+            // the close button: the title bar's, small (30 x 22 dp)
+            toast_close = recompui::get_current_context().create_element<recompui::Clickable>(toast);
+            toast_close->set_position(recompui::Position::Absolute);
+            toast_close->set_top(6.0f);
+            toast_close->set_right(6.0f);
+            toast_close->set_width(30.0f);
+            toast_close->set_height(22.0f);
+            toast_close->set_pointer_events(recompui::PointerEvents::Auto);   // (the transmission itself lets the mouse through)
+            toast_close->set_focusable(false);
+            for (int i = 0; i < 2; i++) {
+                const std::string key = load(i == 0 ? "chrome/close" : "chrome/close_hover");
+                if (key.empty()) {
+                    continue;
+                }
+                toast_close_images[i] = make_layer(toast_close, key);
+                toast_close_images[i]->set_top(0);
+                toast_close_images[i]->set_left(0);
+                toast_close_images[i]->set_width(100.0f, recompui::Unit::Percent);
+                toast_close_images[i]->set_height(100.0f, recompui::Unit::Percent);
+                if (i == 1) {
+                    toast_close_images[i]->display_hide();
+                }
+            }
+            toast_close->add_pressed_callback([](float, float) { toast_close_pressed = true; });
+        }
         toast->set_display(recompui::Display::None);
         // the check, from the start (once a run; Online started it before)
         conker::updates::check_in_background();
@@ -516,20 +547,35 @@ namespace {
             std::string found_tag;
             if (conker::updates::newer_available(&found_tag, nullptr)) {
                 newer_announced = true;
-                show_toast("INCOMING TRANSMISSION", "NEW UPDATE AVAILABLE: " + plain(found_tag) + " - CLICK INSTALL UPDATE");
+                show_toast("INCOMING TRANSMISSION", "UPDATE " + plain(found_tag) + " IS OUT - CLICK INSTALL UPDATE");
             }
             else if (conker::updates::check_state() == 1) {
                 up_to_date_until = std::chrono::steady_clock::now() + std::chrono::seconds(4);
-                show_toast("HQ REPORTS", std::string("YOU'RE UP TO DATE - v") + conker::updates::current_version() + " IS THE LATEST");
+                show_toast("HQ REPORTS", std::string("YOU'RE UP TO DATE - v") + conker::updates::current_version());
             }
             else {
-                show_toast("NO SIGNAL", "COULDN'T REACH GITHUB TO CHECK FOR UPDATES");
+                show_toast("NO SIGNAL", "COULDN'T REACH GITHUB");
             }
         }
         else if (newer && !newer_announced && up.state == 0) {
             // found by the check as the launcher started
             newer_announced = true;
-            show_toast("INCOMING TRANSMISSION", "NEW UPDATE AVAILABLE: " + plain(tag) + " - CLICK INSTALL UPDATE");
+            show_toast("INCOMING TRANSMISSION", "UPDATE " + plain(tag) + " IS OUT - CLICK INSTALL UPDATE");
+        }
+        if (toast_close != nullptr) {
+            const bool lit = toast_close->is_style_enabled(recompui::hover_state);
+            if (lit != toast_close_lit && toast_close_images[1] != nullptr) {
+                toast_close_lit = lit;
+                if (lit) {
+                    toast_close_images[1]->display_show();
+                }
+                else {
+                    toast_close_images[1]->display_hide();
+                }
+            }
+        }
+        if (toast_close_pressed.exchange(false)) {
+            toast_until = std::chrono::steady_clock::now();
         }
         if (toast_showing && std::chrono::steady_clock::now() >= toast_until) {
             toast_showing = false;
