@@ -630,30 +630,45 @@ extern "C" void conker_coop_frame(uint8_t* rdram, recomp_context* ctx) {
             }
         }
     }
-    // (0.10.54, measuring, the zombies) every 60 frames, the other characters (gObjects 4-24 in use: +0 not 0): each one's type (+4),
-    // the character it's after (+0x222, an index into gObjects: 0 is player 1's Conker), its state (+0x232) and where it is (+0x14, +0x1C)
-    if (conker::netsession::frame() % 60 == 0) {
-        std::string text;
-        const int first = std::min(std::max(coop_players, 1), 4);
-        for (int k = first; k < 25; k++) {
+    // (0.10.57, measuring, the zombies) 0.10.56's log: no character but the players' in gObjects (the zombies aren't characters there). So
+    // every 300 frames the game's memory (the first 8 MB) is searched for the players' characters' addresses (0x800CC2D0 + 0x32C each),
+    // where something keeps a pointer to one: a zombie after player 1 would hold player 1's; a global the one-player game's enemies
+    // read Conker through would show at a fixed address. Each address found once (up to 80 for each player), with the word before
+    // and the two after it.
+    if (conker::netsession::frame() % 300 == 0) {
+        const int count = std::min(std::max(coop_players, 1), 4);
+        for (int search = 0; search < count * 2; search++) {
+            // (each player's character, then each one's control block, +0x31C's)
+            const int k = search % count;
             const uint32_t object = 0x800CC2D0u + (uint32_t)k * 0x32Cu;
-            if (MEM_BU(0, (gpr)(int32_t)object) == 0) {
+            const uint32_t wanted = search < count ? object : (uint32_t)MEM_W(0x31C, (gpr)(int32_t)object);
+            if ((wanted >> 24) != 0x80) {
                 continue;
             }
-            const uint32_t xw = (uint32_t)MEM_W(0x14, (gpr)(int32_t)object), zw = (uint32_t)MEM_W(0x1C, (gpr)(int32_t)object);
-            float x, z;
-            std::memcpy(&x, &xw, 4);
-            std::memcpy(&z, &zw, 4);
-            char part[96];
-            std::snprintf(part, sizeof(part), " [%d t%08X tg%d st%02X %.0f,%.0f]", k, (unsigned)(uint32_t)MEM_W(4, (gpr)(int32_t)object),
-                (int)(int8_t)MEM_B(0x222, (gpr)(int32_t)object), (unsigned)MEM_BU(0x232, (gpr)(int32_t)object), x, z);
-            text += part;
-        }
-        static std::string last_text;
-        if (text != last_text) {
-            last_text = text;
-            for (size_t at = 0; at < text.size(); at += 900) {
-                conker::netsession::log(("[coop objects] f=" + std::to_string(conker::netsession::frame()) + text.substr(at, 900)).c_str());
+            std::string text;
+            int found = 0;
+            for (uint32_t address = 0x80000000u; address < 0x80800000u && found < 80; address += 4) {
+                if ((uint32_t)MEM_W(0, (gpr)(int32_t)address) != wanted) {
+                    continue;
+                }
+                if (address >= 0x800CC2D0u && address < 0x800CC2D0u + 25u * 0x32Cu && search < count) {
+                    continue;   // (inside the characters themselves)
+                }
+                char part[64];
+                std::snprintf(part, sizeof(part), " %08X(%08X,%08X,%08X)", (unsigned)address, (unsigned)(uint32_t)MEM_W(-4, (gpr)(int32_t)address),
+                    (unsigned)(uint32_t)MEM_W(4, (gpr)(int32_t)address), (unsigned)(uint32_t)MEM_W(8, (gpr)(int32_t)address));
+                text += part;
+                found++;
+            }
+            for (size_t at = 0; at < text.size() || at == 0; at += 900) {
+                char head[80];
+                std::snprintf(head, sizeof(head), "[coop find] f=%u player %d's %s %08X:%s", (unsigned)conker::netsession::frame(), k + 1,
+                    search < count ? "character" : "control block", (unsigned)wanted,
+                    text.empty() ? " nowhere" : "");
+                conker::netsession::log((std::string(head) + text.substr(std::min(at, text.size()), 900)).c_str());
+                if (text.empty()) {
+                    break;
+                }
             }
         }
     }
