@@ -478,3 +478,16 @@ index a60c585..9650a6b 100644
              }
  
              // Process grid navigation if retained_grid_index is valid and grid navs are different.
+diff --git a/recompui/src/renderer/ui_renderer.cpp b/recompui/src/renderer/ui_renderer.cpp
+--- a/recompui/src/renderer/ui_renderer.cpp
++++ b/recompui/src/renderer/ui_renderer.cpp
+@@ -678,7 +678,8 @@
+         while (image_from_bytes_queue.try_dequeue(image_from_bytes)) {
+             // We can move the name into the map since the name in the actual entry is no longer needed.
+             // After that, move the entry itself into the map.
+-            image_from_bytes_map.emplace(std::move(image_from_bytes.name), std::move(image_from_bytes));
++            // (Conker: an image queued again under the same name replaces the one there, for the launcher's background video.)
++            image_from_bytes_map.insert_or_assign(std::move(image_from_bytes.name), std::move(image_from_bytes));
+         }
+     }
+ };

@@ -6,6 +6,9 @@
 //   plank_selected.png  behind the option that is selected (hover or focus)
 //   arrow.png           at the left of the selected option
 //   title.png           over the top of the screen, centred (replaces the default title)
+//   background.mp4      (0.10.33) a video for the whole screen, behind everything, played without sound and looped (background_video.cpp).
+//                       With it the background picture isn't used, and the options keep their own planks (plank.png) in the
+//                       launcher's column.
 //   background.png      the whole screen, behind everything. It is a 4:3 picture (1448 x 1086) shown 1440 x 1080 dp in the middle of the
 //                       window; with it the options are laid out to sit on its five planks (a sixth is added under them, and Version
 //                       and Add ROM become small buttons in the top-left corner). See the constants below.
@@ -45,6 +48,10 @@ namespace {
         bool showing = false;
     };
     std::vector<SkinnedOption> skinned;
+    // (0.10.33) the background video's picture in the UI's image store, given each new frame
+    const std::string video_key = "?/conker/skin/video";
+    bool video_on = false;
+    std::vector<char> video_frame;
 
     // The image's key in the UI's image store, or empty if there's no such file.
     std::string load(const char* name) {
@@ -107,8 +114,17 @@ void conker::menu_skin::apply(recompui::LauncherMenu* menu, recompui::GameOption
     const std::string plank_selected = load("plank_selected");
     const std::string arrow = load("arrow");
     const std::string title = load("title");
-    const std::string background = load("background");
+    // (0.10.33) a background video, if there's one and it plays, in place of the background picture
+    video_on = conker::background_video::start(recompui::file::get_asset_path("menu_skin/background.mp4"));
+    const std::string background = video_on ? std::string() : load("background");
     const bool stage = !background.empty();
+    if (video_on) {
+        recompui::Image* image = make_layer(menu->get_background_wrapper(), video_key);
+        image->set_top(0);
+        image->set_left(0);
+        image->set_width(100.0f, recompui::Unit::Percent);
+        image->set_height(100.0f, recompui::Unit::Percent);
+    }
 
     if (stage) {
         menu->remove_default_title();   // the picture has the title
@@ -202,6 +218,14 @@ void conker::menu_skin::apply(recompui::LauncherMenu* menu, recompui::GameOption
 
 // Every frame the launcher is up (from update_launcher, with the launcher's context open).
 void conker::menu_skin::update() {
+    if (video_on) {
+        uint32_t width = 0, height = 0;
+        if (conker::background_video::take_frame(video_frame, width, height)) {
+            // the new frame under the same name, and the old one let go: the picture loads it as it's next drawn
+            recompui::queue_image_from_bytes_rgba32(video_key, video_frame, width, height);
+            recompui::release_image(video_key);
+        }
+    }
     for (SkinnedOption& entry : skinned) {
         const bool selected = entry.option->is_style_enabled(recompui::focus_state) || entry.option->is_style_enabled(recompui::hover_state);
         if (selected == entry.showing) {

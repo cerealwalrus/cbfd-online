@@ -389,6 +389,14 @@ namespace conker {
 }
 namespace recompui { class LauncherMenu; class GameOptionsMenu; class GameOption; }
 namespace conker {
+    // background_video.cpp: the launcher's background video (assets/menu_skin/background.mp4), decoded on a thread of its own.
+    namespace background_video {
+        // Starts playing it (looped, no sound). False if there's no such file or it can't be played (then nothing runs).
+        bool start(const std::filesystem::path& path);
+        // The newest frame, if there's one since the last call (RGBA); also tells the player it's being watched.
+        bool take_frame(std::vector<char>& rgba, uint32_t& width, uint32_t& height);
+    }
+
     namespace menu_skin {
         // corner: options that become small buttons in the corner when there is a background picture (Version, Add ROM).
         void apply(recompui::LauncherMenu* menu, recompui::GameOptionsMenu* options, const std::vector<recompui::GameOption*>& corner);

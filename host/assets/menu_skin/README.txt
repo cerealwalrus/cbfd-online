@@ -9,6 +9,8 @@ skipped; with none of them the launcher keeps its flat wooden look.
   plank_selected.png  the same, for the option that is selected (the mouse is over it, or the controller is on it).
   arrow.png           a small arrow shown at the left of the selected option (about 80 x 80 pixels).
   title.png           over the top of the screen, centred, about 46% of the screen's width, keeping its shape.
+  background.mp4      a video for the whole screen behind everything, played without its sound and looped (Windows: its own video
+                      decoder plays it). With it background.png isn't used, and the options keep their planks (plank.png).
   background.png      the whole screen behind everything. A 4:3 picture (1448 x 1086) shown in the middle of the window (bars at the
                       sides on a wide screen). With it the launcher lays its options out on the picture's five planks: Start Game,
                       Online, Controls, Settings and Mods sit on them, Exit on a sixth plank added under them, and Version and Add
