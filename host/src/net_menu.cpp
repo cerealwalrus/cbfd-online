@@ -82,17 +82,95 @@ bool conker::netmenu::local_pause_drawing() {
     return in_pause_screen.load() || in_pause_menu.load();
 }
 
+// (0.10.78) the textures' cache (func_1510D0EC loads a texture, func_1510D694 lets one go): the pause screen's textures loaded on
+// this machine alone changed the cache's bookkeeping, which the others' games didn't have (the 0.10.77 log: the lowest and highest
+// texture in use, D_800D9F58/5C, 0x7D3 and 0x8AB on the host, none on the others, and their games resynced from the host's, which
+// crashed the renderer). Now the bookkeeping (the table of textures, each one's level and count, the lowest and highest, a flag) is
+// copied as the pause screen's drawing begins and put back as it ends; the textures it loaded are kept aside (in heap_watch.cpp's
+// pool) and put in the table again for its next drawing, so they are loaded once. Forgotten when a scene loads or a resync's copy
+// comes in.
+namespace {
+    uint32_t coop_loaded_frame();   // (below, with the co-op stage's state)
+    constexpr uint32_t tex_table = 0x800B0E58u, tex_level = 0x800BC448u, tex_refs = 0x800D9F68u, tex_count = 0x1E52u;
+    constexpr uint32_t tex_low = 0x800D9F58u, tex_high = 0x800D9F5Cu, tex_flag = 0x800DBDBAu;
+    std::vector<uint32_t> tex_saved_table;
+    std::vector<uint8_t> tex_saved_bytes;
+    uint32_t tex_saved_low = 0, tex_saved_high = 0;
+    uint8_t tex_saved_flag = 0;
+    bool tex_saved = false;
+    std::vector<std::pair<uint32_t, uint32_t>> tex_aside;   // texture, its memory
+    uint32_t tex_aside_generation = 0xFFFFFFFFu;
+    uint32_t tex_aside_scene = 0xFFFFFFFFu;
+
+    void tex_begin(uint8_t* rdram) {
+        const uint32_t generation = conker::netsession::hook_generation();
+        const uint32_t scene = coop_loaded_frame();
+        if (generation != tex_aside_generation || scene != tex_aside_scene) {
+            tex_aside.clear();
+            tex_aside_generation = generation;
+            tex_aside_scene = scene;
+        }
+        tex_saved_table.resize(tex_count);
+        tex_saved_bytes.resize(tex_count * 2u);
+        for (uint32_t i = 0; i < tex_count; i++) {
+            tex_saved_table[i] = (uint32_t)MEM_W(0, (gpr)(int32_t)(tex_table + i * 4u));
+            tex_saved_bytes[i] = (uint8_t)MEM_BU(0, (gpr)(int32_t)(tex_level + i));
+            tex_saved_bytes[tex_count + i] = (uint8_t)MEM_BU(0, (gpr)(int32_t)(tex_refs + i));
+        }
+        tex_saved_low = (uint32_t)MEM_W(0, (gpr)(int32_t)tex_low);
+        tex_saved_high = (uint32_t)MEM_W(0, (gpr)(int32_t)tex_high);
+        tex_saved_flag = (uint8_t)MEM_BU(0, (gpr)(int32_t)tex_flag);
+        tex_saved = true;
+        for (const auto& kept : tex_aside) {
+            if (tex_saved_table[kept.first] == 0xFFFFFFFFu) {
+                MEM_W(0, (gpr)(int32_t)(tex_table + kept.first * 4u)) = (int32_t)kept.second;
+            }
+        }
+    }
+
+    void tex_end(uint8_t* rdram) {
+        if (!tex_saved) {
+            return;
+        }
+        tex_saved = false;
+        for (uint32_t i = 0; i < tex_count; i++) {
+            const uint32_t now = (uint32_t)MEM_W(0, (gpr)(int32_t)(tex_table + i * 4u));
+            if (tex_saved_table[i] == 0xFFFFFFFFu && now != 0xFFFFFFFFu && (now >> 24) == 0x80 && now != 0x80000000u) {
+                bool known = false;
+                for (const auto& kept : tex_aside) {
+                    known = known || kept.first == i;
+                }
+                if (!known) {
+                    tex_aside.push_back({ i, now });
+                }
+            }
+            MEM_W(0, (gpr)(int32_t)(tex_table + i * 4u)) = (int32_t)tex_saved_table[i];
+            MEM_B(0, (gpr)(int32_t)(tex_level + i)) = (int8_t)tex_saved_bytes[i];
+            MEM_B(0, (gpr)(int32_t)(tex_refs + i)) = (int8_t)tex_saved_bytes[tex_count + i];
+        }
+        MEM_W(0, (gpr)(int32_t)tex_low) = (int32_t)tex_saved_low;
+        MEM_W(0, (gpr)(int32_t)tex_high) = (int32_t)tex_saved_high;
+        MEM_B(0, (gpr)(int32_t)tex_flag) = (int8_t)tex_saved_flag;
+    }
+}
+
 // (0.10.75) the pause screen's two functions begin (where 0: func_151EB06C, 1: func_151DDC20) and end (2, 3)
 extern "C" void conker_pause_bounds(uint8_t* rdram, recomp_context* ctx, int where) {
-    (void)rdram;
     (void)ctx;
     const bool on = conker::netsession::active() && menu_open.load();
+    const bool before = in_pause_screen.load() || in_pause_menu.load();
     switch (where) {
         case 0: in_pause_screen = on; break;
         case 1: in_pause_menu = on; break;
         case 2: in_pause_screen = false; break;
         case 3: in_pause_menu = false; break;
         default: break;
+    }
+    const bool after = in_pause_screen.load() || in_pause_menu.load();
+    if (!before && after) {
+        tex_begin(rdram);
+    } else if (before && !after) {
+        tex_end(rdram);
     }
 }
 
@@ -111,7 +189,7 @@ extern "C" int conker_pause_sound(uint8_t* rdram, recomp_context* ctx) {
 
 extern "C" void conker_net_pause_hook(uint8_t* rdram, recomp_context* ctx, int which) {
     if (which == 7) {
-        in_pause_menu = false;   // (0.10.75: func_151DDC20's end)
+        conker_pause_bounds(rdram, ctx, 3);   // (0.10.75: func_151DDC20's end)
     }
     if (!menu_open) {
         if (which == 7) {
@@ -199,6 +277,9 @@ namespace {
     // after) gets the co-op layout, whether the menu is still open or fading out
     bool coop_pause_screen() {
         return conker::netsession::active() && coop_started && coop_players >= 2;
+    }
+    uint32_t coop_loaded_frame() {
+        return coop_loaded_at.load();
     }
 }
 

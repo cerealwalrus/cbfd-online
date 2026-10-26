@@ -164,12 +164,24 @@ namespace {
     struct Journal {
         uint32_t start;
         uint32_t end = 0;   // (0.10.66) the rewritten list's end
+        uint32_t generation = 0;   // (0.10.78) conker::netsession::hook_generation() as it was rewritten: a resync's load replaces the memory
         std::vector<std::array<uint32_t, 3>> words;   // address, original, rewritten
     };
     std::mutex journal_mutex;
     std::deque<Journal> journals;
     // (0.10.69) the journals last put back, for a list sent to the renderer again after that (render_begin)
     std::deque<Journal> restored;
+    // (0.10.78) journal_mutex held: the journals of the memory before a resync's load (the host's copy replaced it) are dropped, so
+    // nothing is put back into the new memory
+    void forget_stale_journals() {
+        const uint32_t now = conker::netsession::hook_generation();
+        while (!journals.empty() && journals.front().generation != now) {
+            journals.pop_front();
+        }
+        while (!restored.empty() && restored.front().generation != now) {
+            restored.pop_front();
+        }
+    }
     // (0.10.70, measuring the pause flicker) the last frames' lists and the renderer's tasks, logged when a task's list isn't a
     // rewritten frame's
     std::mutex events_mutex;
@@ -1762,6 +1774,7 @@ void conker::netview::frame_end(uint8_t* rdram, uint32_t list_end) {
         Journal journal;
         journal.start = start;
         journal.end = list_end;
+        journal.generation = conker::netsession::hook_generation();
         const uint8_t* now = rdram + (start & 0x7FFFFFu);
         for (size_t off = 0; off + 4 <= before.size(); off += 4) {
             uint32_t a, b;
@@ -1795,6 +1808,7 @@ void conker::netview::render_done(uint8_t* rdram, uint32_t data_ptr) {
     // drawn, and that frame showed as the game drew it, the split screen (the 0.10.65 test's flicker on player 2, a guess). Now only
     // a journal starting in the task's own list is put back, with any older ones before it.
     std::lock_guard<std::mutex> lock(journal_mutex);
+    forget_stale_journals();
     if (journals.empty()) {
         return;
     }
@@ -1856,6 +1870,7 @@ void conker::netview::render_begin(uint8_t* rdram, uint32_t data_ptr) {
         note_event(note);
     }
     std::lock_guard<std::mutex> lock(journal_mutex);
+    forget_stale_journals();
     const uint32_t task = data_ptr & 0x1FFFFFFFu;
     for (const Journal& journal : journals) {
         const uint32_t start = journal.start & 0x1FFFFFFFu;

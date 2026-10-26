@@ -448,6 +448,11 @@ namespace {
     // func_10010BE8 is about to start a sound ($a2 the volume, $a3 the pan; its caller's $s0 saved at 0x24($sp)).
     void on_start_inner(uint8_t* rdram, recomp_context* ctx);
 
+    // (0.10.77) Conker's Gameboy: its tune (0x296-0x29F) and 0x3A0-0x3AB, which idle Conkers played every 20 frames in the logs
+    bool gameboy_sound(uint32_t sound) {
+        return (sound >= 0x296u && sound <= 0x29Fu) || (sound >= 0x3A0u && sound <= 0x3ABu);
+    }
+
     void on_start(uint8_t* rdram, recomp_context* ctx) {
         on_start_inner(rdram, ctx);
     }
@@ -459,7 +464,7 @@ namespace {
         // the idle players' Conkers played every 20 frames in the logs), and never the others'
         if (conker::netmenu::coop_running(rdram)) {
             const uint32_t sound = (uint32_t)ctx->r5 & 0xFFFFu;
-            if ((sound >= 0x296u && sound <= 0x29Fu) || (sound >= 0x3A0u && sound <= 0x3ABu)) {
+            if (gameboy_sound(sound)) {
                 const uint32_t object = word(rdram, (uint32_t)ctx->r29 + 0x24);
                 const int player = character_player(rdram, owner_of(rdram, object, sound));
                 if (player != conker::netsession::local_slot()) {
@@ -622,6 +627,11 @@ namespace {
             }
             uint32_t volume = 0, pan = 0x40;
             character_sound(rdram, ctx, k, f.owner, f.volume, f.near_distance, f.far_distance, &volume, &pan);
+            // (0.10.78) co-op: another player's Gameboy stays silent here too (the character's handle is followed from an earlier
+            // sound of theirs, and its volume was worked out again every frame for the Gameboy's sound that followed: heard)
+            if (conker::netmenu::coop_running(rdram) && gameboy_sound(half(rdram, sound_slots + (handle & 0xFu) * 12u + 4u))) {
+                volume = 0;
+            }
             send_if_changed(rdram, ctx, handle, volume, pan);
         }
     }

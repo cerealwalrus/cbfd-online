@@ -596,6 +596,19 @@ namespace {
         }
         void enable_instant_present() override { real->enable_instant_present(); }
         void send_dl(const OSTask* task) override {
+            // (0.10.78) a task whose display list isn't in the game's memory is skipped: after a resync's load the renderer was handed
+            // one at 0xA0000003 and read past the memory (the crash in RT64::Interpreter::processDisplayLists)
+            const uint32_t list = (uint32_t)task->t.data_ptr & 0x1FFFFFFFu;
+            if (list < 0x400u || list >= 0x800000u || (list & 7u) != 0) {
+                static int logged = 0;
+                if (logged < 10) {
+                    logged++;
+                    char line[120];
+                    std::snprintf(line, sizeof(line), "[net view] a graphics task with its list at %08X: not drawn", (unsigned)(uint32_t)task->t.data_ptr);
+                    conker::netsession::log(line);
+                }
+                return;
+            }
             conker::netview::render_begin(rdram, (uint32_t)task->t.data_ptr);
             real->send_dl(task);
             conker::netview::render_done(rdram, (uint32_t)task->t.data_ptr);
