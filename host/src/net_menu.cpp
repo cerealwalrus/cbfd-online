@@ -1207,3 +1207,21 @@ extern "C" void conker_coop_pause_buttons_y(uint8_t* rdram, recomp_context* ctx)
         MEM_W(0x8C, ctx->r29) = 5;
     }
 }
+
+// 0.10.72: co-op, the pause screen's two sprites not loaded. func_151EB06C (the pause screen, on the machine whose menu is open
+// only) loads two sprites for the one-player game's HUD on it (func_151ED90C: assets read in, the game's heap) the first time it's
+// drawn, kept at D_80090058/5C until it closes. On that machine alone: its heap and objects went apart from the others' at once
+// (the 0.10.71 log: the host opened its menu at frame 752, "the objects differ" from 766, everyone else resynced from it), and a
+// resync shows as a flash of another player's picture. Before the branch at 0x151EB5B0 ($t5 the first sprite, none loaded yet):
+// in co-op, with this machine's menu open, as if loaded, so nothing is; the sprites' drawing further on is skipped for want of them.
+extern "C" void conker_coop_pause_sprites(uint8_t* rdram, recomp_context* ctx) {
+    (void)rdram;
+    if (conker::netsession::active() && coop_started && coop_players >= 2 && menu_open.load() && ctx->r13 == 0) {
+        ctx->r13 = 1;
+        static int logged = 0;
+        if (logged < 2) {
+            logged++;
+            conker::netsession::log("[coop] the pause screen's sprites left unloaded (this machine's menu)");
+        }
+    }
+}
