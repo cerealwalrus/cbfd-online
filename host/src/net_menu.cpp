@@ -122,6 +122,7 @@ namespace {
     bool coop_pending_frame_set = false;
     bool coop_started = false;
     // (0.10.61) the stage's players as it was started (the mask, the screen layout), for its reloads
+    bool coop_restart_pending = false;   // (0.10.64) everyone down: the stage asked for again, its load is the co-op one
     uint32_t coop_mask = 0, coop_layout = 0;   // (0.10.31) the stage was started with two or more players; off at the barrels again
     int coop_players = 0;
     // (0.10.32) the game's frames (counted at func_10011BB8, conker_coop_frame) and the one a scene last finished loading at
@@ -368,6 +369,7 @@ extern "C" int conker_coop_start(uint8_t* rdram, recomp_context* ctx) {
     *ctx = saved;
     coop_started = players >= 2;
     coop_players = players;
+    coop_restart_pending = false;
     if (players >= 2) {
         // 0.10.30, stage 2: every player who joined is a player of the stage, each with a Conker of their own (character 0, the
         // one-player game's) and a camera of their own: the scene's request (func_1501C730, mode 6) left with the player mask at
@@ -411,6 +413,7 @@ extern "C" void conker_online_no_back(uint8_t* rdram, recomp_context* ctx) {
     }
     const gpr gs = (gpr)(int32_t)state;
     coop_started = false;   // (0.10.31) back in the bar: no co-op stage running
+    coop_restart_pending = false;
     if (MEM_B(0x3E, gs) != 1) {
         return;
     }
@@ -987,7 +990,15 @@ extern "C" void conker_coop_scene_load(uint8_t* rdram, recomp_context* ctx) {
     }
     const uint32_t scene = (uint32_t)ctx->r6;
     const uint32_t want_scene = (uint32_t)(uint16_t)MEM_HU(8, (gpr)(int32_t)(0x80087430u + (uint32_t)coop_stage * 20u));
-    if (scene != want_scene) {
+    const bool restart = coop_restart_pending;
+    coop_restart_pending = false;
+    {
+        char seen[160];
+        std::snprintf(seen, sizeof(seen), "[coop] f=%u a scene load: scene %X (the stage's %X), mask %X, layout %u, a co-op restart %d",
+            (unsigned)conker::netsession::frame(), (unsigned)scene, (unsigned)want_scene, (unsigned)(uint32_t)ctx->r5, (unsigned)(uint32_t)ctx->r4, (int)restart);
+        conker::netsession::log(seen);
+    }
+    if (scene != want_scene && !restart) {
         return;
     }
     // (0.10.63) every load of the stage's scene, not only one asked with other players: the counts are put back as well (0.10.60's
@@ -1064,29 +1075,43 @@ extern "C" void conker_coop_continue(uint8_t* rdram, recomp_context* ctx) {
     MEM_B(0x122, (gpr)(int32_t)control) = (i == 0 && all && state >= 5) ? 1 : 0;
 }
 
-// func_1507D4F8's entry ($a0 the player): the player is out. Returns 1 to skip it (the function returns at once): in co-op for players
-// 2-4 always, and for player 1 until everyone is down. Player 1's lives are kept at 2 or more first, so its restart is never the
-// one-player game's GAME OVER (scene 0x18).
+// func_1507D4F8's entry ($a0 the player): the player is out. Returns 1 to skip it (the function returns at once), always in co-op:
+// the one-player game's own restart (0.10.63's) is its checkpoint's, with player 1 alone on one screen, and froze 150 frames later
+// in the 0.10.63 test. (0.10.64) Instead, once everyone is down, player 1's call starts the stage again as the race lobby's Start did
+// (conker_coop_start: func_151E30C4 for the table's stage, then the players' mask, the screens' layout and the counts), once; the
+// load that follows is the co-op stage's (conker_coop_scene_load). Every machine at the same frame.
 extern "C" int conker_coop_out(uint8_t* rdram, recomp_context* ctx) {
     if (!conker::netsession::active() || !coop_started || coop_players < 2) {
         return 0;
     }
     const int i = (int)(int16_t)(uint16_t)(uint32_t)ctx->r4;
-    if (i < 0 || i >= std::min(coop_players, 4)) {
-        return 0;
-    }
-    if (i != 0 || !coop_down_all(rdram)) {
+    if (i != 0 || coop_restart_pending || !coop_down_all(rdram)) {
         return 1;
     }
-    const gpr lives_at = (gpr)(int32_t)0x800D2144;
-    if ((int8_t)MEM_B(0, lives_at) < 2) {
-        MEM_B(0, lives_at) = 2;
+    coop_restart_pending = true;
+    MEM_B(0, (gpr)(int32_t)0x8008FDB4) = 1;
+    MEM_H(0, (gpr)(int32_t)0x8008FDAC) = coop_stage;
+    MEM_B(0, (gpr)(int32_t)0x8008FD74) = 3;
+    const recomp_context saved = *ctx;
+    func_151E30C4(rdram, ctx);
+    *ctx = saved;
+    MEM_W(0, (gpr)(int32_t)0x800BEA00) = (int32_t)coop_mask;
+    MEM_W(0, (gpr)(int32_t)0x800BEA04) = (int32_t)coop_layout;
+    for (uint32_t k = 0; k < 4; k++) {
+        MEM_B(0, (gpr)(int32_t)(0x80087270u + k)) = 0;
     }
-    char line[120];
-    std::snprintf(line, sizeof(line), "[coop down] f=%u everyone is down: the stage restarts from its checkpoint", (unsigned)conker::netsession::frame());
-    conker::netsession::log(line);
+    const int8_t players = (int8_t)coop_players;
+    MEM_B(0, (gpr)(int32_t)0x8008FD88) = players;
+    MEM_B(0, (gpr)(int32_t)0x8008FD8C) = players;
+    MEM_B(0, (gpr)(int32_t)0x8008FD90) = players;
+    MEM_B(0, (gpr)(int32_t)0x8008FD94) = players;
+    MEM_B(0, (gpr)(int32_t)0x800BE618) = players;
     for (int k = 0; k < 4; k++) {
         coop_down_logged[k] = 0xFF;
     }
-    return 0;
+    char line[200];
+    std::snprintf(line, sizeof(line), "[coop down] f=%u everyone is down: the co-op stage starts again (table %02X, scene %X, %d players, mask %X, layout %u)",
+        (unsigned)conker::netsession::frame(), (unsigned)coop_stage, (unsigned)MEM_W(0, (gpr)(int32_t)0x800BE9F4), coop_players, (unsigned)coop_mask, (unsigned)coop_layout);
+    conker::netsession::log(line);
+    return 1;
 }
