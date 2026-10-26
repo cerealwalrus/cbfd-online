@@ -118,8 +118,6 @@ extern "C" void func_1501C730(uint8_t* rdram, recomp_context* ctx);
 
 // co-op (0.10.28 on): see conker_coop_start below
 namespace {
-    bool coop_pending = false;
-    bool coop_pending_frame_set = false;
     bool coop_started = false;   // (0.10.31) the stage was started with two or more players; off at the barrels again
     int coop_players = 0;
     // (0.10.32) the game's frames (counted at func_10011BB8, conker_coop_frame) and the one a scene last finished loading at
@@ -324,7 +322,9 @@ bool conker::netmenu::boot_screen_held(uint8_t* rdram) {
 namespace {
     // The scene table's index (D_80087430, 20 bytes each) of the stage: Zombie Grave Shoot (0.10.29), the graveyard, where Gregg gives
     // Conker the shotgun and the zombies come (scene 0x41, entry 0xD004). (Zombie Fest, the mansion's, is 0xAB.)
-    constexpr int16_t coop_stage = 0xA7;
+    // (0.10.54) Horror Intro (0xA6, the same scene from its start, entry 0) instead: Gregg's cutscene, where Conker is given the shotgun,
+    // then the zombies (0xA7, Zombie Grave Shoot, starts after it, at entry 0xD004, so nobody saw it)
+    constexpr int16_t coop_stage = 0xA6;
 }
 
 extern "C" void func_151E30C4(uint8_t* rdram, recomp_context* ctx);
@@ -334,10 +334,17 @@ extern "C" void func_151E30C4(uint8_t* rdram, recomp_context* ctx);
 // table) and D_8008FDAC the stage's index, as the Chapters menu leaves them. Every machine at the same frame (the game's state). Returns
 // 1 when it has started it (the function hooked then returns at once).
 extern "C" int conker_coop_start(uint8_t* rdram, recomp_context* ctx) {
-    if (!conker::netsession::active() || !coop_pending) {
+    if (!conker::netsession::active()) {
         return 0;
     }
-    coop_pending = false;
+    // (0.10.54) the co-op start is the MANSION barrel's (barrel 0, the one-player game's BACK, which online opens the race's lobby, see
+    // conker_online_no_back): a match started from barrel 0 is the campaign stage; one from the RACE barrel (7) is a race
+    {
+        const uint32_t state = (uint32_t)MEM_W(0, (gpr)(int32_t)0x8008FDD4);
+        if ((state >> 24) != 0x80 || MEM_B(0x3E, (gpr)(int32_t)state) != 1 || MEM_B(0x2B, (gpr)(int32_t)state) != 0) {
+            return 0;
+        }
+    }
     MEM_B(0, (gpr)(int32_t)0x8008FDB4) = 1;
     MEM_H(0, (gpr)(int32_t)0x8008FDAC) = coop_stage;
     MEM_B(0, (gpr)(int32_t)0x8008FD74) = 3;
@@ -407,27 +414,18 @@ extern "C" void conker_online_no_back(uint8_t* rdram, recomp_context* ctx) {
     if (MEM_B(0x3E, gs) != 1) {
         return;
     }
+    // (0.10.54) MANSION, the co-op barrel (barrel 0, BACK in the one-player game), a mode of its own: its category (D_800AB570, which
+    // turns the barrel picked, gs+0x2B, into the mode, gs+0x2C, each frame) is the race's (7), so A on it zooms into the MANSION barrel
+    // itself and opens the race's screens there (its character select with every player, the placeholder lobby); a match started there is
+    // the campaign stage (conker_coop_start), and quitting it comes back to the same barrel's screens, not the RACE barrel's (0.10.28-53
+    // turned the barrel to RACE's on A, so the way back was the real race's, and Start there started a race). Game memory, set the same on
+    // every machine (the table's own value, 0, is BACK's: out of the multiplayer menu, which online had no use).
+    if ((uint8_t)MEM_BU(0, (gpr)(int32_t)0x800AB570) != 7) {
+        MEM_B(0, (gpr)(int32_t)0x800AB570) = 7;
+        conker::netsession::log("[coop] the MANSION barrel (0) opens the co-op lobby");
+    }
     const uint16_t buttons = (uint16_t)MEM_HU(0x20, gs);
     uint16_t kept = buttons;
-    const bool zoomed_out = boot_float(rdram, state + 0x8) == 0.0f;
-    if (zoomed_out && !coop_pending_frame_set) {
-        coop_pending = false;   // back at the barrels: a co-op start asked for before is off
-    }
-    coop_pending_frame_set = false;
-    if (MEM_B(0x2B, gs) == 0 && zoomed_out && (buttons & 0x10u) != 0 && boot_float(rdram, state + 0x0) == 0.0f &&
-            boot_float(rdram, state + 0x4) == 0.0f && boot_float(rdram, state + 0xC) == 0.0f) {
-        // 0.10.28: co-op. A (or Start) on BACK, the barrels still: the RACE barrel's lobby (barrel 7, the race's screens, its character
-        // select with every player) as the placeholder lobby, and its start goes to the one-player campaign's scene instead
-        // (conker_coop_start). The A is the player's own press, kept: the game zooms into the RACE barrel with it.
-        coop_pending = true;
-        coop_pending_frame_set = true;
-        MEM_B(0x2B, gs) = 7;
-        conker::netsession::log("[coop] A on BACK: the race's lobby, for the co-op campaign stage");
-        return;
-    }
-    if (MEM_B(0x2B, gs) == 0) {
-        kept &= (uint16_t)~0x30u;
-    }
     if (boot_float(rdram, state + 0x8) == 0.0f) {
         kept &= (uint16_t)~0x20u;
     }
@@ -619,6 +617,33 @@ extern "C" void conker_coop_frame(uint8_t* rdram, recomp_context* ctx) {
                         conker::netsession::log(line);
                     }
                 }
+            }
+        }
+    }
+    // (0.10.54, measuring, the zombies) every 60 frames, the other characters (gObjects 4-24 in use: +0 not 0): each one's type (+4),
+    // the character it's after (+0x222, an index into gObjects: 0 is player 1's Conker), its state (+0x232) and where it is (+0x14, +0x1C)
+    if (conker::netsession::frame() % 60 == 0) {
+        std::string text;
+        const int first = std::min(std::max(coop_players, 1), 4);
+        for (int k = first; k < 25; k++) {
+            const uint32_t object = 0x800CC2D0u + (uint32_t)k * 0x32Cu;
+            if (MEM_BU(0, (gpr)(int32_t)object) == 0) {
+                continue;
+            }
+            const uint32_t xw = (uint32_t)MEM_W(0x14, (gpr)(int32_t)object), zw = (uint32_t)MEM_W(0x1C, (gpr)(int32_t)object);
+            float x, z;
+            std::memcpy(&x, &xw, 4);
+            std::memcpy(&z, &zw, 4);
+            char part[96];
+            std::snprintf(part, sizeof(part), " [%d t%08X tg%d st%02X %.0f,%.0f]", k, (unsigned)(uint32_t)MEM_W(4, (gpr)(int32_t)object),
+                (int)(int8_t)MEM_B(0x222, (gpr)(int32_t)object), (unsigned)MEM_BU(0x232, (gpr)(int32_t)object), x, z);
+            text += part;
+        }
+        static std::string last_text;
+        if (text != last_text) {
+            last_text = text;
+            for (size_t at = 0; at < text.size(); at += 900) {
+                conker::netsession::log(("[coop objects] f=" + std::to_string(conker::netsession::frame()) + text.substr(at, 900)).c_str());
             }
         }
     }
