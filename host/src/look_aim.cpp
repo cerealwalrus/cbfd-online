@@ -455,6 +455,108 @@ extern "C" void conker_gun_aim_turn(uint8_t* rdram, recomp_context* ctx) {
     ctx->r13 = (gpr)(int32_t)(turn * 3 / 2);
 }
 
+// 0.10.8: hit in R-Look, R held, walking with Swap Sticks. The game knocks Conker back: the frame he's hit it sets his moving angle
+// (+0x76 of his object) to his facing (+0x7A) plus half a turn, plays the hit's animation (+0x84) and stands him there while it plays,
+// turning his facing toward the moving angle plus half a turn, 0xC00 a frame: his facing as it was, so on a Nintendo 64 he doesn't
+// turn (goodrunlook.mp4). Online, with the sticks swapped, the walking (conker_look_targets, and the no weapon walking) set his moving
+// angle again the next frame, the way pressed from the view: the game turned him toward its opposite, the view turned with him, the
+// walking set the angle from the turned view, and so on: he spun round, 0xC00 a frame, through the whole hit (0.10.7's [look] lines:
+// f=3173 the moving angle went from 4A79, the walking's, to D135, the facing 5135 plus half a turn; then 504A, 444A, 384A ... A84A).
+// So: the frame the moving angle is found changed from what the walking left it at, by more than 0x1800, to the facing plus half a
+// turn (within 0x800), the walking leaves his facing and moving angle to the game until the animation changes (the hit is over), R
+// is let go or the look ends (or 90 frames). From the game's memory and the frame's agreed buttons, for every player on every machine.
+namespace {
+    struct HitHold {
+        bool have_written = false;
+        uint16_t written_move = 0;
+        uint32_t written_frame = 0;
+        bool holding = false;
+        uint32_t hold_anim = 0;
+        uint32_t hold_start = 0;
+        bool checked = false;
+        uint32_t checked_frame = 0;
+    };
+    HitHold hit_hold_state[4];
+
+    void note_move_written(int player, uint16_t move) {
+        if (player >= 0 && player < 4) {
+            HitHold& h = hit_hold_state[player];
+            h.have_written = true;
+            h.written_move = move;
+            h.written_frame = conker::netsession::frame();
+        }
+    }
+
+    // (recheck: looked at again this frame if not holding, where the game's own update runs, conker_look_stage_one and conker_look_targets,
+    // in case the hit came in between; conker_look_view only takes what they found)
+    bool hit_holding(uint8_t* rdram, gpr camera, int player, bool recheck) {
+        if (!conker::netsession::active() || player < 0 || player >= 4) {
+            return false;
+        }
+        HitHold& h = hit_hold_state[player];
+        const uint32_t now = conker::netsession::frame();
+        if (h.checked && h.checked_frame == now && (!recheck || h.holding)) {
+            return h.holding;
+        }
+        const bool local = player == conker::netsession::local_slot();
+        const gpr walker = (gpr)(int32_t)MEM_W(0x3D0, camera);
+        bool plugged = false;
+        uint16_t agreed = 0;
+        float ax = 0.0f, ay = 0.0f;
+        const bool r_held = conker::netsession::input(player, &plugged, &agreed, &ax, &ay) && (agreed & 0x0010) != 0;
+        if (((uint32_t)walker & 0xFF000000u) != 0x80000000u || MEM_H(0x73C, camera) == 0 || !r_held || !swap_state(player)) {
+            if (h.holding && local) {
+                conker::netsession::log("[look] the hit's hold ends: the look is over or R let go");
+            }
+            h = HitHold{};
+            h.checked = true;
+            h.checked_frame = now;
+            return false;
+        }
+        h.checked = true;
+        h.checked_frame = now;
+        const uint16_t move = (uint16_t)MEM_HU(0x76, walker);
+        const uint16_t face = (uint16_t)MEM_HU(0x7A, walker);
+        const uint32_t anim = (uint32_t)MEM_W(0x84, walker);
+        if (h.holding) {
+            if (anim != h.hold_anim || now - h.hold_start > 90) {
+                h.holding = false;
+                h.have_written = false;
+                if (local) {
+                    char line[160];
+                    std::snprintf(line, sizeof(line), "[look] f=%u the hit's hold ends after %u frames: facing %04X, moving %04X, animation %X",
+                        now, now - h.hold_start, (unsigned)face, (unsigned)move, (unsigned)anim);
+                    conker::netsession::log(line);
+                }
+                return false;
+            }
+            if (local) {
+                char line[140];
+                std::snprintf(line, sizeof(line), "[look] f=%u hit, held %u: facing %04X moving %04X", now, now - h.hold_start, (unsigned)face, (unsigned)move);
+                conker::netsession::log(line);
+            }
+            return true;
+        }
+        if (h.have_written && now - h.written_frame <= 4) {
+            const int32_t changed = (int16_t)(uint16_t)(move - h.written_move);
+            const int32_t from_back = (int16_t)(uint16_t)(move - (uint16_t)(face + 0x8000u));
+            if ((changed > 0x1800 || changed < -0x1800) && from_back > -0x800 && from_back < 0x800) {
+                h.holding = true;
+                h.hold_anim = anim;
+                h.hold_start = now;
+                if (local) {
+                    char line[200];
+                    std::snprintf(line, sizeof(line), "[look] f=%u hit in the look: moving angle %04X (facing %04X; the walking's was %04X), animation %X: the walking waits",
+                        now, (unsigned)move, (unsigned)face, (unsigned)h.written_move, (unsigned)anim);
+                    conker::netsession::log(line);
+                }
+                return true;
+            }
+        }
+        return false;
+    }
+}
+
 // Online, the look mode's first stage (+0x73C of the camera is 1: the camera moves in for 30 frames, a timer of +0x84A) at the
 // start of func_15120158 ($a0 the camera). The camera's yaw there eases toward a target worked out once, when the mode starts
 // (func_1511FC60), while Conker turns with the stick: the head turned and the view lagged behind (view_log: the camera still at
@@ -470,6 +572,8 @@ extern "C" void conker_look_stage_one(uint8_t* rdram, recomp_context* ctx) {
         return;
     }
     const gpr camera = (gpr)(int32_t)ctx->r4;
+    // (0.10.8: a hit in the look, worked out here, at the look's start each frame, before any of the walking's writes: hit_holding)
+    hit_holding(rdram, camera, camera_player(rdram, camera), true);
     {
         const int player = camera_player(rdram, camera);
         if (player >= 0 && eye_restore[player].pending) {
@@ -603,6 +707,7 @@ extern "C" void conker_shotgun_laser_walk(uint8_t* rdram, recomp_context* ctx) {
 // toward it, atan2 of z over x) is 270 degrees less the look mode's (+0x37C; measured, within 1.4 degrees
 // standing still). Its distance and height stay, and so does the eye.
 extern std::atomic<int> walk_dx[4], walk_dy[4];
+
 extern "C" void conker_look_view(uint8_t* rdram, recomp_context* ctx) {
 #if defined(CONKER_RT64)
     const gpr camera = ctx->r16;
@@ -660,13 +765,16 @@ extern "C" void conker_look_view(uint8_t* rdram, recomp_context* ctx) {
     // [look] lines: the moving angle turned 0xB00 a frame to the strafe's, a quarter turn left, and he strafed left all through the
     // stage). Set here, after the game's turn of it, as conker_look_targets is in the second stage. Every player's camera on every
     // machine, from the game's memory and the frame's agreed buttons.
-    if (conker::netsession::active() && player >= 0 && player < 4 && swap_state(player) && MEM_BU(0x23E, camera) == 0x00 && MEM_H(0x73C, camera) == 1) {
+    if (conker::netsession::active() && player >= 0 && player < 4 && swap_state(player) && MEM_BU(0x23E, camera) == 0x00 && MEM_H(0x73C, camera) == 1
+        && !hit_holding(rdram, camera, player, false)) {
         const int wdx = walk_dx[player].load();
         const int wdy = walk_dy[player].load();
         const gpr walker = (gpr)(int32_t)MEM_W(0x3D0, camera);
         if ((wdx != 0 || wdy != 0) && ((uint32_t)walker & 0xFF000000u) == 0x80000000u) {
             const int32_t offset = (int32_t)std::lround(conker::det::atan2_d(-(double)wdx, (double)wdy) * 32768.0 / 3.14159265358979);
-            MEM_H(0x76, walker) = (int16_t)(uint16_t)((uint32_t)MEM_HU(0x7A, walker) + (uint32_t)offset);
+            const uint16_t moving = (uint16_t)((uint32_t)MEM_HU(0x7A, walker) + (uint32_t)offset);
+            MEM_H(0x76, walker) = (int16_t)moving;
+            note_move_written(player, moving);
         }
     }
     // 0.9.62: online, R-Look's handover from its first stage to its second, for every player's camera on every machine (the view is built
@@ -893,6 +1001,11 @@ void conker::look_aim::no_weapon_walk(uint8_t* rdram, int port, uint16_t* button
         // C-Left or C-Right and his moving angle set from the way pressed (conker_look_targets), so the look doesn't stop him as he
         // goes into it (logged: he slowed to a stop and stood until the second stage; with a gun he walks on). His facing is left
         // as it is: the view is still turning in behind it. C-Down never goes to the game here (with R held it starts a grenade).
+        // (0.10.8: a hit in the look playing, hit_holding: nothing from the walking, the game's knock back as it is)
+        if (hit_hold_state[port].holding && hit_hold_state[port].checked_frame + 3 >= conker::netsession::frame() && (*buttons & 0x0010) != 0) {
+            *buttons &= (uint16_t)~c_buttons;
+            return;
+        }
         if (MEM_H(0x73C, camera) == 1 && (*buttons & 0x0010) != 0) {
             if (dx == 0 && dy == 0) {
                 *buttons &= (uint16_t)~c_buttons;
@@ -1342,7 +1455,9 @@ extern "C" void conker_look_targets(uint8_t* rdram, recomp_context* ctx) {
     const int look_player = camera_player(rdram, ctx->r16);
     const bool holding_grenade = look_player >= 0 && look_player < 4 && grenade_held[look_player].load();
     const uint8_t look_kind = MEM_BU(0x23E, ctx->r16);
-    if ((units_per_degree != 0.0f) && swap_state(look_player) && look_kind != 0x26 && look_kind != 0x14 && !holding_grenade) {
+    // (0.10.8: not while a hit in the look plays, hit_holding)
+    const bool hit_hold_now = hit_holding(rdram, ctx->r16, look_player, true);
+    if ((units_per_degree != 0.0f) && swap_state(look_player) && look_kind != 0x26 && look_kind != 0x14 && !holding_grenade && !hit_hold_now) {
         constexpr uint32_t c_up = 0x0008, c_down = 0x0004, c_left = 0x0002, c_right = 0x0001;
         // The buttons this camera's player holds (+0x36C points at them).
         const uint32_t held = (uint32_t)MEM_HU(0, (gpr)(int32_t)MEM_W(0x36C, ctx->r16));
@@ -1376,6 +1491,7 @@ extern "C" void conker_look_targets(uint8_t* rdram, recomp_context* ctx) {
             MEM_H(0x7A, conker) = (int16_t)(uint16_t)((uint32_t)MEM_HU(0x7A, conker) - (uint32_t)std::lround(moved * facing_per_angle));
             MEM_H(0x12, aim) = (int16_t)(angle - moved);
             MEM_H(0x76, conker) = (int16_t)moving;
+            note_move_written(look_player, moving);
             aim_remainder = 0.0f;
         }
     }
@@ -1384,14 +1500,16 @@ extern "C" void conker_look_targets(uint8_t* rdram, recomp_context* ctx) {
     // The no weapon walking's other half (see no_weapon_walk): his moving angle is the way pressed from the view, as with a gun.
     // (0.10.6: in the look's first stage too, from his facing as it is)
     if (conker::netsession::active() && swap_state(camera_player(rdram, ctx->r16)) && MEM_BU(0x23E, ctx->r16) == 0x00
-        && (MEM_H(0x73C, ctx->r16) == 1 || MEM_H(0x73C, ctx->r16) == 2)) {
+        && (MEM_H(0x73C, ctx->r16) == 1 || MEM_H(0x73C, ctx->r16) == 2) && !hit_hold_now) {
         const int player = camera_player(rdram, ctx->r16);
         const int dx = player >= 0 && player < 4 ? walk_dx[player].load() : 0;
         const int dy = player >= 0 && player < 4 ? walk_dy[player].load() : 0;
         const gpr conker = (gpr)(int32_t)MEM_W(0x3D0, ctx->r16);
         if ((dx != 0 || dy != 0) && ((uint32_t)conker & 0xFF000000u) == 0x80000000u) {
             const int32_t offset = (int32_t)std::lround(conker::det::atan2_d(-(double)dx, (double)dy) * 32768.0 / 3.14159265358979);
-            MEM_H(0x76, conker) = (int16_t)(uint16_t)((uint32_t)MEM_HU(0x7A, conker) + (uint32_t)offset);
+            const uint16_t moving = (uint16_t)((uint32_t)MEM_HU(0x7A, conker) + (uint32_t)offset);
+            MEM_H(0x76, conker) = (int16_t)moving;
+            note_move_written(player, moving);
         }
     }
 #endif
