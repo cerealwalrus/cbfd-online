@@ -409,7 +409,7 @@ void conker::netlobby::update(const std::u8string& game_id) {
                     continue;
                 }
                 if (ready == 0) {
-                    recompui::message_box("Load the game's ROM first: choose Load ROM (the first option) and pick it.");
+                    recompui::message_box("Add the game's ROM first: choose Add ROM, in the top left corner, and pick it.");
                     continue;
                 }
                 conker::updates::check_in_background();

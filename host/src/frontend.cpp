@@ -431,26 +431,9 @@ namespace {
             }
             return;
         }
-        recompui::file::open_file_dialog([](bool success, const std::filesystem::path& path) {
-            if (!success) {
-                return;
-            }
-            recomp::RomValidationError result = recomp::select_rom(path, supported_games[0].game_id);
-            if (result == recomp::RomValidationError::IncorrectVersion) {
-                std::string region = conker::roms::region_of(path);
-                if (!region.empty() && region != "US") {
-                    std::string text = "This is the " + region + " version of Conker's Bad Fur Day. Only the US "
-                        "version is supported (and ROM hacks of it that only change the game's assets).";
-                    recompui::message_box(text.c_str());
-                    return;
-                }
-            }
-            if (result != recomp::RomValidationError::Good) {
-                recompui::message_box(conker::rom_error_text(result));
-                return;
-            }
-            rom_now_loaded("The ROM was loaded. Choose Single Player or Online to play.");
-        });
+        // 0.10.17: the first option is always Single Player; the ROM is added with Add ROM only (sharing the option with Load ROM
+        // caused trouble: the click that picked the file started the game)
+        recompui::message_box("Add the game's ROM first: choose Add ROM, in the top left corner, and pick it.");
     }
 
     // The look of the game's own menus: dark wood, grey lettering, orange for what is selected. Applied before the UI is
@@ -544,7 +527,8 @@ namespace {
         conker::notices::on_ui_ready();
         conker::local_achievements::init();
         conker::reticle::on_ui_ready();
-        start_option = options->add_start_game_or_load_rom_option("Load ROM", "Single Player");   // (recompui's is "Start Game")
+        // (0.10.17: Single Player with or without a ROM: Add ROM, in the corner, is the only way to add one)
+        start_option = options->add_start_game_or_load_rom_option("Single Player", "Single Player");   // (recompui's is "Start Game")
         start_option->set_callback(on_start_selected);
         options->add_option("Online", []() { conker::netlobby::show(); });
         options->add_setup_controls_option();
