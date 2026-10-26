@@ -275,6 +275,7 @@ namespace conker {
         bool coop_running(uint8_t* rdram);
         // (0.10.60) this frame's HUD drawn for player k (1-3) in co-op: where its commands are in the display list
         bool coop_hud_range(int k, uint32_t* start, uint32_t* end);
+        void coop_hud_clear();
     }
 
     // notices.cpp: a line in the top-left corner for a few seconds, one at a time (an unlock, a save state's

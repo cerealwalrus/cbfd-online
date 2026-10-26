@@ -120,7 +120,9 @@ extern "C" void func_1501C730(uint8_t* rdram, recomp_context* ctx);
 namespace {
     bool coop_pending = false;
     bool coop_pending_frame_set = false;
-    bool coop_started = false;   // (0.10.31) the stage was started with two or more players; off at the barrels again
+    bool coop_started = false;
+    // (0.10.61) the stage's players as it was started (the mask, the screen layout), for its reloads
+    uint32_t coop_mask = 0, coop_layout = 0;   // (0.10.31) the stage was started with two or more players; off at the barrels again
     int coop_players = 0;
     // (0.10.32) the game's frames (counted at func_10011BB8, conker_coop_frame) and the one a scene last finished loading at
     std::atomic<uint32_t> coop_frames{ 0 };
@@ -375,6 +377,8 @@ extern "C" int conker_coop_start(uint8_t* rdram, recomp_context* ctx) {
         const uint32_t layout = (uint32_t)(uint8_t)MEM_BU(0, (gpr)(int32_t)(0x8008FF37u + (uint32_t)players));
         MEM_W(0, (gpr)(int32_t)0x800BEA00) = (int32_t)mask;
         MEM_W(0, (gpr)(int32_t)0x800BEA04) = (int32_t)layout;
+        coop_mask = mask;
+        coop_layout = layout;
         for (uint32_t k = 0; k < 4; k++) {
             MEM_B(0, (gpr)(int32_t)(0x80087270u + k)) = 0;
         }
@@ -821,7 +825,8 @@ extern "C" void func_1508FD38(uint8_t* rdram, recomp_context* ctx);
 
 namespace {
     constexpr uint32_t hud_block = 0x800D23D0, hud_block_end = 0x800D28A0;
-    constexpr uint32_t hud_list_head = 0x800D245C;   // the HUD's list of things it has allocated (its pieces flying off), in the block
+    constexpr uint32_t hud_list_head = 0x800D245C;
+    constexpr uint32_t hud_mirror_start = 0x80FA0000;   // (0.10.61) players 2-4's blocks as drawn, 0x800 each, two each   // the HUD's list of things it has allocated (its pieces flying off), in the block
     std::vector<uint8_t> hud_copies[4];
     uint32_t hud_copies_for = 0xFFFFFFFFu;   // the scene load (coop_loaded_at) the copies were made at
     uint32_t hud_ranges[4][2] = {};          // this frame's drawing for each player: [start, end) in the display list
@@ -907,6 +912,24 @@ extern "C" void conker_coop_hud_draw(uint8_t* rdram, recomp_context* ctx) {
         gfx = (uint32_t)ctx->r2;
         hud_ranges[k][1] = gfx;
         *ctx = saved;
+        // (0.10.61) the list points into the HUD's block for its matrices (the chocolate bar's pieces, D_800D2590...), which is
+        // player 1's again by the time the picture is drawn: so player k's block is copied to a place of its own (past the game's
+        // 8 MB, one for each of the two frames in flight, D_800BE9C0) and player k's commands pointed there
+        {
+            const uint32_t buffer = (uint32_t)MEM_W(0, (gpr)(int32_t)0x800BE9C0) & 1u;
+            const uint32_t mirror = hud_mirror_start + ((uint32_t)k * 2u + buffer) * 0x800u;
+            for (uint32_t i = 0; i < hud_block_end - hud_block; i += 4) {
+                MEM_W(i, (gpr)(int32_t)mirror) = MEM_W(i, (gpr)(int32_t)hud_block);
+            }
+            for (uint32_t a = hud_ranges[k][0]; a + 8 <= gfx; a += 8) {
+                const uint32_t w1 = (uint32_t)MEM_W(4, (gpr)(int32_t)a);
+                const uint32_t physical = w1 & 0x1FFFFFFFu;
+                if (physical >= (hud_block & 0x1FFFFFFFu) && physical < (hud_block_end & 0x1FFFFFFFu) && ((w1 >> 24) == 0x80 || (w1 >> 24) == 0x00)) {
+                    const uint32_t moved = (mirror & 0x1FFFFFFFu) + (physical - (hud_block & 0x1FFFFFFFu));
+                    MEM_W(4, (gpr)(int32_t)a) = (int32_t)((w1 & 0xE0000000u) | moved);
+                }
+            }
+        }
         hud_swap_characters(rdram, k);
         hud_swap_block(rdram, hud_copies[k]);
     }
@@ -932,12 +955,59 @@ extern "C" void conker_coop_hud_draw(uint8_t* rdram, recomp_context* ctx) {
     }
 }
 
+// (0.10.61) before func_150198FC's call of func_1508FD38: where player 1's HUD starts ($v0, the list so far)
+extern "C" void conker_coop_hud_draw_start(uint8_t* rdram, recomp_context* ctx) {
+    (void)rdram;
+    hud_ranges[0][0] = (uint32_t)ctx->r2;
+    hud_ranges_frame_players = 0;
+}
+
+// net_view.cpp, once it has used this frame's ranges (a frame whose HUD isn't drawn leaves none behind)
+void conker::netmenu::coop_hud_clear() {
+    hud_ranges_frame_players = 0;
+}
+
 // net_view.cpp: this frame's HUD drawing for player `k` (0-3), or false
 bool conker::netmenu::coop_hud_range(int k, uint32_t* start, uint32_t* end) {
-    if (k < 1 || k >= hud_ranges_frame_players || k >= 4) {
+    if (k < 0 || k >= hud_ranges_frame_players || k >= 4) {
         return false;
     }
     *start = hud_ranges[k][0];
     *end = hud_ranges[k][1];
     return *end > *start;
+}
+
+
+// 0.10.61: co-op, the stage reloaded (every player down, or a checkpoint): func_15007A70(layout, mask, scene) loads a scene with the
+// players of the mask; the one-player game's reload asks for its own (player 1 alone, one screen), so the other players were left
+// watching player 1. In co-op, a load of the stage's scene gets the stage's players and layout again (as conker_coop_start set them).
+extern "C" void conker_coop_scene_load(uint8_t* rdram, recomp_context* ctx) {
+    if (!conker::netsession::active() || !coop_started || coop_players < 2 || coop_mask == 0) {
+        return;
+    }
+    const uint32_t scene = (uint32_t)ctx->r6;
+    const uint32_t want_scene = (uint32_t)(uint16_t)MEM_HU(8, (gpr)(int32_t)(0x80087430u + (uint32_t)coop_stage * 20u));
+    if (scene != want_scene) {
+        return;
+    }
+    if ((uint32_t)ctx->r5 == coop_mask && (uint32_t)ctx->r4 == coop_layout) {
+        return;
+    }
+    char line[160];
+    std::snprintf(line, sizeof(line), "[coop] f=%u the stage reloads with mask %X, layout %u: the co-op stage's again (mask %X, layout %u)",
+        (unsigned)conker::netsession::frame(), (unsigned)(uint32_t)ctx->r5, (unsigned)(uint32_t)ctx->r4, (unsigned)coop_mask, (unsigned)coop_layout);
+    conker::netsession::log(line);
+    ctx->r4 = (gpr)(int32_t)coop_layout;
+    ctx->r5 = (gpr)(int32_t)coop_mask;
+    MEM_W(0, (gpr)(int32_t)0x800BEA00) = (int32_t)coop_mask;
+    MEM_W(0, (gpr)(int32_t)0x800BEA04) = (int32_t)coop_layout;
+    for (uint32_t k = 0; k < 4; k++) {
+        MEM_B(0, (gpr)(int32_t)(0x80087270u + k)) = 0;
+    }
+    const int8_t players = (int8_t)coop_players;
+    MEM_B(0, (gpr)(int32_t)0x8008FD88) = players;
+    MEM_B(0, (gpr)(int32_t)0x8008FD8C) = players;
+    MEM_B(0, (gpr)(int32_t)0x8008FD90) = players;
+    MEM_B(0, (gpr)(int32_t)0x8008FD94) = players;
+    MEM_B(0, (gpr)(int32_t)0x800BE618) = players;
 }

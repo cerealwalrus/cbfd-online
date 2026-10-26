@@ -289,7 +289,7 @@ namespace {
         const uint32_t mine_s0 = scissor_word0(get_float(rdram, mine, field_left), get_float(rdram, mine, field_top));
         const uint32_t mine_s1 = scissor_word1(get_float(rdram, mine, field_right), get_float(rdram, mine, field_bottom));
         static int logged = 0;
-        for (int k = 1; k < players && k < 4; k++) {
+        for (int k = 0; k < players && k < 4; k++) {
             uint32_t from = 0, to = 0;
             if (!conker::netmenu::coop_hud_range(k, &from, &to) || (from >> 24) != 0x80 || to - from > 0x20000u) {
                 continue;
@@ -301,6 +301,9 @@ namespace {
                     MEM_W(0, (gpr)(int32_t)a) = 0;
                     MEM_W(4, (gpr)(int32_t)a) = 0;
                     continue;
+                }
+                if (k == 0) {
+                    continue;   // (player 1's on player 1's machine: as the game draws it)
                 }
                 if ((w0 >> 24) == 0xDC && (w0 & 0x00FFFFFFu) == 0x080008u && w1 >= first + field_viewports && w1 < first + field_viewports + 0x40) {
                     MEM_W(4, (gpr)(int32_t)a) = (int32_t)(w1 - first + mine);
@@ -1592,6 +1595,7 @@ void conker::netview::port_read() {
 }
 
 void conker::netview::frame_begin(uint8_t* rdram) {
+    conker::netmenu::coop_hud_clear();   // (0.10.61: the co-op HUD ranges are this frame's only)
     (void)rdram;
     if (conker::netsession::active()) {
         conker::netsession::watch_poll("dlb", 0);
