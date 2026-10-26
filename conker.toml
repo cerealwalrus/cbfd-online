@@ -1180,3 +1180,16 @@ text = "{ extern void conker_race_columns(uint8_t*, recomp_context*); conker_rac
 func = "func_151E7F60"
 before_vram = 0x151E8004
 text = "{ extern void conker_race_places(uint8_t*, recomp_context*); conker_race_places(rdram, ctx); }"
+
+# 0.10.26: online, computer players with three or four players (host/src/mp_characters.cpp): the most characters on the screen after
+# the character select ($s4) ...
+[[patches.hook]]
+func = "func_151E1214"
+before_vram = 0x151E1350
+text = "{ extern void conker_bots_most(uint8_t*, recomp_context*); conker_bots_most(rdram, ctx); }"
+
+# ... and the teams screen's team sizes kept with three or more players ($t8, the players, as if under 3).
+[[patches.hook]]
+func = "func_151E1744"
+before_vram = 0x151E1C94
+text = "{ extern void conker_team_sizes(uint8_t*, recomp_context*); conker_team_sizes(rdram, ctx); }"

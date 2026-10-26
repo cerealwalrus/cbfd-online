@@ -8,6 +8,7 @@
 // leader). Online those bits are set once a frame (func_10011BB8) on every machine (the same frame for all, so the game stays the
 // same everywhere); no other cheat is touched.
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 
@@ -62,16 +63,25 @@ extern "C" void conker_team_caps(uint8_t* rdram, recomp_context* ctx) {
         return;
     }
     const int humans = humans_now(rdram);
-    if (humans >= 3 && (int32_t)ctx->r5 < humans - 1) {
-        static int logged = 0;
-        if (logged < 4) {
-            char line[120];
-            std::snprintf(line, sizeof(line), "[teams] %d players: most on one team %d raised to %d", humans, (int)(int32_t)ctx->r5, humans - 1);
-            conker::netsession::log(line);
-            logged++;
-        }
-        ctx->r5 = (gpr)(int32_t)(humans - 1);
+    if (humans < 3) {
+        return;
     }
+    // (0.10.26: all of them on one team, the other then the computer players'; and as many characters as the mode has with fewer
+    // players, $s3, the most of the entry's two (+2 under three players, +5 three or more), $v0 the entry)
+    const int most_before = (int)(int32_t)ctx->r19;
+    const int most = std::max(most_before, (int)(int8_t)MEM_B(2, ctx->r2));
+    static int logged = 0;
+    if (((int32_t)ctx->r5 < humans || most != most_before) && logged < 4) {
+        char line[160];
+        std::snprintf(line, sizeof(line), "[teams] %d players: most on one team %d raised to %d, most characters %d to %d", humans, (int)(int32_t)ctx->r5, humans,
+            most_before, most);
+        conker::netsession::log(line);
+        logged++;
+    }
+    if ((int32_t)ctx->r5 < humans) {
+        ctx->r5 = (gpr)(int32_t)humans;
+    }
+    ctx->r19 = (gpr)(int32_t)most;
 }
 
 // func_151E1744 at 0x151E1E4C: $s0 the list's length, with the computer players added.
@@ -95,7 +105,9 @@ extern "C" void conker_team_trim(uint8_t* rdram, recomp_context* ctx) {
     if (table < 0 || table > 16) {
         return;
     }
-    const int most = (int)(int8_t)MEM_B(5, (gpr)(int32_t)(team_tables + (uint32_t)table * 12u));
+    // (0.10.26: the most characters as conker_team_caps makes it: the larger of the entry's two)
+    const uint32_t entry = team_tables + (uint32_t)table * 12u;
+    const int most = std::max((int)(int8_t)MEM_B(5, (gpr)(int32_t)entry), (int)(int8_t)MEM_B(2, (gpr)(int32_t)entry));
     int count = (int)(int16_t)(int32_t)ctx->r16;
     const int before = count;
     while (count > most && count > humans && count <= 16 && (int8_t)MEM_B(0, (gpr)(int32_t)(team_list + (uint32_t)(count - 1))) == -2) {
@@ -141,5 +153,44 @@ extern "C" void conker_race_places(uint8_t* rdram, recomp_context* ctx) {
     (void)rdram;
     if (conker::netsession::active()) {
         ctx->r3 = ctx->r10;
+    }
+}
+
+// 0.10.26: online, computer players with three or four players too, as many as the mode has with fewer players.
+//
+// The modes with a character select count their computer players on the screen after it (func_151E1214), up to the most characters
+// for the number of players: a row of four (one to four players) at D_800AB74C, the mode's row from D_8008FEE4 (most modes 10, 8, 4, 4;
+// the race 8, 4, 4, 4). With four players that was four: no computer players. Online with three or four the most is the row's largest
+// ($s4, loaded in the delay slot before 0x151E1350, $v0 the row, $a1 the players).
+extern "C" void conker_bots_most(uint8_t* rdram, recomp_context* ctx) {
+    if (!conker::netsession::active()) {
+        return;
+    }
+    const int humans = (int)(int32_t)ctx->r5;
+    if (humans < 3) {
+        return;
+    }
+    int most = (int)(int32_t)ctx->r20;
+    for (uint32_t i = 0; i < 4; i++) {
+        most = std::max(most, (int)(int8_t)MEM_B(i, ctx->r2));
+    }
+    if (most != (int)(int32_t)ctx->r20) {
+        static int logged = 0;
+        if (logged < 4) {
+            char line[120];
+            std::snprintf(line, sizeof(line), "[bots] %d players: most characters %d raised to %d", humans, (int)(int32_t)ctx->r20, most);
+            conker::netsession::log(line);
+            logged++;
+        }
+        ctx->r20 = (gpr)(int32_t)most;
+    }
+}
+
+// 0.10.26: online, the teams screen's team sizes (D_8008FDC4, which moves places from one team to the other: L and R on the screen)
+// with three or four players too: the game puts it back to 0 with three or more ($t8 the players, compared with 3 at 0x151E1C94).
+extern "C" void conker_team_sizes(uint8_t* rdram, recomp_context* ctx) {
+    (void)rdram;
+    if (conker::netsession::active()) {
+        ctx->r24 = 0;
     }
 }
