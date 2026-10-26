@@ -53,6 +53,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <string>
 
 #include <SDL.h>
 
@@ -609,6 +610,52 @@ extern "C" void conker_mouse_camera_collide(uint8_t* rdram, recomp_context* ctx)
         write_float(rdram, camera, 0x2F8 + i * 4, eye);
         orbit.next_target[i] = target[i];
     }
+}
+
+// 0.10.12, logging only: online, this machine's own camera's commands (func_1512D560: $a1 the command, $a2 its argument) and the
+// follow camera's resets (func_15127EB8), with the caller ($ra), and the game's per player list at D_800872A0 (0x84 bytes each,
+// D_800D2398 of them: func_15087CC0 runs func_150891E8 for those whose +0x30 is 2 or more, which queues command 5, the reset).
+namespace {
+    int camera_command_logs = 0;
+    bool local_camera(uint8_t* rdram, gpr camera) {
+        int index = -1;
+        return conker::netsession::active() && pick(rdram, camera, &index) != nullptr && index == conker::netsession::local_slot();
+    }
+}
+
+extern "C" void conker_camera_command_log(uint8_t* rdram, recomp_context* ctx) {
+    if (camera_command_logs >= 300 || !local_camera(rdram, ctx->r4)) {
+        return;
+    }
+    camera_command_logs++;
+    char line[200];
+    std::snprintf(line, sizeof(line), "[camera] f=%u command %d (argument %08X) queued from %08X", conker::netsession::frame(),
+        (int)(int32_t)ctx->r5, (unsigned)(uint32_t)ctx->r6, (unsigned)(uint32_t)ctx->r31);
+    conker::netsession::log(line);
+    // and the per player list, each time a command is queued
+    const uint32_t list = (uint32_t)MEM_W(0, (gpr)(int32_t)0x800872A0);
+    const int count = (int)(int8_t)MEM_B(0, (gpr)(int32_t)0x800D2398);
+    if ((list >> 24) == 0x80 && count > 0 && count <= 8) {
+        std::string text = "[camera]   the list at D_800872A0 (" + std::to_string(count) + "):";
+        for (int i = 0; i < count; i++) {
+            const gpr entry = (gpr)(int32_t)(list + (uint32_t)i * 0x84u);
+            char part[64];
+            std::snprintf(part, sizeof(part), " [%d: 30=%d 31=%d 48=%u 49=%d 4A=%u 4B=%u]", i, (int)(int8_t)MEM_B(0x30, entry), (int)(int8_t)MEM_B(0x31, entry),
+                (unsigned)MEM_BU(0x48, entry), (int)(int8_t)MEM_B(0x49, entry), (unsigned)MEM_BU(0x4A, entry), (unsigned)MEM_BU(0x4B, entry));
+            text += part;
+        }
+        conker::netsession::log(text.c_str());
+    }
+}
+
+extern "C" void conker_camera_reset_log(uint8_t* rdram, recomp_context* ctx) {
+    if (camera_command_logs >= 300 || !local_camera(rdram, ctx->r4)) {
+        return;
+    }
+    camera_command_logs++;
+    char line[160];
+    std::snprintf(line, sizeof(line), "[camera] f=%u the follow camera reset (func_15127EB8) from %08X", conker::netsession::frame(), (unsigned)(uint32_t)ctx->r31);
+    conker::netsession::log(line);
 }
 
 // func_151284C4 (builds the view), after its first instruction: $a0 is the camera. The

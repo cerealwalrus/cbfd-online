@@ -26,6 +26,7 @@
 #include "nfd.h"
 
 #include "librecomp/game.hpp"
+#include "librecomp/mods.hpp"
 #include "ultramodern/ultramodern.hpp"
 #include "recompinput/input_binding.h"
 #include "recompinput/input_events.h"
@@ -64,6 +65,9 @@ namespace {
     // version in play. The title is set on the main thread (update_gfx), as macOS requires.
     recompui::GameOption* version_option = nullptr;
     recompui::GameOption* add_rom_option = nullptr;
+    recompui::GameOption* start_option = nullptr;
+    // 0.10.12: when a ROM was last loaded (Load ROM, Add ROM), steady clock ticks: a click on Single Player just after it is ignored
+    std::atomic<int64_t> rom_loaded_ticks{ 0 };
     std::mutex title_mutex;
     std::string pending_title;
 
@@ -354,6 +358,32 @@ namespace {
     }
 
     // The Add ROM option: loads another ROM, which is kept as a version and put in play.
+    // 0.10.12: a ROM loaded (Load ROM, or Add ROM). The runtime's list of valid ROMs is made again (it's made once, at startup, and
+    // without this Online said to load the ROM first), the first option becomes Single Player, and a message says it's done.
+    // Someone loading their ROM for the first time had the game start as Load ROM finished: the click that picked the file in the
+    // file dialog went on to the launcher, where the option under it was Single Player by then. For a moment after a ROM is loaded,
+    // a click on Single Player is ignored, and the message takes the clicks after that.
+    void rom_now_loaded(const char* text) {
+        recomp::check_all_stored_roms();
+        rom_loaded_ticks = std::chrono::steady_clock::now().time_since_epoch().count();
+        if (start_option != nullptr && recomp::is_rom_valid(supported_games[0].game_id)) {
+            recompui::ContextId ui_context = recompui::get_launcher_context_id();
+            const bool opened = ui_context.open_if_not_already();
+            start_option->set_title("Single Player");
+            if (opened) {
+                ui_context.close();
+            }
+        }
+        recompui::message_box(text);
+    }
+
+    bool rom_just_loaded() {
+        const int64_t since = std::chrono::steady_clock::now().time_since_epoch().count() - rom_loaded_ticks.load();
+        return rom_loaded_ticks.load() != 0 && since >= 0 && std::chrono::steady_clock::duration(since) < std::chrono::milliseconds(1500);
+    }
+
+    void on_start_selected();
+
     void on_add_rom_selected() {
         recompui::file::open_file_dialog([](bool success, const std::filesystem::path& path) {
             if (!success) {
@@ -372,8 +402,49 @@ namespace {
             }
             if (result != recomp::RomValidationError::Good) {
                 recompui::message_box(conker::rom_error_text(result));
+                return;
             }
             // The launcher's update picks the new version up once it's written.
+            rom_now_loaded("The ROM was added. Choose Single Player or Online to play.");
+        });
+    }
+
+    // The first option, Load ROM until there's a ROM and Single Player after (recompui's own, but for rom_now_loaded).
+    void on_start_selected() {
+        const recomp::GameEntry& game = supported_games[0];
+        if (recomp::is_rom_valid(game.game_id)) {
+            if (rom_just_loaded()) {
+                return;
+            }
+            recompui::update_game_mod_id(game.mod_game_id);
+            if (recomp::mods::game_mode_count(game.mod_game_id, false) > 0) {
+                recompui::get_launcher_menu()->show_game_mode_menu(game.game_id, game.display_name, game.thumbnail_bytes);
+            }
+            else {
+                recomp::start_game(game.game_id, {});
+                recompui::hide_all_contexts();
+            }
+            return;
+        }
+        recompui::file::open_file_dialog([](bool success, const std::filesystem::path& path) {
+            if (!success) {
+                return;
+            }
+            recomp::RomValidationError result = recomp::select_rom(path, supported_games[0].game_id);
+            if (result == recomp::RomValidationError::IncorrectVersion) {
+                std::string region = conker::roms::region_of(path);
+                if (!region.empty() && region != "US") {
+                    std::string text = "This is the " + region + " version of Conker's Bad Fur Day. Only the US "
+                        "version is supported (and ROM hacks of it that only change the game's assets).";
+                    recompui::message_box(text.c_str());
+                    return;
+                }
+            }
+            if (result != recomp::RomValidationError::Good) {
+                recompui::message_box(conker::rom_error_text(result));
+                return;
+            }
+            rom_now_loaded("The ROM was loaded. Choose Single Player or Online to play.");
         });
     }
 
@@ -468,7 +539,8 @@ namespace {
         conker::notices::on_ui_ready();
         conker::local_achievements::init();
         conker::reticle::on_ui_ready();
-        options->add_start_game_or_load_rom_option("Load ROM", "Single Player");   // (recompui's is "Start Game")
+        start_option = options->add_start_game_or_load_rom_option("Load ROM", "Single Player");   // (recompui's is "Start Game")
+        start_option->set_callback(on_start_selected);
         options->add_option("Online", []() { conker::netlobby::show(); });
         options->add_setup_controls_option();
         options->add_settings_option();

@@ -607,6 +607,19 @@ func = "func_151284C4"
 before_vram = 0x151284C8
 text = "{ extern void conker_mouse_camera(uint8_t*, recomp_context*); conker_mouse_camera(rdram, ctx); }"
 
+# 0.10.12, logging only (host/src/mouse_camera.cpp): the camera's command queue (func_1512D560 adds one: $a0 the camera, $a1 the
+# command, $a2 its argument) and the follow camera's reset (func_15127EB8, $a0 the camera), with who called them, for this
+# machine's own camera online: the 4 player game's teddies had their camera reset about every 35 frames.
+[[patches.hook]]
+func = "func_1512D560"
+before_vram = 0x1512D560
+text = "{ extern void conker_camera_command_log(uint8_t*, recomp_context*); conker_camera_command_log(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_15127EB8"
+before_vram = 0x15127EB8
+text = "{ extern void conker_camera_reset_log(uint8_t*, recomp_context*); conker_camera_reset_log(rdram, ctx); }"
+
 # Aiming: Swap Sticks with the shotgun (host/src/look_aim.cpp, issue #84): after R alone's movement in Conker's
 # state 0x3B (func_15063E84 returned, $s0 Conker), R alone shows the laser sight as R and Z do.
 [[patches.hook]]
