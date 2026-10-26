@@ -71,6 +71,9 @@ void conker::netmenu::set_input(int slot, uint16_t buttons, int x, int y) {
 
 extern "C" void conker_net_pause_hook(uint8_t* rdram, recomp_context* ctx, int which) {
     if (!menu_open) {
+        if (which == 7) {
+            put_back(rdram);   // (the menu closed this frame: a slot it borrowed still goes back)
+        }
         return;
     }
     if (which == 1) {
@@ -81,6 +84,11 @@ extern "C" void conker_net_pause_hook(uint8_t* rdram, recomp_context* ctx, int w
         put_back(rdram);   // (the menu has read its input by now: the slot's own goes back)
         // before the jal: its delay slot makes $a1 (the y of RESTART's button, in the game's 320 x 240 screen) from $t9
         ctx->r25 = (gpr)(int64_t)(450 << 16);
+    } else if (which == 7) {
+        // (0.10.71) func_151DDC20's end: the borrowed slot's own input back, whichever way the menu went (its Y and N screen
+        // doesn't pass 0x151DE2F0, so in 0.10.70 the player's own slot kept the menu's stick and buttons: their Conker moved on this
+        // machine alone, the RNG went apart and the host resynced it, which showed as the flicker)
+        put_back(rdram);
     } else if (which == 5) {
         // QUIT's y is 0x1F below RESTART's: it goes up to RESTART's place
         ctx->r5 = (gpr)(int64_t)(int32_t)((int32_t)ctx->r5 - 0x1F);
