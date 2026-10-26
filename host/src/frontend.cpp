@@ -1114,7 +1114,9 @@ namespace {
             // travels with the frame's input (net_session.cpp) so every machine acts on it at the same frame.
             const bool online_game = conker::netsession::active();
             const int aim_player = online_game ? conker::netsession::local_slot() : port;
-            const bool online_swap = online_game && port == 0 && pad != nullptr && conker::look_aim::online_swap_enabled();
+            // (0.10.84: not in co-op with no weapon out: R starts no look there, and the swapped left stick couldn't move him)
+            const bool coop_no_look = online_game && conker::netmenu::coop_unarmed(aim_player);
+            const bool online_swap = online_game && port == 0 && pad != nullptr && conker::look_aim::online_swap_enabled() && !coop_no_look;
             // 0.10.6: with R up the sticks are swapped only for an aim that has gone on without R for half a second (an aiming mode
             // R doesn't hold). Before, they stayed swapped while the game had aimed in the last 80 ms, and it aims a few frames on
             // after R is let go (the input delay, and the look's last frames): with no weapon Conker stood still a moment after the
@@ -1149,7 +1151,7 @@ namespace {
             // (0.9.57: not through the look's first stage any more: the view now follows the aim there, look_aim.cpp's conker_look_stage_one.)
             const int stage = conker::look_aim::look_stage(aim_player);
             const bool entry_hold = online_game && port == 0 && pad != nullptr && (*buttons & 0x0010) != 0
-                && stage == 0 && !conker::look_aim::aiming_recently(aim_player);
+                && stage == 0 && !conker::look_aim::aiming_recently(aim_player) && !coop_no_look;
             if (entry_hold) {
                 if (swapped) {
                     *x = 0.0f;

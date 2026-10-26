@@ -680,6 +680,18 @@ namespace {
     }
 }
 
+// 0.10.84: co-op, the players with no weapon out (bit k: player k+1), from the game's frame (conker_coop_frame). Without a weapon
+// the stage has no look for R (the one-player game's Conker: nothing starts, logged "R held with the look off"), so with Aiming: Swap
+// Sticks the left stick became the C-buttons and was then held still: he couldn't move with R held. frontend.cpp reads it and
+// doesn't swap the sticks for R then: the left stick walks him as it does without R.
+namespace {
+    std::atomic<uint32_t> coop_unarmed_bits{ 0 };
+}
+
+bool conker::netmenu::coop_unarmed(int player) {
+    return player >= 0 && player < 4 && (coop_unarmed_bits.load() & (1u << player)) != 0;
+}
+
 extern "C" void conker_coop_frame(uint8_t* rdram, recomp_context* ctx) {
     coop_frames.fetch_add(1);
     if (!conker::netsession::active() || !conker::netmenu::coop_running(rdram)) {
@@ -690,6 +702,7 @@ extern "C" void conker_coop_frame(uint8_t* rdram, recomp_context* ctx) {
         coop_control_last.clear();
         coop_dump_at = 0;
         coop_dumped = false;
+        coop_unarmed_bits.store(0);
         return;
     }
     // (0.10.80, measuring, to take Conker's idle animations out) each player's character's animation (+0x84) as it changes, with how
@@ -822,6 +835,16 @@ extern "C" void conker_coop_frame(uint8_t* rdram, recomp_context* ctx) {
                 conker::netsession::log(line);
                 coop_modes[k] = modes[k];
             }
+        }
+        // (0.10.84) who has no weapon out (mode 0), for this machine's controller (frontend.cpp: R doesn't swap the sticks then)
+        {
+            uint32_t bits = 0;
+            for (int k = 0; k < count; k++) {
+                if (modes[k] == 0) {
+                    bits |= 1u << k;
+                }
+            }
+            coop_unarmed_bits.store(bits);
         }
         int holder = -1;
         for (int k = 0; k < count; k++) {
