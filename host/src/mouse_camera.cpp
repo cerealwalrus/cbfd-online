@@ -54,6 +54,7 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <vector>
 
 #include <SDL.h>
 
@@ -961,4 +962,65 @@ extern "C" void conker_view_snap_guard(uint8_t* rdram, recomp_context* ctx) {
     std::memcpy(g.look, look, sizeof(g.look));
     g.frame = now;
     g.have = true;
+}
+
+
+// 0.10.18, logging only: online, calls of the functions that can set a camera's snap (+0x23C), each told apart by who called it ($ra):
+// the first few of each with their arguments, and every 15 s how many there were. id: 1 func_150054C4, 2 func_15082A44, 3 func_15128774
+// (a camera's start), 4 func_1512D6F0, 5 func_15005C80, 6 func_15005E70, 7 func_150B67E0, 8 func_15096D78, 9 func_1512E8E0 (camera zones).
+namespace {
+    struct ProbeKey { int id; uint32_t ra; uint32_t count; uint32_t logged; };
+    std::vector<ProbeKey> probe_keys;
+    uint32_t probe_dump_frame = 0;
+}
+
+extern "C" void conker_cam_probe(uint8_t* rdram, recomp_context* ctx, int id) {
+    if (!conker::netsession::active()) {
+        return;
+    }
+    const uint32_t ra = (uint32_t)ctx->r31;
+    const uint32_t now = conker::netsession::frame();
+    ProbeKey* key = nullptr;
+    for (ProbeKey& k : probe_keys) {
+        if (k.id == id && k.ra == ra) {
+            key = &k;
+            break;
+        }
+    }
+    if (key == nullptr) {
+        if (probe_keys.size() >= 200) {
+            return;
+        }
+        probe_keys.push_back(ProbeKey{ id, ra, 0, 0 });
+        key = &probe_keys.back();
+    }
+    key->count++;
+    // which camera (+0x23D's player) a0 or a1 is, if either is one of the look cameras
+    int camera_of[2] = { -1, -1 };
+    const uint32_t base = (uint32_t)MEM_W(0, (gpr)(int32_t)current_camera);
+    const uint32_t args[2] = { (uint32_t)ctx->r4, (uint32_t)ctx->r5 };
+    for (int a = 0; a < 2; a++) {
+        if (base != 0 && args[a] >= base && (args[a] - base) % camera_stride == 0 && (args[a] - base) / camera_stride < 4) {
+            camera_of[a] = (int)((args[a] - base) / camera_stride);
+        }
+    }
+    const int local = conker::netsession::local_slot();
+    const bool mine = camera_of[0] == local || camera_of[1] == local;
+    if (key->logged < 6 || (mine && key->logged < 40)) {
+        key->logged++;
+        char line[200];
+        std::snprintf(line, sizeof(line), "[camera] f=%u probe %d from %08X: a0 %08X (camera %d) a1 %08X (camera %d) a2 %08X%s", now, id, ra,
+            args[0], camera_of[0], args[1], camera_of[1], (unsigned)(uint32_t)ctx->r6, mine ? " (this machine's)" : "");
+        conker::netsession::log(line);
+    }
+    if (now >= probe_dump_frame + 450) {
+        probe_dump_frame = now;
+        std::string text = "[camera] f=" + std::to_string(now) + " probe counts:";
+        for (const ProbeKey& k : probe_keys) {
+            char part[40];
+            std::snprintf(part, sizeof(part), " %d@%08X=%u", k.id, k.ra, k.count);
+            text += part;
+        }
+        conker::netsession::log(text.c_str());
+    }
 }
