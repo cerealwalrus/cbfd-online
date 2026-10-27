@@ -1033,6 +1033,20 @@ extern "C" void func_1510F800(uint8_t* rdram, recomp_context* ctx);
 extern "C" void func_1510B690(uint8_t* rdram, recomp_context* ctx);
 extern "C" void func_15112A80(uint8_t* rdram, recomp_context* ctx);
 extern "C" void func_15113218(uint8_t* rdram, recomp_context* ctx);
+extern "C" void func_15188B74(uint8_t* rdram, recomp_context* ctx);
+extern "C" void func_1516706C(uint8_t* rdram, recomp_context* ctx);
+extern "C" void func_151671E8(uint8_t* rdram, recomp_context* ctx);
+extern "C" void func_150A0D8C(uint8_t* rdram, recomp_context* ctx);
+extern "C" void func_151738C4(uint8_t* rdram, recomp_context* ctx);
+extern "C" void func_1502C1A4(uint8_t* rdram, recomp_context* ctx);
+extern "C" void func_15113C88(uint8_t* rdram, recomp_context* ctx);
+extern "C" void func_15183D28(uint8_t* rdram, recomp_context* ctx);
+extern "C" void func_151670C0(uint8_t* rdram, recomp_context* ctx);
+extern "C" void func_15177A94(uint8_t* rdram, recomp_context* ctx);
+extern "C" void func_151814FC(uint8_t* rdram, recomp_context* ctx);
+extern "C" void func_1517F75C(uint8_t* rdram, recomp_context* ctx);
+extern "C" void func_1517F7B4(uint8_t* rdram, recomp_context* ctx);
+extern "C" void func_15036148(uint8_t* rdram, recomp_context* ctx);
 
 namespace {
     constexpr uint32_t game_size = 0x400000;
@@ -1338,11 +1352,38 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
     *ctx = saved;
     // (possess28) what each object is in sight of (func_15019130's after its views' loops: func_15112A80 and func_15113218 clear
     // and set each object's bit of the views that see it, the bit a view's passes draw it by), for the extra camera as view 1
-    ctx->r4 = 0;
-    func_15112A80(rdram, ctx);
-    *ctx = saved;
-    func_15113218(rdram, ctx);
-    *ctx = saved;
+    // (possess31) and the rest of func_15019130 after its views' loops, as it runs them (the same calls, in order: what each object is in
+    // sight of, the objects' and the characters' drawing made ready for the views that see them, the queue of what's drawn), but for
+    // func_151749F8, func_1502BEE4 and func_150636F0 (they load from the cartridge) and the frame's counters at its end
+    {
+        const bool one_view_way = MEM_BU(0, (gpr)(int32_t)0x800BEAC0) == 0;
+        const bool tail_a = MEM_BU(0, (gpr)(int32_t)0x800BE616) == 0;
+        auto call0 = [&](void (*fn)(uint8_t*, recomp_context*)) { fn(rdram, ctx); *ctx = saved; };
+        auto call1 = [&](void (*fn)(uint8_t*, recomp_context*), int32_t a0) { ctx->r4 = (gpr)a0; fn(rdram, ctx); *ctx = saved; };
+        call1(func_15112A80, 0);
+        call1(func_15188B74, 0);
+        if (one_view_way) {
+            call0(func_1516706C);
+            call0(func_151671E8);
+        }
+        if (tail_a) {
+            call0(func_150A0D8C);
+        }
+        call0(func_15113218);
+        call1(func_15188B74, 1);
+        call1(func_151738C4, MEM_W(0, (gpr)(int32_t)0x800BE9F0));
+        call0(func_1502C1A4);
+        call0(func_15113C88);
+        if (one_view_way) {
+            call0(func_15183D28);
+            call0(func_151670C0);
+            call0(func_15177A94);
+            call0(func_151814FC);
+        }
+        call0(func_1517F75C);
+        call0(func_1517F7B4);
+        call0(func_15036148);
+    }
     ctx->r4 = 0;
     func_15018F80(rdram, ctx);
     *ctx = saved;
