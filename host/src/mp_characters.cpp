@@ -196,3 +196,20 @@ extern "C" void conker_team_sizes(uint8_t* rdram, recomp_context* ctx) {
         ctx->r24 = 0;
     }
 }
+
+// 0.10.93: online, up to 10 characters on one team (the game's 8), as long as the match's most characters isn't passed: the teams
+// screen (func_151E1744) works out each team's size from the base size and the balance (D_8008FDC4), then keeps each between 1 and
+// 8, $v1 (or the second team's own most, the mode's), at 0x151E1D40 for each team. Online 8 is the most characters ($s3, 12 in the
+// war) less the players (so 2 players against 10 computer players, 3 against 9, 4 against 8: never more characters than the mode
+// allows), up to 10. The screen draws a figure for each, and the game sets up the characters the list has.
+extern "C" void conker_team_most(uint8_t* rdram, recomp_context* ctx) {
+    if (!conker::netsession::active() || (int32_t)ctx->r3 != 8) {
+        return;
+    }
+    const int humans = humans_now(rdram);
+    const int most = std::min(10, (int)(int32_t)ctx->r19 - std::max(humans, 1));
+    if (most > 8) {
+        ctx->r3 = (gpr)(int32_t)most;
+    }
+}
+

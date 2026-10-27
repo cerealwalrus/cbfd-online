@@ -1364,3 +1364,11 @@ text = "{ extern void conker_coop_look_strafe(uint8_t*, recomp_context*); conker
 func = "func_15124B18"
 before_vram = 0x15124C30
 text = "{ extern void conker_coop_camera_distance(uint8_t*, recomp_context*); conker_coop_camera_distance(rdram, ctx); }"
+
+# 0.10.93: online, up to 10 characters on a team on the teams screen (host/src/mp_characters.cpp, conker_team_most): $v1 the most
+# for the team being kept in range (8, or the mode's second team's own).
+[[patches.hook]]
+func = "func_151E1744"
+before_vram = 0x151E1D40
+text = "{ extern void conker_team_most(uint8_t*, recomp_context*); conker_team_most(rdram, ctx); }"
+
