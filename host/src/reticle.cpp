@@ -172,7 +172,8 @@ namespace {
     void aiming_frame(uint8_t* rdram, gpr camera, uint32_t state) {
         const uint32_t index = MEM_BU(0x23D, camera);
         const bool online = conker::netsession::active();
-        if (index != (uint32_t)(online ? conker::netsession::view_player() : 0)) {
+        // (possess-test: offline, the camera controller 1 plays, the extra camera's too)
+        if (index != (uint32_t)(online ? conker::netsession::view_player() : conker::possess_test::played_camera())) {
             return;
         }
         const gpr view = (gpr)(int32_t)((uint32_t)MEM_W(0, cameras_pointer) + index * camera_size);
@@ -200,7 +201,7 @@ void conker::reticle::look_frame(uint8_t* rdram, gpr camera, uint32_t state) {
     if (state == slingshot || state == throwing_knives) {
         aiming_frame(rdram, camera, state);
     }
-    else if (conker::netsession::active() && (state == online_guns[0] || state == online_guns[1])) {
+    else if ((conker::netsession::active() || conker::possess_test::played_camera() != 0) && (state == online_guns[0] || state == online_guns[1])) {
         aiming_frame(rdram, camera, state);
     }
 }
