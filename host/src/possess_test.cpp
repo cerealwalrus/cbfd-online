@@ -171,23 +171,28 @@ namespace {
         {0x800DC2C0, 0x68, true},   // 32
         {0x800DCD30, 0x3, false},   // 33
         {0x800DCDE0, 0x18, true},   // 34
-        {0x800DD2B0, 0x1, false},   // 35
-        {0x800DD2C0, 0x1, false},   // 36
-        {0x800DDD78, 0x1, false},   // 37
-        {0x800DDD90, 0x3, false},   // 38
-        {0x800DDD9C, 0x1, false},   // 39
-        {0x800DDDA0, 0x3, false},   // 40
-        {0x800DDDAC, 0x1, false},   // 41
-        {0x800DDDB0, 0x4, false},   // 42
-        {0x800DDDC0, 0x1, false},   // 43
-        {0x800DDDC8, 0x4, false},   // 44
-        {0x800DDDD8, 0x4, false},   // 45
-        {0x800DDDE8, 0x8, false},   // 46
-        {0x800DDE10, 0x2, false},   // 47
-        {0x800DDE1C, 0x1, false},   // 48
-        {0x800DDE20, 0x1, false},   // 49
-        {0x800DDE28, 0x4, false},   // 50
+    // (possess45) 35 to 50 always on: a warp's tables (func_15172CA8, func_15172D80) and the HUD's (its fades, a hit's flash of colour,
+    // its screen effects: func_1517EE40, func_1517F488, func_15181D00 and the like), which the game writes while the match runs by the
+    // player's index (its camera's +0x23D, the 5th player's 4), not only while a view is drawn; and 52, the HUD's D_800DDE3C (conker.toml's
+    // possess45 hooks)
+        {0x800DD2B0, 0x1, true},   // 35
+        {0x800DD2C0, 0x1, true},   // 36
+        {0x800DDD78, 0x1, true},   // 37
+        {0x800DDD90, 0x3, true},   // 38
+        {0x800DDD9C, 0x1, true},   // 39
+        {0x800DDDA0, 0x3, true},   // 40
+        {0x800DDDAC, 0x1, true},   // 41
+        {0x800DDDB0, 0x4, true},   // 42
+        {0x800DDDC0, 0x1, true},   // 43
+        {0x800DDDC8, 0x4, true},   // 44
+        {0x800DDDD8, 0x4, true},   // 45
+        {0x800DDDE8, 0x8, true},   // 46
+        {0x800DDE10, 0x2, true},   // 47
+        {0x800DDE1C, 0x1, true},   // 48
+        {0x800DDE20, 0x1, true},   // 49
+        {0x800DDE28, 0x4, true},   // 50
         {0x800DF090, 0x10, false},   // 51
+        {0x800DDE3C, 0x1, true},   // 52 (possess45)
     };
     constexpr int slot4_count = (int)(sizeof(slot4_tables) / sizeof(slot4_tables[0]));
     constexpr uint32_t slot4_shadow = 0x80FD1000;    // ours: 0x100 a table
@@ -450,6 +455,8 @@ namespace {
     bool weapons_listed = false;
     int32_t pickup_state_was[pickups_most];
     int32_t held_was[25];
+    int32_t reach_was[25];          // (possess45) each character's reach byte (its brain's +0x1AF), to log its changes
+    uint32_t reach_logs = 0;
     uint32_t weapon_was[25];
     int32_t taken_was[props_most];
     uint32_t near_told[props_most][2];
@@ -523,7 +530,10 @@ namespace {
             for (int k = 0; k < 25; k++) {
                 held_was[k] = have_block && k < chars ? MEM_W(0xEB0 + 4 * (uint32_t)k, at(block)) : -1;
                 weapon_was[k] = weapon_of(k);
+                const uint32_t brain = brain_of(rdram, k);
+                reach_was[k] = brain != 0 ? (int32_t)MEM_BU(0x1AF, at(brain)) : -1;
             }
+            reach_logs = 0;
             log("f=%u [weapons] player 1's weapon: wanted %02X, out %02X, has %02X; the extra character's: wanted %02X, out %02X, has %02X",
                 (unsigned)frames, (unsigned)(weapon_was[0] & 0xFF), (unsigned)(weapon_was[0] >> 8 & 0xFF), (unsigned)(weapon_was[0] >> 16),
                 (unsigned)(weapon_was[extra] & 0xFF), (unsigned)(weapon_was[extra] >> 8 & 0xFF), (unsigned)(weapon_was[extra] >> 16));
@@ -543,6 +553,20 @@ namespace {
             if (held != held_was[k]) {
                 log("f=%u [weapons] character %d holds pickup %d (it had %d)", (unsigned)frames, k, (int)held, (int)held_was[k]);
                 held_was[k] = held;
+            }
+        }
+        // (possess45) each character's reach for the weapons (its brain's +0x1AF: 0x40 = 100 across; the possess44 test's extra character
+        // had 0 for most of the match, whose AI changes its own), as it changes: the players' and the bots'
+        for (int k = 0; k < 25; k++) {
+            const uint32_t brain = brain_of(rdram, k);
+            const int32_t reach = brain != 0 ? (int32_t)MEM_BU(0x1AF, at(brain)) : -1;
+            if (reach != reach_was[k]) {
+                if (reach_logs < 150) {
+                    reach_logs++;
+                    log("f=%u [weapons] character %d's reach byte (brain +0x1AF) %d -> %d%s (AI %d)", (unsigned)frames, k, (int)reach_was[k], (int)reach,
+                        k == extra && extra_played ? " (played)" : "", brain != 0 ? (int)MEM_BU(0x84, at(brain)) : -1);
+                }
+                reach_was[k] = reach;
             }
         }
         for (int k = 0; k < 25; k++) {
@@ -1133,6 +1157,32 @@ extern "C" void conker_possess_camera_frame(uint8_t* rdram, recomp_context* ctx)
         func_15122C5C(rdram, ctx);
     }
     *ctx = saved;
+    // (possess45) the 5th player's HUD state (its tables' slot 4, ours) moved on each frame as the game moves a player's: its hit's flash
+    // counted down (func_1517F75C does players 0 to D_80082FA0), its fade toward its end (func_1517F448, as each view is drawn)
+    if (slot4_on) {
+        const int32_t step = MEM_W(0, (gpr)(int32_t)0x800BE9E4);
+        const uint32_t flash = shadow_of(0x800DDE10), fade = shadow_of(0x800DDDB0), fade_end = shadow_of(0x800DDE28);
+        const int32_t flash_left = (int32_t)MEM_HU(0, (gpr)(int32_t)flash);
+        MEM_H(0, (gpr)(int32_t)flash) = (int16_t)(step < flash_left ? flash_left - step : 0);
+        const int32_t fade_now = MEM_W(0, (gpr)(int32_t)fade);
+        if (fade_now != MEM_W(0, (gpr)(int32_t)fade_end)) {
+            MEM_W(0, (gpr)(int32_t)fade) = fade_now + step;
+        }
+    }
+    // (possess45) the played extra character takes the weapons it comes to as a player's character does: its reach (the brain's +0x1AF,
+    // 0x40 = 100 across, func_1511DF6C) as a player's is (func_15082A44, func_1508E89C set 0x40); a bot's AI changes its own (the
+    // possess44 test: 0 for most of the match, and the M4 wasn't taken)
+    if (extra_played) {
+        const uint32_t brain = brain_of(rdram, extra);
+        if (brain != 0 && MEM_BU(0x1AF, (gpr)(int32_t)brain) != 0x40) {
+            static uint32_t told = 0;
+            if (told++ < 20) {
+                log("f=%u the played extra character's reach (brain +0x1AF) was %u: 0x40, a player's", (unsigned)frames,
+                    (unsigned)MEM_BU(0x1AF, (gpr)(int32_t)brain));
+            }
+            MEM_B(0x1AF, (gpr)(int32_t)brain) = 0x40;
+        }
+    }
     // (possess29 diagnostics) where the extra camera is, against the character it follows: shown, and played
     {
         static uint32_t told_shown = 0, told_played = 0;

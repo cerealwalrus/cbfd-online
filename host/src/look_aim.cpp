@@ -111,9 +111,13 @@ namespace {
     // it counts as aiming a little over two game frames after, so a frame the game takes longer over doesn't swap
     // the sticks back for a poll. Each player's, so in split screen each controller swaps as its player aims.
     constexpr int aim_players = 4;
-    std::atomic<int64_t> last_aim_ticks[aim_players] = {};
+    // (possess45) the signals the input thread reads for its own player (when it aims, its look's stage, the shotgun's aim): the 5th
+    // player's too, online (the possess test's extra camera, its +0x23D 4; signal_player), so its machine's right stick aims in R-Look.
+    // The rest of what's here (what the game's memory gets, on every machine) stays the 4 players'.
+    constexpr int signal_players = 5;
+    std::atomic<int64_t> last_aim_ticks[signal_players] = {};
     // The aim's yaw for each player's view this frame, from the look mode (conker_look_currents), while swapped.
-    std::atomic<int> look_stage_seen[aim_players] = {};
+    std::atomic<int> look_stage_seen[signal_players] = {};
     // Online, how far each player's look has settled from its start (0 swinging in, 1 settled): what Swap Sticks' view on the aim
     // (conker_look_currents) and the guns' up and down at once (gun_aim_online) are mixed in by. They put the view on the aim every
     // frame, so from the look's second stage its swing in had stopped dead: 0.9.56's snap, and 0.9.53's when the stick was held.
@@ -173,6 +177,14 @@ namespace {
         const int player = (int)MEM_BU(0x23D, camera);
         return (player < aim_players) ? player : -1;
     }
+    // (possess45) a camera's player for the input thread's signals: camera_player's, and online the 5th player's extra camera (4)
+    int signal_player(uint8_t* rdram, gpr camera) {
+        const int player = (int)MEM_BU(0x23D, camera);
+        if (player < aim_players) {
+            return player;
+        }
+        return (player == 4 && conker::netsession::active() && conker::possess_test::online_extra_camera()) ? 4 : -1;
+    }
     // Whether a player's sticks are swapped (they aim with the right stick, move with the left) for what the game does about
     // it: offline the setting and the aiming as it was a moment ago; online the flag in the frame's agreed input, which
     // every machine has the same (net_session.cpp), not anything local.
@@ -185,9 +197,9 @@ namespace {
     // Whether each player's character is in the shotgun's aiming state (0x3B, +0x4 of the camera's +0x3D0), where Z
     // (the laser sight) makes C-Left and C-Right turn the aim, for the input thread (z_turns_aim).
     constexpr uint8_t shotgun_aim_state = 0x3B;
-    std::atomic<bool> shotgun_aiming[aim_players] = {};
+    std::atomic<bool> shotgun_aiming[signal_players] = {};
     void note_aiming(uint8_t* rdram, gpr camera, int player) {
-        if (player >= 0 && player < aim_players) {
+        if (player >= 0 && player < signal_players) {
             last_aim_ticks[player] = std::chrono::steady_clock::now().time_since_epoch().count();
             const gpr character = (gpr)(int32_t)MEM_W(0x3D0, camera);
             shotgun_aiming[player] = (((uint32_t)character & 0xFF000000u) == 0x80000000u) && (MEM_BU(0x4, character) == shotgun_aim_state);
@@ -786,9 +798,13 @@ extern "C" void conker_look_view(uint8_t* rdram, recomp_context* ctx) {
     const gpr camera = ctx->r16;
     const int player = camera_player(rdram, camera);
     int previous_stage = 0;
-    if (player >= 0) {
-        previous_stage = look_stage_seen[player];
-        look_stage_seen[player] = (int)MEM_H(0x73C, camera);
+    {
+        // (possess45: the 5th player's look too, signal_player, for its machine's input; what follows is the 4 players')
+        const int signal = signal_player(rdram, camera);
+        if (signal >= 0) {
+            previous_stage = look_stage_seen[signal];
+            look_stage_seen[signal] = (int)MEM_H(0x73C, camera);
+        }
     }
     // 0.10.1: knocked out of the look by a hit, R still held. The game then turns Conker, 0xC00 a frame, until he faces away from his
     // moving angle (+0x76 of his object; facing +0x7A): logged three times, the turn ending at the moving angle + 0x8000. Walking in the
@@ -1013,7 +1029,7 @@ bool conker::look_aim::swap_sticks_now(int player) {
     if (option<Toggle>(options::aim_swap_sticks) != Toggle::On || !recompinput::players::is_single_player_mode() || conker::netsession::active()) {
         return false;
     }
-    if (player < 0 || player >= aim_players) {
+    if (player < 0 || player >= signal_players) {
         return false;
     }
     const int64_t since = std::chrono::steady_clock::now().time_since_epoch().count() - last_aim_ticks[player].load();
@@ -1021,7 +1037,7 @@ bool conker::look_aim::swap_sticks_now(int player) {
 }
 
 bool conker::look_aim::z_turns_aim(int player) {
-    return (player >= 0) && (player < aim_players) && shotgun_aiming[player].load();
+    return (player >= 0) && (player < signal_players) && shotgun_aiming[player].load();
 }
 
 bool conker::look_aim::online_swap_enabled() {
@@ -1191,11 +1207,11 @@ void conker::look_aim::gun_side_walk(uint8_t* rdram, int port, uint16_t* buttons
 }
 
 int conker::look_aim::look_stage(int player) {
-    return (player >= 0 && player < aim_players) ? look_stage_seen[player].load() : 0;
+    return (player >= 0 && player < signal_players) ? look_stage_seen[player].load() : 0;
 }
 
 bool conker::look_aim::aiming_recently(int player) {
-    if (player < 0 || player >= aim_players) {
+    if (player < 0 || player >= signal_players) {
         return false;
     }
     const int64_t since = std::chrono::steady_clock::now().time_since_epoch().count() - last_aim_ticks[player].load();
@@ -1501,7 +1517,7 @@ extern "C" void conker_aim_stick(uint8_t* rdram, recomp_context* ctx) {
     // Aiming: Reticle (reticle.cpp): this camera aims this frame.
     conker::reticle::aim_frame(rdram, ctx->r16);
     // Aiming: Swap Sticks: this camera's player is aiming.
-    note_aiming(rdram, ctx->r16, camera_player(rdram, ctx->r16));
+    note_aiming(rdram, ctx->r16, signal_player(rdram, ctx->r16));
     if (look_flag(rdram, ctx->r16, look_turn_x)) {
         ctx->f14.fl = -ctx->f14.fl;
     }
@@ -1550,7 +1566,7 @@ extern "C" void conker_look_targets(uint8_t* rdram, recomp_context* ctx) {
     // what picks its paths) says whether it's aiming something.
     conker::reticle::look_frame(rdram, ctx->r16, (uint32_t)MEM_W(0xA0, ctx->r29));
     // Aiming: Swap Sticks: this camera's player is aiming (the look mode, R-Look too: the stick aims, not moves).
-    note_aiming(rdram, ctx->r16, camera_player(rdram, ctx->r16));
+    note_aiming(rdram, ctx->r16, signal_player(rdram, ctx->r16));
     if (is_player_one(rdram, ctx->r16)) {
         show_shotgun_laser(rdram, (gpr)(int32_t)MEM_W(0x3D0, ctx->r16));
     }
