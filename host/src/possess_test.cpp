@@ -4,6 +4,10 @@
 //   D-pad Down: the nearest bot among characters 2 to 4 gets player 1's camera and controller and is moved as a person is
 //               (camera-relative stick, R-Look, the C-buttons); player 1 stands without a camera.
 //   Either again: back to player 1.
+//   D-pad Left: a camera the game doesn't count (slot 2 of its cameras, made for character 2, a bot) is made and run each frame,
+//               and the screen shows it; again: the screen shows player 1's again (the camera keeps running).
+//   D-pad Right: controller 1 plays character 2 through that camera (made first if need be), as a second player would; again: back.
+// The game is told of one player all along: the extra camera is the step towards a 5th player's.
 //
 // How the game drives a bot: its AI (the script commands, func_1509DFC4, e.g. func_1508CAD8 "go to") never touches a controller. It
 // writes its "hands" into the character's brain (character + 0x31C):
@@ -56,6 +60,34 @@ namespace {
 
     // What D-pad Down changed, to put back.
     uint32_t camera0 = 0, saved_brain_flag = 0;
+
+    // D-pad Left / Right: the extra camera (slot 1, for character 1).
+    constexpr uint16_t button_dpad_left = 0x0200;
+    constexpr uint16_t button_dpad_right = 0x0100;
+    constexpr uint32_t camera_base = 0x800DBFF0;     // D_800DBFF0: the cameras, 0x9A0 apart
+    constexpr uint32_t camera_size = 0x9A0;
+    constexpr uint32_t camera_buffers = 0x800BE2B0;  // D_800BE2B0: a buffer per camera (2 x the frame's width)
+    constexpr uint32_t camera_bytes = 0x800DBFF4;    // D_800DBFF4: a byte per camera, 0 at the start
+    constexpr uint32_t frame_width = 0x800BE620;     // D_800BE620
+    constexpr uint32_t pads = 0x800BE728;            // D_800BE728: the controllers' records, a pointer each
+    constexpr uint32_t matrices = 0x800DC2A0;        // D_800DC2A0[2]: the cameras' view matrices (0x40 each), this frame's by
+    constexpr uint32_t matrix_buffer = 0x800BE9C0;   //   D_800BE9C0
+    constexpr uint32_t last_player = 0x80082FA0;     // D_80082FA0: players - 1
+    constexpr uint32_t extra_buffer = 0x80FD0000;    // ours, past the game's 8 MB: the extra camera's buffer
+    constexpr int extra = 1;                         // the extra camera's slot and character
+    bool have_args = false;
+    uint32_t camera_arg2 = 0, camera_arg3 = 0;       // func_150054C4's last two, as the game made camera 0
+    bool extra_wanted = false, extra_ready = false, extra_shown = false, extra_played = false;
+    uint32_t extra_brain_flag = 1;
+    uint16_t extra_pressed = 0;
+
+    uint32_t extra_camera(uint8_t* rdram) {
+        return (uint32_t)MEM_W(0, (gpr)(int32_t)camera_base) + (uint32_t)extra * camera_size;
+    }
+    uint32_t pad_record(uint8_t* rdram, int k) {
+        const uint32_t table = (uint32_t)MEM_W(0, (gpr)(int32_t)pads);
+        return (table >> 24) == 0x80 ? (uint32_t)MEM_W(4 * k, (gpr)(int32_t)table) : 0;
+    }
 
     void log(const char* format, ...) {
         static FILE* file = std::fopen("conker_possess.log", "w");
@@ -177,6 +209,32 @@ namespace {
     }
 }
 
+namespace {
+    void extra_play_stop(uint8_t* rdram, const char* why) {
+        if (!extra_played) {
+            return;
+        }
+        extra_played = false;
+        const uint32_t brain = brain_of(rdram, extra);
+        if (brain != 0) {
+            MEM_B(0x84, (gpr)(int32_t)brain) = (int8_t)extra_brain_flag;
+        }
+        const uint32_t record = pad_record(rdram, extra);
+        if (in_rdram(record)) {
+            for (uint32_t i = 0; i < 6; i++) {
+                MEM_B(i, (gpr)(int32_t)record) = 0;
+            }
+        }
+        MEM_H(2 * (uint32_t)extra, (gpr)(int32_t)pressed_table) = 0;
+        log("f=%u %s: controller 1 back to player 1 (from character %d on the extra camera)", (unsigned)frames, why, extra);
+    }
+
+    // Character 1 is a bot with no camera: the extra camera may be made for it.
+    bool extra_possible(uint8_t* rdram) {
+        return bot_brain(rdram, extra) != 0 && have_args;
+    }
+}
+
 extern "C" void conker_possess_pad(uint8_t* rdram, recomp_context* ctx) {
     if (conker::netsession::active()) {
         return;
@@ -184,9 +242,10 @@ extern "C" void conker_possess_pad(uint8_t* rdram, recomp_context* ctx) {
     const int index = (int)(uint32_t)ctx->r17;
     const uint32_t object = (uint32_t)ctx->r16;
     const uint32_t empty = (uint32_t)ctx->r29 + 0x5C;    // func_1504A730's empty controller for the characters without one
+    const bool frozen = mode != off || extra_played;     // player 1 stands while controller 1 plays another
 
     if (index != 0) {
-        if (mode == off) {
+        if (!frozen) {
             return;
         }
         if (pressed_hidden) {
@@ -203,23 +262,39 @@ extern "C" void conker_possess_pad(uint8_t* rdram, recomp_context* ctx) {
             if (brain != 0) {
                 MEM_B(0x84, (gpr)(int32_t)brain) = 0;
             }
-        } else if (word(rdram, controller_now) == pad0) {
-            // a bot left with controller 1 (no controller picked for it): an empty one, or its AI's copy would write into it
-            for (uint32_t i = 0; i < 6; i++) {
-                MEM_B(i, (gpr)(int32_t)empty) = 0;
+        } else if (extra_played && index == extra) {
+            // a second player: controller 2's record (filled from controller 1) and its slot of pressed buttons
+            const uint32_t record = pad_record(rdram, extra);
+            if (in_rdram(record)) {
+                MEM_W(0, (gpr)(int32_t)controller_now) = (int32_t)record;
             }
-            MEM_W(0, (gpr)(int32_t)controller_now) = (int32_t)empty;
+            MEM_H(2 * (uint32_t)extra, (gpr)(int32_t)pressed_table) = (int16_t)extra_pressed;
+            const uint32_t brain = brain_of(rdram, extra);
+            if (brain != 0) {
+                MEM_B(0x84, (gpr)(int32_t)brain) = 0;
+            }
+        } else {
+            const uint32_t now = word(rdram, controller_now);
+            if (now == pad0 || (extra_played && now == pad_record(rdram, extra))) {
+                // a bot left with controller 1's (or 2's) record (no controller picked for it): an empty one, or its AI's copy
+                // would write into it
+                for (uint32_t i = 0; i < 6; i++) {
+                    MEM_B(i, (gpr)(int32_t)empty) = 0;
+                }
+                MEM_W(0, (gpr)(int32_t)controller_now) = (int32_t)empty;
+            }
         }
         return;
     }
 
     if (MEM_BU(0, (gpr)(int32_t)multiplayer) == 0) {
-        if (mode != off) {
+        if (mode != off || extra_ready) {
             log("f=%u the match is over", (unsigned)frames);
         }
         mode = off;
         target = -1;
         pressed_hidden = false;
+        extra_wanted = extra_ready = extra_shown = extra_played = false;
         return;
     }
     frames++;
@@ -232,9 +307,10 @@ extern "C" void conker_possess_pad(uint8_t* rdram, recomp_context* ctx) {
     stick_x = (int8_t)MEM_B(2, (gpr)(int32_t)pad);
     stick_y = (int8_t)MEM_B(3, (gpr)(int32_t)pad);
     pressed = (uint16_t)MEM_HU(0, (gpr)(int32_t)pressed_table);
+    constexpr uint16_t dpad = button_dpad_up | button_dpad_down | button_dpad_left | button_dpad_right;
 
     const uint16_t toggles = (uint16_t)(pressed & (button_dpad_up | button_dpad_down));
-    if (toggles != 0) {
+    if (toggles != 0 && !extra_played) {
         if (mode != off) {
             stop(rdram, (toggles & button_dpad_up) != 0 ? "D-pad Up" : "D-pad Down");
             conker::notices::show("Test: back to you", true);
@@ -265,10 +341,67 @@ extern "C" void conker_possess_pad(uint8_t* rdram, recomp_context* ctx) {
                 conker::notices::show("Test: the bot has your camera and controls (D-pad Down to stop)", true);
             }
         }
-        held &= (uint16_t)~(button_dpad_up | button_dpad_down);
-        pressed &= (uint16_t)~(button_dpad_up | button_dpad_down);
     }
-    if (mode == off) {
+    const uint16_t extra_toggles = (uint16_t)(pressed & (button_dpad_left | button_dpad_right));
+    if (extra_toggles != 0 && mode == off) {
+        const bool left = (extra_toggles & button_dpad_left) != 0;
+        if (left) {
+            if (extra_played) {
+                extra_play_stop(rdram, "D-pad Left");
+                extra_shown = false;
+                conker::notices::show("Test: back to you", true);
+            } else if (extra_ready || extra_wanted) {
+                extra_shown = !extra_shown;
+                log("f=%u D-pad Left: the screen shows %s", (unsigned)frames, extra_shown ? "the extra camera" : "player 1's camera");
+                conker::notices::show(extra_shown ? "Test: showing the extra camera" : "Test: showing your camera", true);
+            } else if (extra_possible(rdram)) {
+                extra_wanted = extra_shown = true;
+                log("f=%u D-pad Left: the extra camera is made for character %d, and shown", (unsigned)frames, extra);
+                conker::notices::show("Test: an extra camera on the 2nd character (D-pad Left to switch view)", true);
+            } else {
+                log("f=%u D-pad Left: character %d isn't a bot without a camera (or camera 0 not seen made): no extra camera",
+                    (unsigned)frames, extra);
+                conker::notices::show("Test: the 2nd character isn't a bot: no extra camera", true);
+            }
+        } else {
+            if (extra_played) {
+                extra_play_stop(rdram, "D-pad Right");
+                conker::notices::show("Test: back to you (still showing the extra camera)", true);
+            } else if (extra_ready || extra_wanted || extra_possible(rdram)) {
+                if (!extra_ready && !extra_wanted) {
+                    log("f=%u D-pad Right: the extra camera is made for character %d", (unsigned)frames, extra);
+                }
+                extra_wanted = extra_shown = extra_played = true;
+                const uint32_t brain = brain_of(rdram, extra);
+                extra_brain_flag = brain != 0 ? MEM_BU(0x84, (gpr)(int32_t)brain) : 1;
+                if (extra_brain_flag == 0) {
+                    extra_brain_flag = 1;
+                }
+                log("f=%u D-pad Right: controller 1 plays character %d through the extra camera", (unsigned)frames, extra);
+                conker::notices::show("Test: you're playing the 2nd character on the extra camera (D-pad Right to stop)", true);
+            } else {
+                log("f=%u D-pad Right: character %d isn't a bot without a camera: nothing to play", (unsigned)frames, extra);
+                conker::notices::show("Test: the 2nd character isn't a bot: nothing to play", true);
+            }
+        }
+    }
+    if ((pressed & dpad) != 0) {
+        held &= (uint16_t)~dpad;
+        pressed &= (uint16_t)~dpad;
+    }
+    if (extra_played) {
+        // controller 1 as controller 2: its record (the camera reads it too) and pressed buttons; Start stays player 1's
+        const uint32_t record = pad_record(rdram, extra);
+        if (in_rdram(record)) {
+            MEM_H(0, (gpr)(int32_t)record) = (int16_t)(held & ~button_start);
+            MEM_B(2, (gpr)(int32_t)record) = stick_x;
+            MEM_B(3, (gpr)(int32_t)record) = stick_y;
+            MEM_B(4, (gpr)(int32_t)record) = 0;
+            MEM_B(5, (gpr)(int32_t)record) = 0;
+        }
+        extra_pressed = (uint16_t)(pressed & ~button_start);
+    }
+    if (mode == off && !extra_played) {
         return;
     }
     if (mode == drive) {
@@ -276,7 +409,7 @@ extern "C" void conker_possess_pad(uint8_t* rdram, recomp_context* ctx) {
         if (in_rdram(camera)) {
             camera_follow(rdram, camera, target);
         }
-    } else {
+    } else if (mode == own) {
         own_apply(rdram);
         ctx->r2 = 0;
     }
@@ -315,4 +448,160 @@ extern "C" void conker_possess_move(uint8_t* rdram, recomp_context* ctx) {
         return;
     }
     ctx->r13 = 0;
+}
+
+// ---- The extra camera (D-pad Left / Right) ----
+//
+// The game makes its cameras as a match loads (func_15005290): as many as players (D_80082FA0 + 1), in one block (D_800DBFF0), each
+// made by func_150054C4(camera, k, ...) for character k; with them blocks a camera each (D_800DC2B0 0xB0, the view matrices
+// D_800DC2A0[2] 0x40, D_800DC010 0x9A0 and one more). The views (D_800BE628, 0x180 each, and D_800BE62C, 16) are made by func_1501A220.
+// Offline here, all of those have room for 5 (the cameras the game counts are still the players'), and the views 1 to 4 that
+// weren't made are made as the extra one is (func_1501A8C0, full screen). Each frame the cameras run (func_15122AE0, cameras 0 to
+// D_80082FA0); then the extra one runs the same way; shown, its view matrix is put in camera 0's and camera 0's view looks for what to
+// draw from its eye (func_1510FC34).
+
+extern "C" void func_150054C4(uint8_t* rdram, recomp_context* ctx);
+extern "C" void func_1501A8C0(uint8_t* rdram, recomp_context* ctx);
+extern "C" void func_151239CC(uint8_t* rdram, recomp_context* ctx);
+extern "C" void func_15122C5C(uint8_t* rdram, recomp_context* ctx);
+extern "C" void func_15123934(uint8_t* rdram, recomp_context* ctx);
+extern "C" void func_1512C490(uint8_t* rdram, recomp_context* ctx);
+
+// func_15005290, 0x15005318: $s0 the cameras to make blocks for (players).
+extern "C" void conker_possess_cameras_alloc(uint8_t* rdram, recomp_context* ctx) {
+    if (conker::netsession::active()) {
+        return;
+    }
+    if ((int32_t)ctx->r16 < 5) {
+        log("cameras made for %d players: blocks with room for 5", (int)(int32_t)ctx->r16);
+        ctx->r16 = 5;
+    }
+    extra_wanted = extra_ready = extra_shown = extra_played = false;
+    have_args = false;
+}
+
+// func_15005290, 0x15005464: $a0 = D_80082FA0, for the last block (cameras + 1).
+extern "C" void conker_possess_cameras_alloc2(uint8_t* rdram, recomp_context* ctx) {
+    if (!conker::netsession::active() && (int32_t)ctx->r4 < 4) {
+        ctx->r4 = 4;
+    }
+}
+
+// func_150054C4's start: camera ($a0) for character $a1.
+extern "C" void conker_possess_camera_args(uint8_t* rdram, recomp_context* ctx) {
+    if (!conker::netsession::active() && (int32_t)ctx->r5 == 0) {
+        camera_arg2 = (uint32_t)ctx->r6;
+        camera_arg3 = (uint32_t)ctx->r7;
+        have_args = true;
+    }
+}
+
+// func_1501A220, 0x1501A258: $s0 the views to make room for.
+extern "C" void conker_possess_views_alloc(uint8_t* rdram, recomp_context* ctx) {
+    if (!conker::netsession::active() && (int32_t)ctx->r16 < 5) {
+        ctx->r16 = 5;
+    }
+}
+
+// func_1501A220, 0x1501A360: its views made; the rest of the 5 made full screen.
+extern "C" void conker_possess_views_make(uint8_t* rdram, recomp_context* ctx) {
+    if (conker::netsession::active()) {
+        return;
+    }
+    const int last = (int)MEM_W(0, (gpr)(int32_t)last_player);
+    const int first = last == 0 ? 1 : last + 2;
+    if (first > 4) {
+        return;
+    }
+    const recomp_context saved = *ctx;
+    for (int k = first; k <= 4; k++) {
+        ctx->r4 = (gpr)k;
+        ctx->r5 = 0;
+        ctx->r6 = 0x3FF;
+        ctx->r7 = 0;
+        func_1501A8C0(rdram, ctx);
+        *ctx = saved;
+    }
+    log("views %d to 4 made (full screen) for the extra camera", first);
+}
+
+// func_15122AE0, 0x15122C18: the game's cameras have run this frame.
+extern "C" void conker_possess_camera_frame(uint8_t* rdram, recomp_context* ctx) {
+    if (conker::netsession::active() || MEM_BU(0, (gpr)(int32_t)multiplayer) == 0 || (!extra_wanted && !extra_ready)) {
+        return;
+    }
+    const uint32_t base = (uint32_t)MEM_W(0, (gpr)(int32_t)camera_base);
+    if (!in_rdram(base)) {
+        return;
+    }
+    const uint32_t camera = base + (uint32_t)extra * camera_size;
+    const recomp_context saved = *ctx;
+    if (!extra_ready) {
+        if (!extra_possible(rdram)) {
+            log("f=%u character %d isn't a bot without a camera any more: no extra camera", (unsigned)frames, extra);
+            extra_wanted = extra_shown = extra_played = false;
+            return;
+        }
+        const uint32_t width = (uint32_t)MEM_W(0, (gpr)(int32_t)frame_width);
+        for (uint32_t i = 0; i < 2 * width && i < 0x4000; i++) {
+            MEM_B(i, (gpr)(int32_t)extra_buffer) = 0;
+        }
+        MEM_W(4 * (uint32_t)extra, (gpr)(int32_t)camera_buffers) = (int32_t)extra_buffer;
+        MEM_B(extra, (gpr)(int32_t)camera_bytes) = 0;
+        ctx->r4 = (gpr)(int32_t)camera;
+        ctx->r5 = (gpr)extra;
+        ctx->r6 = (gpr)(int32_t)camera_arg2;
+        ctx->r7 = (gpr)(int32_t)camera_arg3;
+        func_150054C4(rdram, ctx);
+        *ctx = saved;
+        extra_ready = true;
+        log("f=%u the extra camera %08X made for character %d (now its camera: %08X)", (unsigned)frames, (unsigned)camera, extra,
+            (unsigned)word(rdram, character(extra) + 0x318));
+    }
+    // as func_15122AE0 runs each of its cameras
+    MEM_W(0x7B4, (gpr)(int32_t)camera) = MEM_W(0x7B4, (gpr)(int32_t)base);
+    const bool other_way = MEM_BU(0, (gpr)(int32_t)0x800BEAC0) != 0 && MEM_BU(0, (gpr)(int32_t)0x800C35EA) == 0 &&
+        MEM_W(0, (gpr)(int32_t)0x800D2DB4) == 0;
+    if (other_way) {
+        ctx->r4 = (gpr)(int32_t)camera;
+        ctx->r5 = 0x2000;
+        ctx->r6 = 0;
+        ctx->r7 = (gpr)MEM_W(0x134, (gpr)(int32_t)camera);
+        MEM_W(0x10, ctx->r29) = 5;
+        func_15123934(rdram, ctx);
+        *ctx = saved;
+        ctx->r4 = (gpr)(int32_t)camera;
+        func_1512C490(rdram, ctx);
+    } else {
+        ctx->r4 = (gpr)(int32_t)camera;
+        ctx->r5 = 5;
+        func_151239CC(rdram, ctx);
+        *ctx = saved;
+        ctx->r4 = (gpr)(int32_t)camera;
+        func_15122C5C(rdram, ctx);
+    }
+    *ctx = saved;
+    if (extra_shown) {
+        const uint32_t buffer = MEM_BU(0, (gpr)(int32_t)matrix_buffer) & 1u;
+        const uint32_t list = (uint32_t)MEM_W(4 * buffer, (gpr)(int32_t)matrices);
+        if (in_rdram(list)) {
+            for (uint32_t i = 0; i < 0x40; i += 4) {
+                MEM_W(i, (gpr)(int32_t)list) = MEM_W(0x40 * (uint32_t)extra + i, (gpr)(int32_t)list);
+            }
+        }
+    }
+    static uint32_t logged = 0;
+    if (logged < 3 || (frames % 600) == 0) {
+        logged++;
+        log("f=%u the extra camera ran (%s); for character %08X, at %.0f %.0f %.0f", (unsigned)frames, other_way ? "other way" : "usual way",
+            (unsigned)word(rdram, camera + 0x3D0), position(rdram, camera, 0x2EC), position(rdram, camera, 0x2F0), position(rdram, camera, 0x2F4));
+    }
+}
+
+// func_1510FC34, 0x1510FC74: view $s0's camera ($v0) about to give its eye, for what the view draws.
+extern "C" void conker_possess_view_eye(uint8_t* rdram, recomp_context* ctx) {
+    if (conker::netsession::active() || !extra_shown || !extra_ready || (int32_t)ctx->r16 != 0) {
+        return;
+    }
+    ctx->r2 = (gpr)(int32_t)extra_camera(rdram);
 }

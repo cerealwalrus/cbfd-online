@@ -1399,3 +1399,45 @@ text = "{ extern void conker_possess_brain(uint8_t*, recomp_context*); conker_po
 func = "func_1504CB98"
 before_vram = 0x1504E0A4
 text = "{ extern void conker_possess_move(uint8_t*, recomp_context*); conker_possess_move(rdram, ctx); }"
+
+# possess-test: the extra camera (host/src/possess_test.cpp). func_15005290 makes the cameras' blocks for $s0 players.
+[[patches.hook]]
+func = "func_15005290"
+before_vram = 0x15005318
+text = "{ extern void conker_possess_cameras_alloc(uint8_t*, recomp_context*); conker_possess_cameras_alloc(rdram, ctx); }"
+
+# possess-test: func_15005290's last block, for $a0 (D_80082FA0) + 2 cameras.
+[[patches.hook]]
+func = "func_15005290"
+before_vram = 0x15005464
+text = "{ extern void conker_possess_cameras_alloc2(uint8_t*, recomp_context*); conker_possess_cameras_alloc2(rdram, ctx); }"
+
+# possess-test: func_150054C4 makes camera $a0 for character $a1 ($a2, $a3 kept for the extra one).
+[[patches.hook]]
+func = "func_150054C4"
+before_vram = 0x150054C4
+text = "{ extern void conker_possess_camera_args(uint8_t*, recomp_context*); conker_possess_camera_args(rdram, ctx); }"
+
+# possess-test: func_1501A220 makes room for $s0 views.
+[[patches.hook]]
+func = "func_1501A220"
+before_vram = 0x1501A258
+text = "{ extern void conker_possess_views_alloc(uint8_t*, recomp_context*); conker_possess_views_alloc(rdram, ctx); }"
+
+# possess-test: func_1501A220 has made its views.
+[[patches.hook]]
+func = "func_1501A220"
+before_vram = 0x1501A360
+text = "{ extern void conker_possess_views_make(uint8_t*, recomp_context*); conker_possess_views_make(rdram, ctx); }"
+
+# possess-test: func_15122AE0 has run the game's cameras.
+[[patches.hook]]
+func = "func_15122AE0"
+before_vram = 0x15122C18
+text = "{ extern void conker_possess_camera_frame(uint8_t*, recomp_context*); conker_possess_camera_frame(rdram, ctx); }"
+
+# possess-test: func_1510FC34 is about to read view $s0's camera's ($v0) eye.
+[[patches.hook]]
+func = "func_1510FC34"
+before_vram = 0x1510FC74
+text = "{ extern void conker_possess_view_eye(uint8_t*, recomp_context*); conker_possess_view_eye(rdram, ctx); }"
