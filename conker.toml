@@ -3028,3 +3028,11 @@ text = "{ extern void conker_possess_note_thread(uint8_t*, uint32_t); conker_pos
 func = "func_15000000"
 before_vram = 0x15000038
 text = "{ extern void conker_possess_note_queue(uint8_t*, uint32_t); conker_possess_note_queue(rdram, (uint32_t)ctx->r4); }"
+
+# possess-test (possess32): func_1506160C (a character hidden in or shown again in view $a3: its bit of +0xF, its fade +0xB + view)
+# is called with the view of the character's camera, 4 for the extra camera: +0xB + 4 is +0xF itself, the hidden-views bits, written
+# over with 0 or 0xFF (the character hidden in every view, or shown in all). The game has 4 views at most: such a call is let go.
+[[patches.hook]]
+func = "func_1506160C"
+before_vram = 0x1506160C
+text = "{ extern int conker_possess_hide_skip(uint8_t*, recomp_context*); if (conker_possess_hide_skip(rdram, ctx)) return; }"

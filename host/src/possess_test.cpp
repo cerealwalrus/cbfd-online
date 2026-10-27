@@ -1059,7 +1059,7 @@ namespace {
     constexpr uint32_t objects_count = 0x800DBEF0;   // D_800DBEF0: the objects (0xA0 each, at *D_800DBEF4) func_15112A80 sees to
     constexpr uint32_t objects_list = 0x800DBEF4;
     constexpr uint32_t object_record = 0xA0;
-    constexpr uint8_t extra_seen_bit = 0x08;         // (possess30) +0x6F: seen by the extra camera
+    constexpr uint8_t extra_seen_bit = 0x01;         // (possess32) +0x6F: seen by the extra camera, as view 1 (possess30 had view 4's bit, 0x08: the game drew view 4 from it, which offline doesn't exist, and crashed). func_15112A80 sets view 1's bit again before anything draws by it.
     bool seen_marked = false;
 
     uint32_t mem_word(uint8_t* rdram, uint32_t address) {
@@ -1524,6 +1524,23 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
     for (const Kept& k : keep) {
         now.emplace_back(rdram + (k.at - 0x80000000u), rdram + (k.at - 0x80000000u) + k.size);
     }
+    // (possess32 diagnostics) each character as the view's passes left it: in sight (+0x6F of its object), its fades (+7, +0xB: view 1's),
+    // hidden-views bits (+0xF), its render item (+0x2D4), against the game's (as the frame ended)
+    if (local_views < 3 || local_views % 120 == 0) {
+        std::string out;
+        for (int k = 0; k < 6; k++) {
+            const uint32_t c = 0x800CC2D0u + (uint32_t)k * 0x32Cu;
+            const uint32_t li = c - 0x80000000u;
+            auto was_b = [&](uint32_t off) { return (unsigned)local_copy[(li + off) ^ 3]; };
+            auto was_w = [&](uint32_t off) { uint32_t v; std::memcpy(&v, local_copy.data() + li + off, 4); return v; };
+            char piece[200];
+            std::snprintf(piece, sizeof(piece), " | c%d: fade %u/%u (was %u/%u) hide %02X (was %02X) item %08X (was %08X)", k,
+                (unsigned)MEM_BU(7, (gpr)(int32_t)c), (unsigned)MEM_BU(0xB, (gpr)(int32_t)c), was_b(7), was_b(0xB),
+                (unsigned)MEM_BU(0xF, (gpr)(int32_t)c), was_b(0xF), (unsigned)word(rdram, c + 0x2D4), (unsigned)was_w(0x2D4));
+            out += piece;
+        }
+        log("f=%u [chars] after the view's passes%s", (unsigned)frames, out.c_str());
+    }
     // (possess30) What the view saw (func_15112A80's bit of view 1, in each object's +0x6F): kept once the game's memory is put
     // back, as view 4's bit (0x08: no view 4 offline). The next frame's func_15113180 updates (animates, makes the model of) only
     // the objects some view saw (+0x6F & 0xF), func_15113E54 by the 0x40 it sets: the ones only the extra camera saw were left as
@@ -1603,15 +1620,15 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
         std::memcpy(rdram + (keep[i].at - 0x80000000u), now[i].data(), keep[i].size);
     }
     kept_back = std::move(keep);
-    for (const auto& m : drawn_marks) {
-        rdram[m.first] = m.second;
-    }
+    // (possess32: drawn_marks no longer put in: with the whole of the game's drawing preparation run for the view, they held the render
+    // items it made (+0x2D4), which don't exist in the game's memory as put back: the game freed them, and crashed)
+    (void)drawn_marks;
     if (!seen.empty() && mem_word(rdram, objects_count) == seen_count && mem_word(rdram, objects_list) == seen_list) {
         uint32_t marked = 0;
         for (uint32_t i = 0; i < seen_count; i++) {
             const gpr at = (gpr)(int32_t)(seen_list + i * object_record);
             const uint8_t was = MEM_BU(0x6F, at);
-            MEM_B(0x6F, at) = (int8_t)(seen[i] ? (was | extra_seen_bit) : (was & ~extra_seen_bit));
+            MEM_B(0x6F, at) = (int8_t)(seen[i] ? (was | extra_seen_bit) : was);   // (added to player 1's, never taken off)
             marked += seen[i];
         }
         seen_marked = true;
@@ -1645,7 +1662,7 @@ extern "C" void conker_possess_view_local_after(uint8_t* rdram, recomp_context* 
 extern "C" void conker_possess_frame_start(uint8_t* rdram) {
     if (!local_view_wanted(rdram)) {
         start_copied = false;
-        if (seen_marked) {
+        if (seen_marked && false) {   // (possess32: view 1's bit is the game's own, set again each frame)
             seen_marked = false;
             const uint32_t count = mem_word(rdram, objects_count), list = mem_word(rdram, objects_list);
             if (count > 0 && count < 2048 && in_rdram(list) && in_rdram(list + count * object_record)) {
@@ -1818,3 +1835,19 @@ namespace {
     OthersStopped::~OthersStopped() {}
 }
 #endif
+
+// (possess32) func_1506160C's entry: a character hidden or shown again in view $a3 (& 0xFF). The game has 4 views: another view (the extra
+// camera's, 4) would write its fade over the character's hidden-views bits (+0xB + 4 = +0xF). Such a call is let go.
+extern "C" int conker_possess_hide_skip(uint8_t* rdram, recomp_context* ctx) {
+    (void)rdram;
+    const uint32_t view = (uint32_t)ctx->r7 & 0xFFu;
+    if (view < 4) {
+        return 0;
+    }
+    static uint32_t told = 0;
+    if (told++ < 20) {
+        log("f=%u func_1506160C for character %08X (mode %u) in view %u: let go", (unsigned)frames, (unsigned)ctx->r4,
+            (unsigned)((uint32_t)ctx->r5 & 0xFFu), (unsigned)view);
+    }
+    return 1;
+}
