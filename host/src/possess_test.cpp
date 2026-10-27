@@ -1269,6 +1269,32 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
     MEM_B(0x23D, (gpr)(int32_t)base) = 0;
     std::memcpy(rdram + (views - 0x80000000u), rdram + (views + (uint32_t)extra * 0x180u - 0x80000000u), 0x180);
     std::memcpy(rdram + (mats - 0x80000000u), rdram + (mats + (uint32_t)extra * 0x40u - 0x80000000u), 0x40);
+    // (possess25) the cameras' tables of 4 (each camera's entry: what the camera code worked out for it this frame, what's in sight
+    // from it among them): the extra camera's is ours (conker_slot4), so camera 1's entry as the extra camera's for the view. (Not
+    // the buttons pressed, the cameras' screen areas, nor the table inside camera 1's own block.)
+    {
+        static uint32_t told = 0;
+        uint32_t differed = 0;
+        for (int i = 0; i < slot4_count; i++) {
+            const Slot4Table& t = slot4_tables[i];
+            if (!t.always || t.base == pressed_shadow_table || t.base == 0x800DC200u || t.base == 0x800DBFF4u) {
+                continue;
+            }
+            const uint32_t shadow = slot4_shadow + 0x100u * (uint32_t)i;
+            bool differs = false;
+            for (uint32_t b = 0; b < t.stride; b++) {
+                differs |= MEM_B(b, (gpr)(int32_t)t.base) != MEM_B(b, (gpr)(int32_t)shadow);
+                MEM_B(b, (gpr)(int32_t)t.base) = MEM_B(b, (gpr)(int32_t)shadow);
+            }
+            if (differs) {
+                differed |= 1u << (i & 31);
+            }
+        }
+        if (told++ < 3) {
+            log("f=%u the cameras' tables: the extra camera's entries as camera 1's for its view (those that differed: %08X)", (unsigned)frames,
+                (unsigned)differed);
+        }
+    }
 
     // 3. its passes
     const recomp_context saved = *ctx;
