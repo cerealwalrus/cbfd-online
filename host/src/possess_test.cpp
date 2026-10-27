@@ -1307,6 +1307,8 @@ namespace {
     // the screen (D_800BE570), all in the game's heap. What's in them is the renderer's (RT64 keeps them as framebuffers of its own):
     // the extra camera's view never copies them as textures it draws from (the effects that draw the screen back from one of them drew,
     // from a copy, the memory's old bytes: in the wrong colours), and they're never put back from a snapshot of the game's memory.
+    // (possess43) Nor written at all, not even for a moment (put_back copies around them): the renderer writes them on its own thread
+    // while the game's draws the extra camera's view (see put_back).
     std::vector<std::pair<uint32_t, uint32_t>> rdp_buffers(uint8_t* rdram) {
         std::vector<std::pair<uint32_t, uint32_t>> out;
         const uint32_t width = (uint32_t)MEM_W(0, (gpr)(int32_t)0x800BE620), height = (uint32_t)MEM_W(0, (gpr)(int32_t)0x800BE624);
@@ -1315,7 +1317,9 @@ namespace {
         }
         const uint32_t size = width * height * 2u;
         for (const uint32_t pointer : { 0x8002AAE8u, 0x8002AAECu, 0x800BE9C4u, 0x800BE570u }) {
-            const uint32_t at = (uint32_t)MEM_W(0, (gpr)(int32_t)pointer);
+            const uint32_t named = (uint32_t)MEM_W(0, (gpr)(int32_t)pointer);
+            // (possess43) as the CPU's address of it, whichever the game keeps (cached, 0x80..., or not, 0xA0...)
+            const uint32_t at = (named >> 29) == 4u || (named >> 29) == 5u ? (named & 0x1FFFFFFFu) | 0x80000000u : 0;
             if (at >= 0x80000000u && at + size <= 0x80400000u) {
                 out.push_back({ at, size });
             }
@@ -1343,22 +1347,40 @@ namespace {
     }
 
     // Puts `from` (a copy of the game's first 4 MB) back, but for [keep_from, keep_to) and the untouchables.
+    // (possess43) Copied around what's kept, never over it. The renderer (RT64) draws each frame's list a second time at the N64's
+    // size, on its own thread, and writes each picture back to the game's memory (the framebuffer and the depth buffer, at each point
+    // the list makes it finish what's drawn so far, and at its end), then notes what it wrote; while it does, the game's thread is
+    // drawing the next frame, the extra camera's view with it. possess42 kept the RDP's buffers as they were by saving them, copying
+    // the snapshot over everything and writing them back: what the renderer wrote in between was undone (or what it read was the
+    // snapshot's), and finding its buffers changed, as if by the game, it drew the memory's picture over its own, in the screen's
+    // middle (the N64's part of it), in rows: an older one of the frame's pictures (player 1's view, the extra camera's half drawn) or
+    // one caught as it was written (its bytes not yet in order: in the wrong colours).
     void put_back(uint8_t* rdram, const std::vector<uint8_t>& from, uint32_t keep_from, uint32_t keep_to) {
-        const auto keep = untouchables(rdram);
-        std::vector<std::vector<uint8_t>> saved;
-        for (const auto& k : keep) {
-            const uint32_t at = k.first - 0x80000000u;
-            saved.emplace_back(rdram + at, rdram + std::min<uint32_t>(at + k.second, 0x400000u));
+        std::vector<std::pair<uint32_t, uint32_t>> spans;   // [start, end) in the game's memory, whole words
+        auto add = [&](uint32_t at, uint32_t size) {
+            if (size == 0 || at < 0x80000000u || at >= 0x80000000u + game_size) {
+                return;
+            }
+            const uint32_t start = (at - 0x80000000u) & ~3u;
+            const uint64_t end = std::min<uint64_t>(((uint64_t)(at - 0x80000000u) + size + 3u) & ~3ull, game_size);
+            spans.push_back({ start, (uint32_t)end });
+        };
+        for (const auto& k : untouchables(rdram)) {
+            add(k.first, k.second);
         }
-        const uint32_t a = keep_from - 0x80000000u, b = keep_to - 0x80000000u;
-        if (keep_to > keep_from && b <= 0x400000u) {
-            std::memcpy(rdram, from.data(), a);
-            std::memcpy(rdram + b, from.data() + b, 0x400000u - b);
-        } else {
-            std::memcpy(rdram, from.data(), 0x400000u);
+        if (keep_to > keep_from && keep_to - 0x80000000u <= game_size) {
+            add(keep_from, keep_to - keep_from);
         }
-        for (size_t i = 0; i < keep.size(); i++) {
-            std::memcpy(rdram + (keep[i].first - 0x80000000u), saved[i].data(), saved[i].size());
+        std::sort(spans.begin(), spans.end());
+        uint32_t at = 0;
+        for (const auto& s : spans) {
+            if (s.first > at) {
+                std::memcpy(rdram + at, from.data() + at, s.first - at);
+            }
+            at = std::max(at, s.second);
+        }
+        if (at < game_size) {
+            std::memcpy(rdram + at, from.data() + at, game_size - at);
         }
     }
 
@@ -1538,6 +1560,7 @@ namespace {
     std::vector<uint8_t> kept_object_fades;
     uint32_t kept_objects_list = 0, kept_objects_count = 0;
     uint32_t blur_left = 0, areas_told = 0;
+    uint32_t renderer_wrote = 0;   // (possess43) the views drawn while the renderer wrote its buffers (see put_back)
 
     template <typename F> void each_area(uint8_t* rdram, F f) {
         uint32_t node = (uint32_t)MEM_W(0, (gpr)(int32_t)0x800DBE48);
@@ -2103,6 +2126,28 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
         ranges(start_copy, local_copy.data(), objects_at, objects_at + objects_size, "player 1's views wrote to the characters");
         log("f=%u %u bytes of the characters the extra view drew kept", (unsigned)frames, (unsigned)drawn_marks.size());
     }
+    // (possess43) whether the renderer wrote its buffers while the view was drawn (see put_back): left as it wrote them
+    {
+        static uint32_t told = 0;
+        if (told++ < 2) {
+            std::string out;
+            for (const auto& b : rdp_buffers(rdram)) {
+                char piece[40];
+                std::snprintf(piece, sizeof(piece), " %08X+%X", (unsigned)b.first, (unsigned)b.second);
+                out += piece;
+            }
+            log("f=%u the RDP's buffers (the framebuffers, the depth buffer, the blur's), never written by the view's copies:%s", (unsigned)frames,
+                out.c_str());
+        }
+        bool wrote = false;
+        for (const auto& b : rdp_buffers(rdram)) {
+            const uint32_t at = b.first - 0x80000000u;
+            wrote = wrote || std::memcmp(local_copy.data() + at, rdram + at, b.second) != 0;
+        }
+        if (wrote) {
+            renderer_wrote++;
+        }
+    }
     // the game's memory back, but for the new commands and the list's end
     const uint32_t to = list - 0x80000000u;
     if (list > list_before && to <= game_size) {
@@ -2272,9 +2317,11 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
         log("f=%u (the frame's list: %u commands of %d)", (unsigned)frames, (unsigned)((list - frame_list) >> 3), (int)MEM_W(0, (gpr)(int32_t)list_most));
         log("f=%u the extra camera's view drawn here (%u times): %u commands (%u walked), %u pieces copied to ours, %u lists copied (of %u walked), %u "
             "texture loads (%u from the RDP's buffers, left as they are; %u color images set), %u branches, %u kept for the frame (%u bytes of copies); "
-            "the blur left out %u times", (unsigned)frames, (unsigned)local_views, (unsigned)((list - list_before) / 8),
+            "the blur left out %u times; the renderer wrote its buffers while %u of the views were drawn (left as it wrote them)",
+            (unsigned)frames, (unsigned)local_views, (unsigned)((list - list_before) / 8),
             (unsigned)walker.commands, (unsigned)relocated, (unsigned)by_segment, (unsigned)walker.bodies.size(), (unsigned)walker.textures, (unsigned)rdp_left,
-            (unsigned)walker.cimgs.size(), (unsigned)walker.branches, (unsigned)kept_back.size(), (unsigned)copies_used, (unsigned)blur_left);
+            (unsigned)walker.cimgs.size(), (unsigned)walker.branches, (unsigned)kept_back.size(), (unsigned)copies_used, (unsigned)blur_left,
+            (unsigned)renderer_wrote);
     }
 }
 
