@@ -836,7 +836,15 @@ namespace {
     constexpr uint32_t list_most = 0x800BEBA4;       // D_800BEBA4: the most commands it may have
     uint32_t passes = 0, passes_dropped = 0;
 
+    // (possess13-16's 5th view, drawn as a view of the game's own in the middle of its frame: off. possess17 draws it on this machine
+    // alone at the end of the frame and puts the game's memory back, conker_possess_view_local.)
     bool extra_view_drawn(uint8_t* rdram) {
+        (void)rdram;
+        return false;
+    }
+
+    // This machine draws the extra camera's view (offline: D-pad Left; online: the 5th player's machine).
+    bool local_view_wanted(uint8_t* rdram) {
         if (!extra_ready || MEM_BU(0, (gpr)(int32_t)multiplayer) == 0) {
             return false;
         }
@@ -974,5 +982,201 @@ extern "C" void conker_possess_diff_game(uint8_t* rdram, recomp_context* ctx, in
     (void)stage;
     if (extra_view_drawn(rdram)) {
         diff_begin(rdram);
+    }
+}
+
+// ---- possess17: the extra camera's view, drawn on this machine alone ----
+// What a view's passes write feeds the game (net_view.cpp's notes), and the game keeps its views' data in many places sized for 4
+// (tables, each object's own), so a 5th view drawn by the game as one of its own wrote past them. Instead, at the end of the frame
+// (all of its logic done, its display list about to be closed), this machine alone:
+//   1. keeps a copy of the game's first 4 MB;
+//   2. makes view 1 the extra camera's for a moment: camera 1 a copy of the extra camera (its index 0), view 1's record the full-screen
+//      one's (view 4: its viewport and projection), the extra camera's view matrix in view 1's slot;
+//   3. runs view 1's passes (func_1510FC34, func_15094EA0, func_15018F80 + func_15019464, func_1515D6D0 + func_150195A0), which add
+//      to the frame's display list;
+//   4. puts the game's memory back as it was, but for those new commands, the list's end, and what they draw from (each matrix,
+//      vertex block, light or viewport they name, followed through the lists they call and the segments set): those are put back
+//      at the start of the next frame, once the frame has been drawn.
+// So the game's memory is the same as on any other machine, and the new commands, drawn last, are the extra camera's view.
+extern "C" void func_15094EA0(uint8_t* rdram, recomp_context* ctx);
+
+namespace {
+    constexpr uint32_t game_size = 0x400000;
+    std::vector<uint8_t> local_copy;                       // the game's memory before the view
+    struct Kept { uint32_t at, size; std::vector<uint8_t> was; };
+    std::vector<Kept> kept_back;                           // put back at the next frame's start
+    uint32_t local_views = 0;
+
+    uint32_t mem_word(uint8_t* rdram, uint32_t address) {
+        return (uint32_t)MEM_W(0, (gpr)(int32_t)address);
+    }
+
+    // The display list's commands from `from` (an RDRAM address), following calls; every range of memory they name goes in `out`.
+    struct ListWalk {
+        uint8_t* rdram;
+        uint32_t seg[16] = {};
+        std::vector<std::pair<uint32_t, uint32_t>> out;
+        uint32_t commands = 0;
+        uint32_t resolve(uint32_t a) const {
+            const uint32_t s = (a >> 24) & 0xFF;
+            if (s < 16) {
+                return 0x80000000u | ((seg[s] + (a & 0x00FFFFFFu)) & 0x00FFFFFFu);
+            }
+            return 0x80000000u | (a & 0x00FFFFFFu);
+        }
+        void note(uint32_t at, uint32_t size) {
+            if (at >= 0x80000000u && at < 0x80000000u + game_size && size > 0 && size <= 0x10000) {
+                out.push_back({ at, std::min(size, 0x80000000u + game_size - at) });
+            }
+        }
+        void walk(uint32_t at, int depth, uint32_t stop) {
+            if (depth > 12) {
+                return;
+            }
+            while (commands < 400000) {
+                if ((at & 7u) != 0 || at < 0x80000000u || at >= 0x80000000u + game_size || (stop != 0 && at >= stop)) {
+                    return;
+                }
+                const uint32_t w0 = mem_word(rdram, at), w1 = mem_word(rdram, at + 4);
+                commands++;
+                const uint32_t op = w0 >> 24;
+                switch (op) {
+                    case 0x01:   // G_VTX
+                        note(resolve(w1), ((w0 >> 12) & 0xFFu) * 16u);
+                        break;
+                    case 0xDA:   // G_MTX
+                        note(resolve(w1), 64);
+                        break;
+                    case 0xDC:   // G_MOVEMEM
+                        note(resolve(w1), (((w0 >> 19) & 0x1Fu) + 1u) * 8u);
+                        break;
+                    case 0xDB:   // G_MOVEWORD: a segment
+                        if (((w0 >> 16) & 0xFFu) == 0x06 && (w0 & 0xFFFFu) < 64u) {
+                            seg[(w0 & 0xFFFFu) / 4u] = w1 & 0x00FFFFFFu;
+                        }
+                        break;
+                    case 0xDE: {  // G_DL: a call (or a jump)
+                        const uint32_t target = resolve(w1);
+                        if (((w0 >> 16) & 0xFFu) != 0) {
+                            at = target;
+                            stop = 0;
+                            continue;
+                        }
+                        walk(target, depth + 1, 0);
+                        break;
+                    }
+                    case 0xDF:   // G_ENDDL
+                        return;
+                    default:
+                        break;
+                }
+                at += 8;
+            }
+        }
+    };
+
+    // (the next frame's start) what the view's commands drew from, put back
+    void put_kept_back(uint8_t* rdram) {
+        for (const Kept& k : kept_back) {
+            std::memcpy(rdram + (k.at - 0x80000000u), k.was.data(), k.size);
+        }
+        kept_back.clear();
+    }
+}
+
+// func_1501878C, 0x15018C8C (its frame's display list about to be closed; $s1 the address of the list's end): the view, see above.
+extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
+    if (!local_view_wanted(rdram)) {
+        return;
+    }
+    const uint32_t base = mem_word(rdram, camera_base);
+    const uint32_t views = mem_word(rdram, 0x800BE628);
+    const uint32_t buffer = MEM_BU(0, (gpr)(int32_t)matrix_buffer) & 1u;
+    const uint32_t mats = mem_word(rdram, matrices + 4 * buffer);
+    const uint32_t head = (uint32_t)ctx->r17;
+    if (!in_rdram(base) || !in_rdram(views) || !in_rdram(mats) || !in_rdram(head)) {
+        return;
+    }
+    put_kept_back(rdram);   // (none should be left; to be safe)
+    local_copy.assign(rdram, rdram + game_size);
+    const uint32_t list_before = mem_word(rdram, head);
+
+    // 2. view 1 the extra camera's
+    std::memcpy(rdram + (base - 0x80000000u), rdram + (base + (uint32_t)extra * camera_size - 0x80000000u), camera_size);
+    MEM_B(0x23D, (gpr)(int32_t)base) = 0;
+    std::memcpy(rdram + (views - 0x80000000u), rdram + (views + (uint32_t)extra * 0x180u - 0x80000000u), 0x180);
+    std::memcpy(rdram + (mats - 0x80000000u), rdram + (mats + (uint32_t)extra * 0x40u - 0x80000000u), 0x40);
+
+    // 3. its passes
+    const recomp_context saved = *ctx;
+    const int32_t was_view = MEM_W(0, (gpr)(int32_t)view_now);
+    MEM_W(0, (gpr)(int32_t)view_now) = 0;
+    ctx->r4 = 0;
+    func_1510FC34(rdram, ctx);
+    *ctx = saved;
+    ctx->r4 = 0;
+    func_15094EA0(rdram, ctx);
+    *ctx = saved;
+    ctx->r4 = 0;
+    func_15018F80(rdram, ctx);
+    *ctx = saved;
+    uint32_t list = call_list(rdram, ctx, func_15019464, list_before, 0);
+    *ctx = saved;
+    list = call_list(rdram, ctx, func_1515D6D0, list, 0);
+    *ctx = saved;
+    list = call_list(rdram, ctx, func_150195A0, list, 0);
+    *ctx = saved;
+    MEM_W(0, (gpr)(int32_t)view_now) = was_view;
+
+    // 4. what the new commands draw from
+    ListWalk walker{ rdram };
+    // the segments as the frame's list set them before (its top level, from its start)
+    const uint32_t start = mem_word(rdram, list_start + 4 * buffer);
+    for (uint32_t a = start; in_rdram(a) && a + 8 <= list_before && a - start < 0x80000; a += 8) {
+        const uint32_t w0 = mem_word(rdram, a);
+        if ((w0 >> 24) == 0xDB && ((w0 >> 16) & 0xFFu) == 0x06 && (w0 & 0xFFFFu) < 64u) {
+            walker.seg[(w0 & 0xFFFFu) / 4u] = mem_word(rdram, a + 4) & 0x00FFFFFFu;
+        }
+    }
+    walker.walk(list_before, 0, list);
+    std::vector<Kept> keep;
+    for (const auto& r : walker.out) {
+        Kept k{ r.first, r.second, {} };
+        k.was.assign(local_copy.begin() + (r.first - 0x80000000u), local_copy.begin() + (r.first - 0x80000000u) + r.second);
+        if (std::memcmp(k.was.data(), rdram + (r.first - 0x80000000u), r.second) != 0) {
+            keep.push_back(std::move(k));
+        }
+    }
+    std::vector<std::vector<uint8_t>> now;
+    now.reserve(keep.size());
+    for (const Kept& k : keep) {
+        now.emplace_back(rdram + (k.at - 0x80000000u), rdram + (k.at - 0x80000000u) + k.size);
+    }
+    // the game's memory back, but for the new commands and the list's end
+    const uint32_t from = list_before - 0x80000000u, to = list - 0x80000000u;
+    if (list > list_before && to <= game_size) {
+        std::memcpy(rdram, local_copy.data(), from);
+        std::memcpy(rdram + to, local_copy.data() + to, game_size - to);
+    } else {
+        std::memcpy(rdram, local_copy.data(), game_size);
+        list = list_before;
+    }
+    MEM_W(0, (gpr)(int32_t)head) = (int32_t)list;
+    for (size_t i = 0; i < keep.size(); i++) {
+        std::memcpy(rdram + (keep[i].at - 0x80000000u), now[i].data(), keep[i].size);
+    }
+    kept_back = std::move(keep);
+    local_views++;
+    if (local_views <= 3 || local_views % 600 == 0) {
+        log("f=%u the extra camera's view drawn here (%u times): %u commands (%u walked), %u pieces it draws from kept for the frame",
+            (unsigned)frames, (unsigned)local_views, (unsigned)((list - list_before) / 8), (unsigned)walker.commands, (unsigned)kept_back.size());
+    }
+}
+
+// func_1501878C's start (the next frame): what the view drew from, back as the game had it.
+extern "C" void conker_possess_view_local_after(uint8_t* rdram, recomp_context* ctx) {
+    (void)ctx;
+    if (!kept_back.empty()) {
+        put_kept_back(rdram);
     }
 }

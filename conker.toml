@@ -766,7 +766,7 @@ text = "{ extern void conker_display_list_limit(uint8_t*, recomp_context*); conk
 [[patches.hook]]
 func = "func_1501878C"
 before_vram = 0x15018C8C
-text = "{ extern void conker_frame_dl_end(uint8_t*, recomp_context*); conker_frame_dl_end(rdram, ctx); }"
+text = "{ extern void conker_possess_view_local(uint8_t*, recomp_context*); conker_possess_view_local(rdram, ctx); extern void conker_frame_dl_end(uint8_t*, recomp_context*); conker_frame_dl_end(rdram, ctx); }"
 
 [[patches.hook]]
 func = "func_15019464"
@@ -2947,3 +2947,9 @@ text = "{ extern void conker_possess_diff_game(uint8_t*, recomp_context*, int); 
 func = "func_1501878C"
 before_vram = 0x15018B70
 text = "{ extern void conker_possess_diff_game(uint8_t*, recomp_context*, int); conker_possess_diff_game(rdram, ctx, 4); }"
+
+# possess-test (possess17): the next frame's start, what the extra camera's view drew from put back (conker_possess_view_local_after).
+[[patches.hook]]
+func = "func_1501878C"
+before_vram = 0x1501878C
+text = "{ extern void conker_possess_view_local_after(uint8_t*, recomp_context*); conker_possess_view_local_after(rdram, ctx); }"
