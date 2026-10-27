@@ -776,6 +776,23 @@ extern "C" void conker_possess_camera_frame(uint8_t* rdram, recomp_context* ctx)
         func_15122C5C(rdram, ctx);
     }
     *ctx = saved;
+    // (possess29 diagnostics) where the extra camera is, against the character it follows: shown, and played
+    {
+        static uint32_t told_shown = 0, told_played = 0;
+        uint32_t& told = extra_played ? told_played : told_shown;
+        if (extra_shown && (frames % 20) == 0 && told < (extra_played ? 90u : 15u)) {
+            told++;
+            const float ex = position(rdram, camera, 0x2EC), ey = position(rdram, camera, 0x2F0), ez = position(rdram, camera, 0x2F4);
+            const float lx = position(rdram, camera, 0x2BC), ly = position(rdram, camera, 0x2C0), lz = position(rdram, camera, 0x2C4);
+            const float px = position(rdram, camera, 0x2A4), py = position(rdram, camera, 0x2A8), pz = position(rdram, camera, 0x2AC);
+            const float d = std::sqrt((ex - lx) * (ex - lx) + (ey - ly) * (ey - ly) + (ez - lz) * (ez - lz));
+            log("f=%u [cam] %s: eye %.0f %.0f %.0f (wanted %.0f %.0f %.0f), looks at %.0f %.0f %.0f (%.0f away), pivot %.0f %.0f %.0f; +374 %.1f "
+                "+344 %.1f; index %u; brain+197 %u, character's camera %08X", (unsigned)frames, extra_played ? "played" : "shown", ex, ey, ez,
+                position(rdram, camera, 0x2F8), position(rdram, camera, 0x2FC), position(rdram, camera, 0x300), lx, ly, lz, d, px, py, pz,
+                position(rdram, camera, 0x374), position(rdram, camera, 0x344), (unsigned)MEM_BU(0x23D, (gpr)(int32_t)camera),
+                (unsigned)MEM_BU(0x197, (gpr)(int32_t)brain_of(rdram, extra)), (unsigned)word(rdram, character(extra) + 0x318));
+        }
+    }
     static uint32_t logged = 0;
     if (logged < 3 || (frames % 600) == 0) {
         logged++;
