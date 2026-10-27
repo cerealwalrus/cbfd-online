@@ -487,7 +487,7 @@ extern "C" void conker_possess_cameras_alloc2(uint8_t* rdram, recomp_context* ct
     }
 }
 
-// func_150054C4's start: camera ($a0) for character $a1.
+// func_150054C4, 0x150054C8 (its start, past one instruction): camera ($a0) for character $a1.
 extern "C" void conker_possess_camera_args(uint8_t* rdram, recomp_context* ctx) {
     if (!conker::netsession::active() && (int32_t)ctx->r5 == 0) {
         camera_arg2 = (uint32_t)ctx->r6;

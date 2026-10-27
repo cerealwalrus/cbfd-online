@@ -1415,7 +1415,7 @@ text = "{ extern void conker_possess_cameras_alloc2(uint8_t*, recomp_context*); 
 # possess-test: func_150054C4 makes camera $a0 for character $a1 ($a2, $a3 kept for the extra one).
 [[patches.hook]]
 func = "func_150054C4"
-before_vram = 0x150054C4
+before_vram = 0x150054C8
 text = "{ extern void conker_possess_camera_args(uint8_t*, recomp_context*); conker_possess_camera_args(rdram, ctx); }"
 
 # possess-test: func_1501A220 makes room for $s0 views.
