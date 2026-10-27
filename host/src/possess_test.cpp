@@ -1321,6 +1321,12 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
     *ctx = saved;
     list = call_list(rdram, ctx, func_150195A0, list, 0);
     *ctx = saved;
+    // (possess27) and its second pass (func_1501878C's second loop of the views: func_1515D6D0 + func_15019CC8, what's drawn in
+    // layer 5 of func_151674F8's, after the 3D of the first)
+    list = call_list(rdram, ctx, func_1515D6D0, list, 0);
+    *ctx = saved;
+    list = call_list(rdram, ctx, func_15019CC8, list, 0);
+    *ctx = saved;
     MEM_W(0, (gpr)(int32_t)view_now) = was_view;
     // past the list's room (the game's limit, with a margin for its end): the view's commands let go
     bool too_long = (int32_t)((list - frame_list) >> 3) + 64 > (int32_t)MEM_W(0, (gpr)(int32_t)list_most);
