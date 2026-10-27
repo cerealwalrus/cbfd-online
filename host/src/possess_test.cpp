@@ -1026,6 +1026,47 @@ namespace {
         return (uint32_t)MEM_W(0, (gpr)(int32_t)address);
     }
 
+    // (possess22) The game's message queues and threads (as it makes them: conker_possess_note_queue / _thread). While the view is
+    // drawn messages come in to queues (the controllers', the screen's, ...) and threads are woken; the runtime keeps track of those
+    // outside the game's memory, so they must not be put back: those pieces are left as they are.
+    std::vector<uint32_t> known_queues, known_threads;
+
+    // The pieces of the game's memory never put back: each queue (and its messages), each thread.
+    std::vector<std::pair<uint32_t, uint32_t>> untouchables(uint8_t* rdram) {
+        std::vector<std::pair<uint32_t, uint32_t>> out;
+        for (uint32_t q : known_queues) {
+            out.push_back({ q, 24 });
+            const uint32_t count = mem_word(rdram, q + 16), messages = mem_word(rdram, q + 20);
+            if (count > 0 && count < 4096 && (messages >> 24) == 0x80) {
+                out.push_back({ messages, count * 4 });
+            }
+        }
+        for (uint32_t t : known_threads) {
+            out.push_back({ t, 0x30 });
+        }
+        return out;
+    }
+
+    // Puts `from` (a copy of the game's first 4 MB) back, but for [keep_from, keep_to) and the untouchables.
+    void put_back(uint8_t* rdram, const std::vector<uint8_t>& from, uint32_t keep_from, uint32_t keep_to) {
+        const auto keep = untouchables(rdram);
+        std::vector<std::vector<uint8_t>> saved;
+        for (const auto& k : keep) {
+            const uint32_t at = k.first - 0x80000000u;
+            saved.emplace_back(rdram + at, rdram + std::min<uint32_t>(at + k.second, 0x400000u));
+        }
+        const uint32_t a = keep_from - 0x80000000u, b = keep_to - 0x80000000u;
+        if (keep_to > keep_from && b <= 0x400000u) {
+            std::memcpy(rdram, from.data(), a);
+            std::memcpy(rdram + b, from.data() + b, 0x400000u - b);
+        } else {
+            std::memcpy(rdram, from.data(), 0x400000u);
+        }
+        for (size_t i = 0; i < keep.size(); i++) {
+            std::memcpy(rdram + (keep[i].first - 0x80000000u), saved[i].data(), saved[i].size());
+        }
+    }
+
     // The display list's commands from `from` (an RDRAM address), following calls: every piece of memory they name (with the command
     // that names it, and the segment it's named through), and where each segment was set.
     struct ListWalk {
@@ -1144,11 +1185,14 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
         return;
     }
     // the game's memory as before its views were drawn, but for the frame's list (its commands so far) and the list's end
-    {
-        const uint32_t a = frame_list - 0x80000000u, b = list_before - 0x80000000u;
-        std::memcpy(rdram, start_copy.data(), a);
-        std::memcpy(rdram + b, start_copy.data() + b, game_size - b);
-        MEM_W(0, (gpr)(int32_t)head) = (int32_t)list_before;
+    put_back(rdram, start_copy, frame_list, list_before);
+    MEM_W(0, (gpr)(int32_t)head) = (int32_t)list_before;
+    // nothing else of the game's runs while the view is drawn: this thread first in line (its priority as high as it goes)
+    const uint32_t self = (uint32_t)ultramodern::this_thread();
+    int32_t self_priority = 0;
+    if ((self >> 24) == 0x80) {
+        self_priority = MEM_W(4, (gpr)(int32_t)self);
+        MEM_W(4, (gpr)(int32_t)self) = 0x7FFF;
     }
 
     // 2. view 1 the extra camera's
@@ -1274,14 +1318,16 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
         now.emplace_back(rdram + (k.at - 0x80000000u), rdram + (k.at - 0x80000000u) + k.size);
     }
     // the game's memory back, but for the new commands and the list's end
-    const uint32_t from = list_before - 0x80000000u, to = list - 0x80000000u;
+    const uint32_t to = list - 0x80000000u;
     if (list > list_before && to <= game_size) {
-        std::memcpy(rdram, local_copy.data(), from);
-        std::memcpy(rdram + to, local_copy.data() + to, game_size - to);
+        put_back(rdram, local_copy, list_before, list);
     } else {
-        std::memcpy(rdram, local_copy.data(), game_size);
+        put_back(rdram, local_copy, 0, 0);
         list = list_before;
         patches.clear();
+    }
+    if ((self >> 24) == 0x80) {
+        MEM_W(4, (gpr)(int32_t)self) = self_priority;
     }
     MEM_W(0, (gpr)(int32_t)head) = (int32_t)list;
     for (const auto& pt : patches) {
@@ -1431,3 +1477,18 @@ void conker_possess_heartbeat() {
 #else
 void conker_possess_heartbeat() {}
 #endif
+
+// (possess22) the game making a message queue ($a0) or a thread ($a0): kept, so that the extra camera's view leaves them be.
+extern "C" void conker_possess_note_queue(uint8_t* rdram, uint32_t queue) {
+    (void)rdram;
+    if ((queue >> 24) == 0x80 && std::find(known_queues.begin(), known_queues.end(), queue) == known_queues.end()) {
+        known_queues.push_back(queue);
+    }
+}
+
+extern "C" void conker_possess_note_thread(uint8_t* rdram, uint32_t thread) {
+    (void)rdram;
+    if ((thread >> 24) == 0x80 && std::find(known_threads.begin(), known_threads.end(), thread) == known_threads.end()) {
+        known_threads.push_back(thread);
+    }
+}

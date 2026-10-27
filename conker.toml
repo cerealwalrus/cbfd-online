@@ -2953,3 +2953,78 @@ text = "{ extern void conker_possess_diff_game(uint8_t*, recomp_context*, int); 
 func = "func_1501878C"
 before_vram = 0x1501878C
 text = "{ extern void conker_possess_view_local_after(uint8_t*, recomp_context*); conker_possess_view_local_after(rdram, ctx); }"
+
+# possess-test (possess22): the game's message queues and threads as it makes them ($a0), so the extra camera's view leaves them be
+# (host/src/possess_test.cpp, conker_possess_note_queue / _thread).
+[[patches.hook]]
+func = "func_10001050"
+before_vram = 0x100010D4
+text = "{ extern void conker_possess_note_thread(uint8_t*, uint32_t); conker_possess_note_thread(rdram, (uint32_t)ctx->r4); }"
+[[patches.hook]]
+func = "func_100010F8"
+before_vram = 0x10001134
+text = "{ extern void conker_possess_note_thread(uint8_t*, uint32_t); conker_possess_note_thread(rdram, (uint32_t)ctx->r4); }"
+[[patches.hook]]
+func = "func_10004470"
+before_vram = 0x100044C0
+text = "{ extern void conker_possess_note_queue(uint8_t*, uint32_t); conker_possess_note_queue(rdram, (uint32_t)ctx->r4); }"
+[[patches.hook]]
+func = "func_10004470"
+before_vram = 0x100044E4
+text = "{ extern void conker_possess_note_queue(uint8_t*, uint32_t); conker_possess_note_queue(rdram, (uint32_t)ctx->r4); }"
+[[patches.hook]]
+func = "func_100050A0"
+before_vram = 0x10005100
+text = "{ extern void conker_possess_note_queue(uint8_t*, uint32_t); conker_possess_note_queue(rdram, (uint32_t)ctx->r4); }"
+[[patches.hook]]
+func = "func_100050A0"
+before_vram = 0x10005118
+text = "{ extern void conker_possess_note_queue(uint8_t*, uint32_t); conker_possess_note_queue(rdram, (uint32_t)ctx->r4); }"
+[[patches.hook]]
+func = "func_100050A0"
+before_vram = 0x10005130
+text = "{ extern void conker_possess_note_queue(uint8_t*, uint32_t); conker_possess_note_queue(rdram, (uint32_t)ctx->r4); }"
+[[patches.hook]]
+func = "func_100050A0"
+before_vram = 0x100051A4
+text = "{ extern void conker_possess_note_thread(uint8_t*, uint32_t); conker_possess_note_thread(rdram, (uint32_t)ctx->r4); }"
+[[patches.hook]]
+func = "func_10005218"
+before_vram = 0x10005230
+text = "{ extern void conker_possess_note_queue(uint8_t*, uint32_t); conker_possess_note_queue(rdram, (uint32_t)ctx->r4); }"
+[[patches.hook]]
+func = "func_10005218"
+before_vram = 0x10005274
+text = "{ extern void conker_possess_note_thread(uint8_t*, uint32_t); conker_possess_note_thread(rdram, (uint32_t)ctx->r4); }"
+[[patches.hook]]
+func = "func_150061B0"
+before_vram = 0x150061C8
+text = "{ extern void conker_possess_note_queue(uint8_t*, uint32_t); conker_possess_note_queue(rdram, (uint32_t)ctx->r4); }"
+[[patches.hook]]
+func = "func_15007830"
+before_vram = 0x1500787C
+text = "{ extern void conker_possess_note_queue(uint8_t*, uint32_t); conker_possess_note_queue(rdram, (uint32_t)ctx->r4); }"
+[[patches.hook]]
+func = "func_10008F90"
+before_vram = 0x10009310
+text = "{ extern void conker_possess_note_queue(uint8_t*, uint32_t); conker_possess_note_queue(rdram, (uint32_t)ctx->r4); }"
+[[patches.hook]]
+func = "func_10008F90"
+before_vram = 0x10009328
+text = "{ extern void conker_possess_note_queue(uint8_t*, uint32_t); conker_possess_note_queue(rdram, (uint32_t)ctx->r4); }"
+[[patches.hook]]
+func = "func_10008F90"
+before_vram = 0x10009340
+text = "{ extern void conker_possess_note_queue(uint8_t*, uint32_t); conker_possess_note_queue(rdram, (uint32_t)ctx->r4); }"
+[[patches.hook]]
+func = "func_10008F90"
+before_vram = 0x10009358
+text = "{ extern void conker_possess_note_queue(uint8_t*, uint32_t); conker_possess_note_queue(rdram, (uint32_t)ctx->r4); }"
+[[patches.hook]]
+func = "func_10008F90"
+before_vram = 0x1000938C
+text = "{ extern void conker_possess_note_thread(uint8_t*, uint32_t); conker_possess_note_thread(rdram, (uint32_t)ctx->r4); }"
+[[patches.hook]]
+func = "func_15000000"
+before_vram = 0x15000038
+text = "{ extern void conker_possess_note_queue(uint8_t*, uint32_t); conker_possess_note_queue(rdram, (uint32_t)ctx->r4); }"
