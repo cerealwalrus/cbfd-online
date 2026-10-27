@@ -707,7 +707,7 @@ namespace {
             if (menu_open != conker::netmenu::is_open() && disagree_logs < 40) {
                 disagree_logs++;
                 char line[120];
-                std::snprintf(line, sizeof(line), "[net view] f=%u the pause menu drawn this frame, closed since: its pictures kept where drawn",
+                std::snprintf(line, sizeof(line), "[net view] f=%u the pause menu drawn in the last frames, closed since: its pictures kept where drawn",
                     (unsigned)conker::netsession::frame());
                 conker::netsession::log(line);
             }
