@@ -1303,6 +1303,26 @@ namespace {
     // outside the game's memory, so they must not be put back: those pieces are left as they are.
     std::vector<uint32_t> known_queues, known_threads;
 
+    // (possess42) The buffers the RDP draws into: the two framebuffers (D_8002AAE8), the depth buffer (D_800BE9C4) and the blur's copy of
+    // the screen (D_800BE570), all in the game's heap. What's in them is the renderer's (RT64 keeps them as framebuffers of its own):
+    // the extra camera's view never copies them as textures it draws from (the effects that draw the screen back from one of them drew,
+    // from a copy, the memory's old bytes: in the wrong colours), and they're never put back from a snapshot of the game's memory.
+    std::vector<std::pair<uint32_t, uint32_t>> rdp_buffers(uint8_t* rdram) {
+        std::vector<std::pair<uint32_t, uint32_t>> out;
+        const uint32_t width = (uint32_t)MEM_W(0, (gpr)(int32_t)0x800BE620), height = (uint32_t)MEM_W(0, (gpr)(int32_t)0x800BE624);
+        if (width == 0 || width > 640 || height == 0 || height > 480) {
+            return out;
+        }
+        const uint32_t size = width * height * 2u;
+        for (const uint32_t pointer : { 0x8002AAE8u, 0x8002AAECu, 0x800BE9C4u, 0x800BE570u }) {
+            const uint32_t at = (uint32_t)MEM_W(0, (gpr)(int32_t)pointer);
+            if (at >= 0x80000000u && at + size <= 0x80400000u) {
+                out.push_back({ at, size });
+            }
+        }
+        return out;
+    }
+
     // The pieces of the game's memory never put back: each queue (and its messages), each thread.
     std::vector<std::pair<uint32_t, uint32_t>> untouchables(uint8_t* rdram) {
         std::vector<std::pair<uint32_t, uint32_t>> out;
@@ -1315,6 +1335,9 @@ namespace {
         }
         for (uint32_t t : known_threads) {
             out.push_back({ t, 0x30 });
+        }
+        for (const auto& b : rdp_buffers(rdram)) {
+            out.push_back(b);
         }
         return out;
     }
@@ -1354,6 +1377,7 @@ namespace {
         struct Body { uint32_t at, end, command; int parent; };
         std::vector<Body> bodies;
         uint32_t commands = 0, textures = 0, branches = 0;
+        std::vector<std::pair<uint32_t, uint32_t>> cimgs;   // (possess42) the color images its commands set (address, bytes)
         uint32_t timg_at = 0, timg_w1 = 0, timg_siz = 0, timg_width = 0;
         int timg_body = -1;
         uint32_t resolve(uint32_t a, int* segment) const {
@@ -1436,6 +1460,14 @@ namespace {
                     case 0xF4:   // G_LOADTILE: its rows from the image's start
                         texture((((w1 & 0xFFFu) >> 2) + 1u) * texel_bytes(timg_width));
                         break;
+                    case 0xFF: {   // G_SETCIMG: a buffer the RDP draws into (a row of a narrow one: the game's little copies of pixels)
+                        int segment = -1;
+                        const uint32_t image = resolve(w1, &segment);
+                        const uint32_t width = (w0 & 0xFFFu) + 1u, siz = (w0 >> 19) & 3u;
+                        const uint32_t row = siz == 0 ? (width + 1u) / 2u : width << (siz - 1u);
+                        cimgs.push_back({ image, width >= 32 ? row * 240u : row });
+                        break;
+                    }
                     case 0xF0:   // G_LOADTLUT
                         texture((((w1 >> 14) & 0x3FFu) + 1u) * 2u);
                         break;
@@ -1494,6 +1526,84 @@ namespace {
 }
 
 // func_1501878C, 0x15018C8C (its frame's display list about to be closed; $s1 the address of the list's end): the view, see above.
+namespace {
+    // (possess42) What the extra camera's view saw last frame, kept for its next: the level's map (D_800DBE48, a tree of areas: each one's
+    // +0x2 has a bit a view, the areas in its sight, set by the view's drawing of the level, func_150A5378 from func_1510B9D0, and read
+    // the next frame by func_15112A80's choice of the objects to draw and run, through func_1503F800), and each object's fade in view 1
+    // (+0x8B, stepped by func_15112A80). Put back to the game's (player 1's camera's) with the rest of its memory each frame, the objects
+    // near the extra character were left out unless player 1's camera had them in sight too: the weapons there weren't drawn, nor run.
+    std::vector<uint32_t> kept_areas;
+    std::vector<uint8_t> kept_area_bits;
+    uint32_t kept_areas_root = 0;
+    std::vector<uint8_t> kept_object_fades;
+    uint32_t kept_objects_list = 0, kept_objects_count = 0;
+    uint32_t blur_left = 0, areas_told = 0;
+
+    template <typename F> void each_area(uint8_t* rdram, F f) {
+        uint32_t node = (uint32_t)MEM_W(0, (gpr)(int32_t)0x800DBE48);
+        for (int n = 0; n < 65536 && node >= 0x80000000u && node + 0x10u <= 0x80400000u; n++) {
+            f(node);
+            const int16_t child = MEM_H(0xC, (gpr)(int32_t)node), next = MEM_H(4, (gpr)(int32_t)node);
+            if (child != 0) {
+                node += (uint32_t)(int32_t)child;
+            } else if (next != 0) {
+                node += (uint32_t)(int32_t)next;
+            } else {
+                break;
+            }
+        }
+    }
+
+    void keep_what_was_seen(uint8_t* rdram) {
+        kept_areas.clear();
+        kept_area_bits.clear();
+        kept_areas_root = (uint32_t)MEM_W(0, (gpr)(int32_t)0x800DBE48);
+        each_area(rdram, [&](uint32_t node) {
+            kept_areas.push_back(node);
+            kept_area_bits.push_back((uint8_t)(MEM_HU(2, (gpr)(int32_t)node) & 1u));
+        });
+        kept_objects_count = (uint32_t)MEM_W(0, (gpr)(int32_t)0x800DBEF0);
+        kept_objects_list = (uint32_t)MEM_W(0, (gpr)(int32_t)0x800DBEF4);
+        kept_object_fades.clear();
+        if (kept_objects_count > 0 && kept_objects_count < 2048 && kept_objects_list >= 0x80000000u &&
+            kept_objects_list + kept_objects_count * 0xA0u <= 0x80400000u) {
+            for (uint32_t i = 0; i < kept_objects_count; i++) {
+                kept_object_fades.push_back((uint8_t)MEM_BU(0x8B, (gpr)(int32_t)(kept_objects_list + i * 0xA0u)));
+            }
+        }
+    }
+
+    // the areas whose bit was put back as the extra camera's
+    uint32_t put_back_what_was_seen(uint8_t* rdram) {
+        uint32_t changed = 0;
+        if (!kept_areas.empty() && kept_areas_root == (uint32_t)MEM_W(0, (gpr)(int32_t)0x800DBE48)) {
+            for (size_t i = 0; i < kept_areas.size(); i++) {
+                const gpr at = (gpr)(int32_t)kept_areas[i];
+                const uint16_t was = MEM_HU(2, at);
+                const uint16_t now = (uint16_t)((was & ~1u) | kept_area_bits[i]);
+                if (now != was) {
+                    MEM_H(2, at) = (int16_t)now;
+                    changed++;
+                }
+            }
+        }
+        if (!kept_object_fades.empty() && kept_objects_count == (uint32_t)MEM_W(0, (gpr)(int32_t)0x800DBEF0) &&
+            kept_objects_list == (uint32_t)MEM_W(0, (gpr)(int32_t)0x800DBEF4)) {
+            for (uint32_t i = 0; i < kept_objects_count; i++) {
+                MEM_B(0x8B, (gpr)(int32_t)(kept_objects_list + i * 0xA0u)) = (int8_t)kept_object_fades[i];
+            }
+        }
+        return changed;
+    }
+
+    void forget_what_was_seen() {
+        kept_areas.clear();
+        kept_area_bits.clear();
+        kept_object_fades.clear();
+        kept_areas_root = 0;
+    }
+}
+
 extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
     if (!local_view_wanted(rdram)) {
         return;
@@ -1548,6 +1658,14 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
         const uint32_t fade = MEM_BU(0xB, c);
         const bool hidden = (MEM_BU(0xF, c) & 1u) != 0;
         MEM_B(0xB, c) = (int8_t)(hidden ? (fade > 50u ? fade - 50u : 0u) : (fade < 205u ? fade + 50u : 255u));
+    }
+    // (possess42) what the extra camera saw last frame (the map's areas in its sight, each object's fade in view 1), for this frame's
+    // choice of what's drawn and run in its view
+    const uint32_t areas_put_back = put_back_what_was_seen(rdram);
+    if (areas_told < 5 || (areas_put_back != 0 && local_views % 600 == 0)) {
+        areas_told++;
+        log("f=%u the extra camera's last frame: %u of the map's %u areas put back as in its sight (not player 1's), the fades of %u objects",
+            (unsigned)frames, (unsigned)areas_put_back, (unsigned)kept_areas.size(), (unsigned)kept_object_fades.size());
     }
     // nothing else of the game's runs while the view is drawn: this thread first in line (its priority as high as it goes)
     const uint32_t self = (uint32_t)ultramodern::this_thread();
@@ -1666,6 +1784,13 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
         call0(func_1515D69C);
         call0(func_15167310);
     }
+    // (possess42) the game's blur (func_151D6778, D_800BE574 its strength: the screen as the frame before left it drawn faintly over a view,
+    // then the view copied for the next frame) left out of the extra camera's view: it has one buffer (D_800BE570), player 1's view's
+    // too, so each view would be drawn over with the other's
+    if (MEM_BU(0, (gpr)(int32_t)0x800BE574) != 0) {
+        blur_left++;
+    }
+    MEM_B(0, (gpr)(int32_t)0x800BE574) = 0;
     ctx->r4 = 0;
     func_15018F80(rdram, ctx);
     *ctx = saved;
@@ -1688,6 +1813,8 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
     // poses, showed it.)
     func_1502E474(rdram, ctx);
     *ctx = saved;
+    // (possess42) what the view had in sight, for its next frame
+    keep_what_was_seen(rdram);
     MEM_W(0, (gpr)(int32_t)view_now) = was_view;
     extra_view_now = false;
     for (int k = 0; k < 25; k++) {
@@ -1720,6 +1847,18 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
         }
     }
     walker.run(list_before, 0, list, -1);
+    // (possess42) the buffers the RDP draws into, as textures the view draws from: left as they are (see rdp_buffers)
+    std::vector<std::pair<uint32_t, uint32_t>> rdp = rdp_buffers(rdram);
+    rdp.insert(rdp.end(), walker.cimgs.begin(), walker.cimgs.end());
+    auto on_rdp = [&](uint32_t at, uint32_t size) {
+        for (const auto& b : rdp) {
+            if (at < b.first + b.second && b.first < at + size) {
+                return true;
+            }
+        }
+        return false;
+    };
+    uint32_t rdp_left = 0;
     auto changed = [&](uint32_t at, uint32_t size) {
         if (at < 0x80000000u || at >= 0x80000000u + game_size) {
             return false;
@@ -1761,6 +1900,10 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
         const auto& r = walker.refs[i];
         if (use_game_poses && r.at >= pose_pool && r.at < pose_pool_end) {
             poses_left++;
+            continue;
+        }
+        if (on_rdp(r.at, r.size)) {
+            rdp_left++;
             continue;
         }
         if (changed(r.at, r.size)) {
@@ -2128,9 +2271,10 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
     if (local_views <= 3 || local_views % 600 == 0) {
         log("f=%u (the frame's list: %u commands of %d)", (unsigned)frames, (unsigned)((list - frame_list) >> 3), (int)MEM_W(0, (gpr)(int32_t)list_most));
         log("f=%u the extra camera's view drawn here (%u times): %u commands (%u walked), %u pieces copied to ours, %u lists copied (of %u walked), %u "
-            "texture loads, %u branches, %u kept for the frame (%u bytes of copies)", (unsigned)frames, (unsigned)local_views, (unsigned)((list - list_before) / 8),
-            (unsigned)walker.commands, (unsigned)relocated, (unsigned)by_segment, (unsigned)walker.bodies.size(), (unsigned)walker.textures, (unsigned)walker.branches,
-            (unsigned)kept_back.size(), (unsigned)copies_used);
+            "texture loads (%u from the RDP's buffers, left as they are; %u color images set), %u branches, %u kept for the frame (%u bytes of copies); "
+            "the blur left out %u times", (unsigned)frames, (unsigned)local_views, (unsigned)((list - list_before) / 8),
+            (unsigned)walker.commands, (unsigned)relocated, (unsigned)by_segment, (unsigned)walker.bodies.size(), (unsigned)walker.textures, (unsigned)rdp_left,
+            (unsigned)walker.cimgs.size(), (unsigned)walker.branches, (unsigned)kept_back.size(), (unsigned)copies_used, (unsigned)blur_left);
     }
 }
 
@@ -2152,6 +2296,7 @@ extern "C" void conker_possess_frame_start(uint8_t* rdram) {
     if (!local_view_wanted(rdram)) {
         start_copied = false;
         extra_fades_kept = false;
+        forget_what_was_seen();
         if (seen_marked && false) {   // (possess32: view 1's bit is the game's own, set again each frame)
             seen_marked = false;
             const uint32_t count = mem_word(rdram, objects_count), list = mem_word(rdram, objects_list);
