@@ -484,6 +484,10 @@ namespace {
         uint32_t last_anim = 0;
         uint32_t anim_changed = 0;
         bool have_anim = false;
+        // 0.10.95: his facing last frame, and how far it turned since
+        uint16_t last_face = 0;
+        bool have_face = false;
+        int32_t turned = 0;
     };
     HitHold hit_hold_state[4];
 
@@ -542,6 +546,9 @@ namespace {
             }
             h.last_anim = anim;
             h.have_anim = true;
+            h.turned = h.have_face ? (int32_t)(int16_t)(uint16_t)(face - h.last_face) : 0;
+            h.last_face = face;
+            h.have_face = true;
         }
         if (h.holding) {
             // 0.10.14: not over when the animation changes (a hit's can be followed by another: 0.10.13's logs, player 3 at f=3676, the
@@ -578,6 +585,32 @@ namespace {
             const int32_t from_back = (int16_t)(uint16_t)(move - (uint16_t)(face + 0x8000u));
             const bool walking_set = h.have_written && now - h.written_frame <= 4 && changed <= 0x1800 && changed >= -0x1800;
             const bool new_animation = now - h.anim_changed <= 1;
+            // 0.10.95: or the game has already turned him once as a hit's knock back does (0xC00 a frame, toward the moving angle plus half
+            // a turn) with a new animation, where the walking had just set the moving angle (0.10.94's logs, player 4 at f=6654: walking
+            // in the plain look's first stage, the hit's animation 0x11D, his facing 3A07, 2E07, 2207 ... once round): taken back, his facing
+            // as it was and his moving angle that plus half a turn, as the hit sets it on a Nintendo 64, so he doesn't turn.
+            const int32_t turn = h.turned < 0 ? -h.turned : h.turned;
+            // (only with a hit's animation, 0x11D or 0x25B, the logs' hits in the look: his own turning, the mouse's, never)
+            const uint32_t anim_id = anim >> 16;
+            if (!h.holding && new_animation && (anim_id == 0x11D || anim_id == 0x25B) && h.have_face && turn >= 0xB00 && turn <= 0xD00 &&
+                    first_look_this_frame) {
+                const uint16_t before = (uint16_t)(face - (uint16_t)h.turned);
+                MEM_H(0x7A, walker) = (int16_t)before;
+                MEM_H(0x76, walker) = (int16_t)(uint16_t)(before + 0x8000u);
+                h.last_face = before;
+                h.holding = true;
+                h.hold_anim = anim;
+                h.hold_start = now;
+                h.hold_move = (uint16_t)(before + 0x8000u);
+                h.stood = false;
+                if (local) {
+                    char line[200];
+                    std::snprintf(line, sizeof(line), "[look] f=%u hit in the look, turned %d already: facing back to %04X, moving %04X (it was %04X), animation %X: the walking waits",
+                        now, (int)h.turned, (unsigned)before, (unsigned)(uint16_t)(before + 0x8000u), (unsigned)move, (unsigned)anim);
+                    conker::netsession::log(line);
+                }
+                return true;
+            }
             if (!walking_set && new_animation && from_back > -0x800 && from_back < 0x800) {
                 h.holding = true;
                 h.hold_anim = anim;

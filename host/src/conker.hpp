@@ -386,6 +386,10 @@ namespace conker {
         int port_of_player(int player);
         // this machine's player in the game (its camera, its character): player_of_port(local_slot())
         int local_player();
+        // (0.10.95) the player this machine shows and hears: its own, or for a machine whose player isn't in the match (a watcher) the
+        // one it watches (player 1 at first; the D-pad's left and right go through the others, spectate_poll)
+        int view_player();
+        void spectate_poll();
         // The name a player goes by on the screen: their nickname, or "Player N".
         std::string player_name(int slot);
         // Online: whether that player's right stick turns their camera this frame (the frame's agreed input), and by how

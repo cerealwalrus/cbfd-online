@@ -2358,6 +2358,46 @@ int conker::netsession::local_player() {
     return player_of_port(my_slot);
 }
 
+namespace {
+    std::atomic<int> spectate_target{ 0 };
+}
+
+int conker::netsession::view_player() {
+    const int own = local_player();
+    return own >= 0 ? own : spectate_target.load();
+}
+
+// Once a frame on the game thread (net_view.cpp's frame_end): a watcher's D-pad left and right (this machine's own controller, from
+// the frame's agreed input) go to the previous and next of the match's players.
+void conker::netsession::spectate_poll() {
+    static uint16_t last_buttons = 0;
+    int8_t list[4];
+    int n = 0;
+    if (!active() || local_player() >= 0 || !match_players(list, &n)) {
+        spectate_target = 0;
+        last_buttons = 0;
+        return;
+    }
+    bool plugged = false;
+    uint16_t buttons = 0;
+    float x = 0.0f, y = 0.0f;
+    if (!input(my_slot, &plugged, &buttons, &x, &y)) {
+        return;
+    }
+    const uint16_t pressed = (uint16_t)(buttons & ~last_buttons);
+    last_buttons = buttons;
+    int target = std::clamp(spectate_target.load(), 0, n - 1);
+    if (pressed & 0x0200) {
+        target = (target + n - 1) % n;
+    } else if (pressed & 0x0100) {
+        target = (target + 1) % n;
+    }
+    if (target != spectate_target.load()) {
+        log_line("[net] watching player %d of the match (slot %d)", target + 1, (int)list[target] + 1);
+    }
+    spectate_target = target;
+}
+
 std::string conker::netsession::player_name(int slot) {
     std::lock_guard lock{ mtx };
     return name_of(slot);
