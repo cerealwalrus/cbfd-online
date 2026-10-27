@@ -490,10 +490,42 @@ extern "C" void conker_possess_brain(uint8_t* rdram, recomp_context* ctx) {
 }
 
 extern "C" void conker_possess_move(uint8_t* rdram, recomp_context* ctx) {
+    if (extra_played && !conker::netsession::active() && (uint32_t)ctx->r16 == character(extra)) {
+        static uint32_t last = 0;
+        if (frames - last >= 30) {
+            last = frames;
+            float speed, way_bits;
+            const uint32_t sb = (uint32_t)MEM_W(0x1B4, ctx->r29);
+            std::memcpy(&speed, &sb, 4);
+            (void)way_bits;
+            log("f=%u [walk] character %d walks: brain+0x84 %d, stick's speed %.2f way %04X, state %02X", (unsigned)frames, extra,
+                (int)(uint32_t)ctx->r13, speed, (unsigned)MEM_HU(0x1BC, ctx->r29), (unsigned)MEM_BU(0x4, ctx->r16));
+        }
+    }
     if (mode != drive || conker::netsession::active() || (uint32_t)ctx->r16 != character(target)) {
         return;
     }
     ctx->r13 = 0;
+}
+
+// func_1504CB98, 0x1504CC54: the moving character's controller is set (D_800CC284), its brain's AI flag about to be read.
+extern "C" void conker_possess_probe(uint8_t* rdram, recomp_context* ctx) {
+    if (!extra_played || conker::netsession::active() || (uint32_t)ctx->r16 != character(extra)) {
+        return;
+    }
+    static uint32_t last = 0;
+    if (frames - last < 30) {
+        return;
+    }
+    last = frames;
+    const uint32_t pad = word(rdram, controller_now);
+    const uint32_t brain = brain_of(rdram, extra);
+    log("f=%u [probe] character %d: controller %08X (ours %08X) buttons %04X stick %d,%d; brain+0x84 %d; state %02X; +0x104 %d; "
+        "players %d, last player %d; camera %08X",
+        (unsigned)frames, extra, (unsigned)pad, (unsigned)extra_record, in_rdram(pad) ? (unsigned)MEM_HU(0, (gpr)(int32_t)pad) : 0u,
+        in_rdram(pad) ? (int)MEM_B(2, (gpr)(int32_t)pad) : 0, in_rdram(pad) ? (int)MEM_B(3, (gpr)(int32_t)pad) : 0,
+        brain != 0 ? (int)MEM_BU(0x84, (gpr)(int32_t)brain) : -1, (unsigned)MEM_BU(0x4, ctx->r16), (int)MEM_BU(0x104, ctx->r16),
+        (int)MEM_B(0, (gpr)(int32_t)0x8008FD8C), (int)MEM_W(0, (gpr)(int32_t)last_player), (unsigned)word(rdram, character(extra) + 0x318));
 }
 
 // ---- The extra camera (D-pad Left / Right) ----

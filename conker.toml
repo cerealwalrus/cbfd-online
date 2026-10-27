@@ -2257,3 +2257,8 @@ func = "func_15128CB0"
 before_vram = 0x151293C4
 text = "{ extern void conker_slot4_pad(uint8_t*, gpr*, gpr); conker_slot4_pad(rdram, &ctx->r11, ctx->r17); }"
 
+# possess-test: diagnostics, the moving character's controller set (conker_possess_probe).
+[[patches.hook]]
+func = "func_1504CB98"
+before_vram = 0x1504CC54
+text = "{ extern void conker_possess_probe(uint8_t*, recomp_context*); conker_possess_probe(rdram, ctx); }"
