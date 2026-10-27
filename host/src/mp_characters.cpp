@@ -66,22 +66,22 @@ extern "C" void conker_mp_characters(uint8_t* rdram) {
         if (!jumped) {
             continue;
         }
-        int near = -1;
+        int close_to = -1;
         for (int j = 0; j < 16; j++) {
             if (j == k || !have[j]) {
                 continue;
             }
             const float ex = p[0] - last[j][0], ez = p[2] - last[j][2];
             if (ex * ex + ez * ez < 40.0f * 40.0f) {
-                near = j;
+                close_to = j;
             }
         }
         char line[200];
         std::snprintf(line, sizeof(line), "[spawn] f=%u character %d (kind %02X) at %.0f %.0f %.0f%s", (unsigned)conker::netsession::frame(), k,
-            (unsigned)MEM_BU(4, (gpr)(int32_t)object), p[0], p[1], p[2], near >= 0 ? " (on top of another)" : "");
+            (unsigned)MEM_BU(4, (gpr)(int32_t)object), p[0], p[1], p[2], close_to >= 0 ? " (on top of another)" : "");
         conker::netsession::log(line);
-        if (near >= 0) {
-            std::snprintf(line, sizeof(line), "[spawn]   within 40 of character %d", near);
+        if (close_to >= 0) {
+            std::snprintf(line, sizeof(line), "[spawn]   within 40 of character %d", close_to);
             conker::netsession::log(line);
         }
         lines++;
