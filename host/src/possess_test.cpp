@@ -1044,6 +1044,11 @@ extern "C" void func_1510F800(uint8_t* rdram, recomp_context* ctx);
 extern "C" void func_1510B690(uint8_t* rdram, recomp_context* ctx);
 extern "C" void func_15112A80(uint8_t* rdram, recomp_context* ctx);
 extern "C" void func_15113218(uint8_t* rdram, recomp_context* ctx);
+extern "C" void func_151749F8(uint8_t* rdram, recomp_context* ctx);
+extern "C" void func_1502BEE4(uint8_t* rdram, recomp_context* ctx);
+extern "C" void func_150636F0(uint8_t* rdram, recomp_context* ctx);
+extern "C" void func_1515D69C(uint8_t* rdram, recomp_context* ctx);
+extern "C" void func_15167310(uint8_t* rdram, recomp_context* ctx);
 extern "C" void func_15188B74(uint8_t* rdram, recomp_context* ctx);
 extern "C" void func_1516706C(uint8_t* rdram, recomp_context* ctx);
 extern "C" void func_151671E8(uint8_t* rdram, recomp_context* ctx);
@@ -1382,20 +1387,33 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
     *ctx = saved;
     // (possess28) what each object is in sight of (func_15019130's after its views' loops: func_15112A80 and func_15113218 clear
     // and set each object's bit of the views that see it, the bit a view's passes draw it by), for the extra camera as view 1
-    // (possess31) and the rest of func_15019130 after its views' loops, as it runs them (the same calls, in order: what each object is in
-    // sight of, the objects' and the characters' drawing made ready for the views that see them, the queue of what's drawn), but for
-    // func_151749F8, func_1502BEE4 and func_150636F0 (they load from the cartridge) and the frame's counters at its end
+    // (possess31) and the rest of func_15019130 after its views' loops, as it runs them: the same calls, in the same order (what each
+    // object is in sight of; the characters' drawing made ready for the views that see them; the queue of what's drawn), but for the
+    // frame's counters at its end. (possess36) All of it now: func_1502BEE4 too (possess31 left it out as it can load from the
+    // cartridge), each character's drawing for the frame (func_1502BD84: its pose, +0x1D4, cleared and made anew; the views it's drawn
+    // in, +0x74; its fades, func_1502E4C4): without it the extra camera's view drew each character with what player 1's view had left
+    // from the frame before (no pose, or an old one, and not at all if player 1 couldn't see it); and func_151749F8, func_150636F0.
+    // Then, as func_1501878C runs before its views' passes: func_1515D69C and func_15167310 (each camera's turn, for what faces the
+    // camera, and each render item's drawing readied for the frame).
     {
         const bool one_view_way = MEM_BU(0, (gpr)(int32_t)0x800BEAC0) == 0;
         const bool tail_a = MEM_BU(0, (gpr)(int32_t)0x800BE616) == 0;
         auto call0 = [&](void (*fn)(uint8_t*, recomp_context*)) { fn(rdram, ctx); *ctx = saved; };
         auto call1 = [&](void (*fn)(uint8_t*, recomp_context*), int32_t a0) { ctx->r4 = (gpr)a0; fn(rdram, ctx); *ctx = saved; };
+        auto call2 = [&](void (*fn)(uint8_t*, recomp_context*), int32_t a0, int32_t a1) {
+            ctx->r4 = (gpr)a0;
+            ctx->r5 = (gpr)a1;
+            fn(rdram, ctx);
+            *ctx = saved;
+        };
         call1(func_15112A80, 0);
+        call2(func_151749F8, MEM_W(0, (gpr)(int32_t)0x800BE9F0), 0);
         call1(func_15188B74, 0);
         if (one_view_way) {
             call0(func_1516706C);
             call0(func_151671E8);
         }
+        call0(func_1502BEE4);
         if (tail_a) {
             call0(func_150A0D8C);
         }
@@ -1404,21 +1422,23 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
         call1(func_151738C4, MEM_W(0, (gpr)(int32_t)0x800BE9F0));
         call0(func_1502C1A4);
         call0(func_15113C88);
-        // (possess35) and the render items made ready again: a character the game's state has none for (not near player 1) has one
-        // made just now (func_1502C1A4), drawn unready (its limbs where they'd never be) as the game's readying ran before
-        if (one_view_way) {
-            call0(func_1516706C);
-            call0(func_151671E8);
+        if (MEM_BU(0, (gpr)(int32_t)0x800CC2B0) != 0) {
+            call0(func_150636F0);
         }
-        if (one_view_way) {
+        if (MEM_BU(0, (gpr)(int32_t)0x800BEAC0) == 0) {
             call0(func_15183D28);
             call0(func_151670C0);
             call0(func_15177A94);
+        }
+        if (MEM_BU(0, (gpr)(int32_t)0x800BEAC0) == 0) {
             call0(func_151814FC);
         }
         call0(func_1517F75C);
         call0(func_1517F7B4);
         call0(func_15036148);
+        // func_1501878C's, after func_15019130 (func_1501A680 adds the frame's first commands: not again here)
+        call0(func_1515D69C);
+        call0(func_15167310);
     }
     ctx->r4 = 0;
     func_15018F80(rdram, ctx);
