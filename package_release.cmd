@@ -23,7 +23,7 @@ set "STAGE=%OUT%\%NAME%"
 set "ZIP=%OUT%\%NAME%.zip"
 set "LIST=%OUT%\%NAME%-contents.txt"
 
-for %%F in (ConkerOnline.exe ConkerRecomp.exe SDL2.dll dxcompiler.dll dxil.dll) do (
+for %%F in (ConkerOnline.exe SDL2.dll dxcompiler.dll dxil.dll) do (
     if not exist "%BUILD%\%%F" (
         echo Missing %BUILD%\%%F - run build.cmd first.
         goto fail
@@ -46,7 +46,7 @@ if exist "%ZIP%" del /q "%ZIP%"
 if exist "%LIST%" del /q "%LIST%"
 mkdir "%STAGE%" || goto fail
 
-for %%F in (ConkerOnline.exe ConkerRecomp.exe SDL2.dll dxcompiler.dll dxil.dll) do (
+for %%F in (ConkerOnline.exe SDL2.dll dxcompiler.dll dxil.dll) do (
     copy /y "%BUILD%\%%F" "%STAGE%\" >nul || goto fail
 )
 robocopy "%BUILD%\assets" "%STAGE%\assets" /E /XF *.z64 *.n64 *.v64 *.rom *.eep *.bin /NFL /NDL /NJH /NJS /NP >nul

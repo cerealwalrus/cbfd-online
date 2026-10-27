@@ -103,16 +103,12 @@ add_executable(ConkerRecomp
 if (WIN32)
     target_sources(ConkerRecomp PRIVATE ConkerRecomp.rc)
     # On Windows the game is ConkerOnline.exe, a windowed program (no console window behind it; main.cpp attaches to the
-    # console of a command prompt it's started from, for --dedicated and the like). ConkerRecomp.exe is now a small
-    # program that starts it (launcher/conker_recomp_launcher.cpp), for shortcuts and older versions' updater.
+    # console of a command prompt it's started from, for --dedicated and the like). (0.10.91: the small ConkerRecomp.exe that
+    # started it under the old name, for versions before 0.9.13, is gone.)
     set_target_properties(ConkerRecomp PROPERTIES OUTPUT_NAME ConkerOnline WIN32_EXECUTABLE TRUE)
     if (MSVC)
         target_link_options(ConkerRecomp PRIVATE /ENTRY:mainCRTStartup)
     endif()
-    add_executable(ConkerRecompLauncher WIN32 launcher/conker_recomp_launcher.cpp ConkerRecomp.rc)
-    set_target_properties(ConkerRecompLauncher PROPERTIES OUTPUT_NAME ConkerRecomp)
-    target_compile_definitions(ConkerRecompLauncher PRIVATE UNICODE _UNICODE)
-    add_dependencies(ConkerRecomp ConkerRecompLauncher)
 endif()
 if (MSVC)
     set_source_files_properties("${REPO_ROOT}/RecompiledFuncs/rsp/audio_ucode.cpp" PROPERTIES COMPILE_OPTIONS "/W0;/bigobj")

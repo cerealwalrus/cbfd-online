@@ -457,10 +457,10 @@ int main(int argc, char** argv) {
         freopen_s(&stream, "CONOUT$", "w", stderr);
     }
     {
-        // The game used to be ConkerRecomp.exe; that name is now a small program that starts this one, for older versions'
-        // updater and old shortcuts (launcher/conker_recomp_launcher.cpp). Once this one runs, the updater is this
-        // version's (it starts ConkerOnline.exe), so the small one beside it is removed: only it (a few hundred KB, never a
-        // whole old game), and after a few tries, as it may still be closing (a running program can't be deleted).
+        // The game used to be ConkerRecomp.exe, and later versions brought a small program under that name that started this one
+        // (0.10.91: no longer built or released). One left beside this one from an older version is removed: only a small one
+        // (a few hundred KB, never a whole old game), and after a few tries, as it may still be closing (a running program can't
+        // be deleted).
         wchar_t own[MAX_PATH * 2] = {};
         const DWORD n = GetModuleFileNameW(nullptr, own, (DWORD)(sizeof(own) / sizeof(own[0])));
         std::error_code ec;

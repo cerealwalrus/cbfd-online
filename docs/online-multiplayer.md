@@ -30,12 +30,12 @@ Host (a UDP port, forwarded on the router for play over the internet):
 
     set CONKER_NET_HOST=47000
     set CONKER_NET_PLAYERS=2
-    ConkerRecomp.exe
+    ConkerOnline.exe
 
 Joiner:
 
     set CONKER_NET_JOIN=host-address:47000
-    ConkerRecomp.exe
+    ConkerOnline.exe
 
 Choose the multiplayer mode in the menu on every machine, host first. The game starts when all the players are in.
 
