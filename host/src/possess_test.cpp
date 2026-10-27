@@ -33,6 +33,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <string>
 #include <vector>
 
 #include "recomp.h"
@@ -1445,6 +1446,53 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
     for (const Kept& k : keep) {
         now.emplace_back(rdram + (k.at - 0x80000000u), rdram + (k.at - 0x80000000u) + k.size);
     }
+    // (possess26) What the view's passes wrote to the characters that player 1's view didn't (S and E alike there, ours not): kept
+    // once the game's memory is put back, as if a 5th view of the game's own had drawn them. The game notes which characters a view
+    // has drawn (to animate them, and to draw their models, the next frame): those only the extra camera sees would be dropped.
+    constexpr uint32_t objects_at = 0x000CC2D0, objects_size = 25u * 0x32Cu;
+    std::vector<std::pair<uint32_t, uint8_t>> drawn_marks;
+    for (uint32_t i = objects_at; i < objects_at + objects_size; i++) {
+        if (rdram[i] != local_copy[i] && start_copy[i] == local_copy[i]) {
+            drawn_marks.push_back({ i, rdram[i] });
+        }
+    }
+    const bool tell = local_views < 3 || local_views % 300 == 0;
+    if (tell) {
+        // (diagnostics) where the view's passes wrote (outside its commands), and what player 1's view wrote to the characters
+        auto ranges = [&](const std::vector<uint8_t>& a, const uint8_t* b, uint32_t from, uint32_t to, const char* what) {
+            std::string out;
+            uint32_t count = 0, bytes = 0;
+            for (uint32_t i = from; i < to; i++) {
+                if (a[i] == b[i] || (i >= list_before - 0x80000000u && i < list - 0x80000000u)) {
+                    continue;
+                }
+                uint32_t j = i, last = i;
+                while (j < to && j - last < 32) {
+                    if (a[j] != b[j]) {
+                        last = j;
+                    }
+                    j++;
+                }
+                count++;
+                bytes += last + 1 - i;
+                if (count <= 60 && out.size() < 1800) {
+                    char piece[64];
+                    if (i >= objects_at && i < objects_at + objects_size) {
+                        std::snprintf(piece, sizeof(piece), " c%u+%X..%X", (unsigned)((i - objects_at) / 0x32C), (unsigned)((i - objects_at) % 0x32C),
+                            (unsigned)((last - objects_at) % 0x32C));
+                    } else {
+                        std::snprintf(piece, sizeof(piece), " %06X+%X", (unsigned)i, (unsigned)(last + 1 - i));
+                    }
+                    out += piece;
+                }
+                i = last;
+            }
+            log("f=%u %s: %u pieces, %u bytes:%s", (unsigned)frames, what, (unsigned)count, (unsigned)bytes, out.c_str());
+        };
+        ranges(local_copy, rdram, 0, game_size, "the extra view wrote");
+        ranges(start_copy, local_copy.data(), objects_at, objects_at + objects_size, "player 1's views wrote to the characters");
+        log("f=%u %u bytes of the characters the extra view drew kept", (unsigned)frames, (unsigned)drawn_marks.size());
+    }
     // the game's memory back, but for the new commands and the list's end
     const uint32_t to = list - 0x80000000u;
     if (list > list_before && to <= game_size) {
@@ -1465,6 +1513,9 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
         std::memcpy(rdram + (keep[i].at - 0x80000000u), now[i].data(), keep[i].size);
     }
     kept_back = std::move(keep);
+    for (const auto& m : drawn_marks) {
+        rdram[m.first] = m.second;
+    }
     local_views++;
     if (local_views <= 3 || local_views % 600 == 0) {
         log("f=%u (the frame's list: %u commands of %d)", (unsigned)frames, (unsigned)((list - frame_list) >> 3), (int)MEM_W(0, (gpr)(int32_t)list_most));
