@@ -266,6 +266,7 @@ namespace {
     bool coop_restart_pending = false;   // (0.10.64) everyone down: the stage asked for again, its load is the co-op one
     uint32_t coop_mask = 0, coop_layout = 0;   // (0.10.31) the stage was started with two or more players; off at the barrels again
     int coop_players = 0;
+    int8_t coop_characters[4] = { 0, 0, 0, 0 };   // (0.10.87) each player's character (by controller), from the race's character select
     // (0.10.32) the game's frames (counted at func_10011BB8, conker_coop_frame) and the one a scene last finished loading at
     std::atomic<uint32_t> coop_frames{ 0 };
     std::atomic<uint32_t> coop_loaded_at{ 0 };
@@ -516,6 +517,29 @@ extern "C" int conker_coop_start(uint8_t* rdram, recomp_context* ctx) {
     for (int k = 0; k < 4; k++) {
         players += (int)((mask >> k) & 1u);
     }
+    // 0.10.87: the characters picked on the race's character select, for the stage's players (as a match's start does, func_151E2834 at
+    // 0x151E2CE0: the k-th player who joined, D_8008FE44[k], picked D_800E0B90[k], whose character is +6 of D_800AB57C's 8 byte
+    // entry for it). The stage's players are by controller (the mask), so each goes to its controller's place in D_80087270.
+    for (int k = 0; k < 4; k++) {
+        coop_characters[k] = 0;
+    }
+    {
+        char line[200];
+        int at = std::snprintf(line, sizeof(line), "[coop] the characters picked (D_800E0B8C %u):", (unsigned)MEM_BU(0, (gpr)(int32_t)0x800E0B8C));
+        for (int k = 0; k < joined; k++) {
+            const int controller = (int)(int8_t)MEM_B(0, (gpr)(int32_t)(0x8008FE44u + (uint32_t)k));
+            const int pick = (int)(int8_t)MEM_B(0, (gpr)(int32_t)(0x800E0B90u + (uint32_t)k));
+            if (controller < 0 || controller >= 4 || pick < 0 || pick >= 32) {
+                continue;
+            }
+            const uint8_t character = (uint8_t)MEM_BU(0, (gpr)(int32_t)(0x800AB57Cu + (uint32_t)pick * 8u + 6u));
+            coop_characters[controller] = (int8_t)character;
+            if (at > 0 && at < (int)sizeof(line)) {
+                at += std::snprintf(line + at, sizeof(line) - (size_t)at, " player %d pick %d character %u;", controller + 1, pick, (unsigned)character);
+            }
+        }
+        conker::netsession::log(line);
+    }
     const recomp_context saved = *ctx;
     func_151E30C4(rdram, ctx);
     *ctx = saved;
@@ -534,7 +558,7 @@ extern "C" int conker_coop_start(uint8_t* rdram, recomp_context* ctx) {
         coop_mask = mask;
         coop_layout = layout;
         for (uint32_t k = 0; k < 4; k++) {
-            MEM_B(0, (gpr)(int32_t)(0x80087270u + k)) = 0;
+            MEM_B(0, (gpr)(int32_t)(0x80087270u + k)) = coop_characters[k];
         }
         MEM_B(0, (gpr)(int32_t)0x8008FD88) = (int8_t)players;
         MEM_B(0, (gpr)(int32_t)0x8008FD8C) = (int8_t)players;
@@ -722,36 +746,62 @@ namespace {
     constexpr float coop_camera_share = 0.65f;
 }
 
+// (0.10.87) the 0.10.86 log: putting the shotgun away, the hook ran once with the shotgun's camera still on (mode 3, 247 across: 161
+// for a frame); and the cameras set while the stage loads (coop_running not yet) kept 530 until R or the shotgun set them again
+// (players 2-4 who did neither). So only a camera in its normal mode (+0x0 0, +0x2C's 0x80 clear: not R held) whose distance is
+// still the table's own for its preset is brought in, here and once a frame (conker_coop_frame) for every player's camera.
+namespace {
+    float coop_read_float(uint8_t* rdram, gpr base, int offset) {
+        float value;
+        const uint32_t bits = (uint32_t)MEM_W(offset, base);
+        std::memcpy(&value, &bits, sizeof(value));
+        return value;
+    }
+    void coop_write_float(uint8_t* rdram, gpr base, int offset, float value) {
+        uint32_t bits;
+        std::memcpy(&bits, &value, sizeof(bits));
+        MEM_W(offset, base) = (int32_t)bits;
+    }
+    void coop_camera_near(uint8_t* rdram, gpr camera) {
+        if (MEM_HU(0x0, camera) != 0 || (MEM_W(0x2C, camera) & 0x80) != 0) {
+            return;
+        }
+        const uint32_t object = (uint32_t)MEM_W(0x3D0, camera);
+        if (object < 0x800CC2D0u || (object - 0x800CC2D0u) % 0x32Cu != 0 || (object - 0x800CC2D0u) / 0x32Cu >= (uint32_t)std::min(coop_players, 4)) {
+            return;
+        }
+        const uint32_t control = (uint32_t)MEM_W(0x31C, (gpr)(int32_t)object);
+        if ((control >> 24) != 0x80 || (control & 0x7FFFFFu) >= 0x7FFF00u || MEM_BU(0x78, (gpr)(int32_t)control) != 0) {
+            return;
+        }
+        const int preset = (int)MEM_H(0x1B4, camera);
+        if (preset < 0 || preset > 8) {
+            return;
+        }
+        const gpr entry = (gpr)(int32_t)(0x800A34B0u + (uint32_t)preset * 8u);
+        const float across = coop_read_float(rdram, entry, 0), up = coop_read_float(rdram, entry, 4);
+        if (coop_read_float(rdram, camera, 0x374) != across || !(across > 0.0f)) {
+            return;   // (already brought in, or a distance of the game's own that isn't the table's)
+        }
+        coop_write_float(rdram, camera, 0x374, across * coop_camera_share);
+        coop_write_float(rdram, camera, 0x348, up * coop_camera_share);
+        coop_write_float(rdram, camera, 0x34C, up * coop_camera_share);
+        static int logged = 0;
+        if (logged < 16) {
+            logged++;
+            char line[140];
+            std::snprintf(line, sizeof(line), "[coop camera] f=%u player %d: the normal camera's distance %.0f -> %.0f (preset %d)", (unsigned)conker::netsession::frame(),
+                (int)((object - 0x800CC2D0u) / 0x32Cu) + 1, across, across * coop_camera_share, preset);
+            conker::netsession::log(line);
+        }
+    }
+}
+
 extern "C" void conker_coop_camera_distance(uint8_t* rdram, recomp_context* ctx) {
     if (!conker::netsession::active() || !conker::netmenu::coop_running(rdram) || coop_players < 2) {
         return;
     }
-    const gpr camera = ctx->r4;
-    const uint32_t object = (uint32_t)MEM_W(0x3D0, camera);
-    if (object < 0x800CC2D0u || (object - 0x800CC2D0u) % 0x32Cu != 0 || (object - 0x800CC2D0u) / 0x32Cu >= (uint32_t)std::min(coop_players, 4)) {
-        return;
-    }
-    const uint32_t control = (uint32_t)MEM_W(0x31C, (gpr)(int32_t)object);
-    if ((control >> 24) != 0x80 || (control & 0x7FFFFFu) >= 0x7FFF00u || MEM_BU(0x78, (gpr)(int32_t)control) != 0) {
-        return;
-    }
-    for (const int offset : { 0x374, 0x348, 0x34C }) {
-        float value;
-        uint32_t bits = (uint32_t)MEM_W(offset, camera);
-        std::memcpy(&value, &bits, sizeof(value));
-        value *= coop_camera_share;
-        std::memcpy(&bits, &value, sizeof(bits));
-        MEM_W(offset, camera) = (int32_t)bits;
-    }
-    static int logged = 0;
-    if (logged < 8) {
-        logged++;
-        char line[140];
-        std::snprintf(line, sizeof(line), "[coop camera] f=%u player %d: the normal camera's distance %.0f (preset %d)", (unsigned)conker::netsession::frame(),
-            (int)((object - 0x800CC2D0u) / 0x32Cu) + 1, [&]() { float v; uint32_t b = (uint32_t)MEM_W(0x374, camera); std::memcpy(&v, &b, 4); return v; }(),
-            (int)MEM_H(0x1B4, camera));
-        conker::netsession::log(line);
-    }
+    coop_camera_near(rdram, ctx->r4);
 }
 
 extern "C" void conker_coop_frame(uint8_t* rdram, recomp_context* ctx) {
@@ -765,6 +815,15 @@ extern "C" void conker_coop_frame(uint8_t* rdram, recomp_context* ctx) {
         coop_dump_at = 0;
         coop_dumped = false;
         return;
+    }
+    // (0.10.87) every player's normal camera nearer (coop_camera_near): the cameras, D_800DBFF0's four (0x9A0 each)
+    {
+        const uint32_t cameras = (uint32_t)MEM_W(0, (gpr)(int32_t)0x800DBFF0);
+        if ((cameras >> 24) == 0x80 && (cameras & 0x7FFFFFu) + 4u * 0x9A0u <= 0x800000u) {
+            for (uint32_t i = 0; i < 4; i++) {
+                coop_camera_near(rdram, (gpr)(int32_t)(cameras + i * 0x9A0u));
+            }
+        }
     }
     // (0.10.80, measuring, to take Conker's idle animations out) each player's character's animation (+0x84) as it changes, with how
     // many frames the player's controller had been still; the idle's animations are the ones that start after a long stillness
@@ -1353,7 +1412,7 @@ extern "C" void conker_coop_scene_load(uint8_t* rdram, recomp_context* ctx) {
     MEM_W(0, (gpr)(int32_t)0x800BEA00) = (int32_t)coop_mask;
     MEM_W(0, (gpr)(int32_t)0x800BEA04) = (int32_t)coop_layout;
     for (uint32_t k = 0; k < 4; k++) {
-        MEM_B(0, (gpr)(int32_t)(0x80087270u + k)) = 0;
+        MEM_B(0, (gpr)(int32_t)(0x80087270u + k)) = coop_characters[k];
     }
     const int8_t players = (int8_t)coop_players;
     MEM_B(0, (gpr)(int32_t)0x8008FD88) = players;
@@ -1437,7 +1496,7 @@ extern "C" int conker_coop_out(uint8_t* rdram, recomp_context* ctx) {
     MEM_W(0, (gpr)(int32_t)0x800BEA00) = (int32_t)coop_mask;
     MEM_W(0, (gpr)(int32_t)0x800BEA04) = (int32_t)coop_layout;
     for (uint32_t k = 0; k < 4; k++) {
-        MEM_B(0, (gpr)(int32_t)(0x80087270u + k)) = 0;
+        MEM_B(0, (gpr)(int32_t)(0x80087270u + k)) = coop_characters[k];
     }
     const int8_t players = (int8_t)coop_players;
     MEM_B(0, (gpr)(int32_t)0x8008FD88) = players;
