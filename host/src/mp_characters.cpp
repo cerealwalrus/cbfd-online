@@ -269,3 +269,41 @@ extern "C" void conker_team_most(uint8_t* rdram, recomp_context* ctx) {
     }
 }
 
+// 0.10.93: online, the teams screen's move sound (0x4FF, $sp + 0x74, played at 0x151E21C0) only for a press that changed something:
+// past a limit (a full team, the bots or the balance at their most) the game still played it and, for the balance, kept counting
+// (D_8008FDC4), so the presses back did nothing for a while. At 0x151E21C0 the frame's list of characters (D_8008FE44) and their
+// teams (D_800E0C00) are made: if they're as they were last frame, the sound is taken out and the bots' count (D_8008FDA0) and the
+// balance are put back as they were. The game's own state, the same on every machine.
+namespace {
+    constexpr uint32_t team_bots = 0x8008FDA0;
+    constexpr uint32_t team_balance = 0x8008FDC4;
+}
+
+extern "C" void conker_team_sound(uint8_t* rdram, recomp_context* ctx) {
+    static int8_t prev_list[16], prev_team[16], prev_bots = 0, prev_balance = 0;
+    static uint32_t prev_frame = 0;
+    static bool have = false;
+    if (!conker::netsession::active()) {
+        have = false;
+        return;
+    }
+    int8_t list[16], team[16];
+    for (uint32_t i = 0; i < 16; i++) {
+        list[i] = (int8_t)MEM_B(0, (gpr)(int32_t)(team_list + i));
+        team[i] = (int8_t)MEM_B(0, (gpr)(int32_t)(team_of + i));
+    }
+    const uint32_t now = conker::netsession::frame();
+    const bool same = have && now == prev_frame + 1 && std::memcmp(list, prev_list, sizeof(list)) == 0 && std::memcmp(team, prev_team, sizeof(team)) == 0;
+    if (same && (int32_t)MEM_W(0x74, ctx->r29) == 0x4FF) {
+        MEM_W(0x74, ctx->r29) = 0;
+        MEM_B(0, (gpr)(int32_t)team_bots) = prev_bots;
+        MEM_B(0, (gpr)(int32_t)team_balance) = prev_balance;
+    }
+    std::memcpy(prev_list, list, sizeof(list));
+    std::memcpy(prev_team, team, sizeof(team));
+    prev_bots = (int8_t)MEM_B(0, (gpr)(int32_t)team_bots);
+    prev_balance = (int8_t)MEM_B(0, (gpr)(int32_t)team_balance);
+    prev_frame = now;
+    have = true;
+}
+

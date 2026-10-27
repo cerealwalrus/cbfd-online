@@ -1372,3 +1372,10 @@ func = "func_151E1744"
 before_vram = 0x151E1D40
 text = "{ extern void conker_team_most(uint8_t*, recomp_context*); conker_team_most(rdram, ctx); }"
 
+# 0.10.93: online, the teams screen's move sound only for a press that changed the teams (host/src/mp_characters.cpp,
+# conker_team_sound): $sp + 0x74 the sound, about to be played.
+[[patches.hook]]
+func = "func_151E1744"
+before_vram = 0x151E21C0
+text = "{ extern void conker_team_sound(uint8_t*, recomp_context*); conker_team_sound(rdram, ctx); }"
+
