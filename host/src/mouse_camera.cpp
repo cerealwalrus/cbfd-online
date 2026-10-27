@@ -227,7 +227,11 @@ namespace {
             return nullptr;
         }
         const uint32_t i = (at - base) / camera_stride;
-        if (at != base + i * camera_stride || i >= (uint32_t)(conker::netsession::active() ? max_cameras : 1)) {
+        if (at != base + i * camera_stride || i >= (uint32_t)max_cameras) {
+            return nullptr;
+        }
+        // offline: the camera controller 1 plays (player 1's, or the possess test's extra camera)
+        if (!conker::netsession::active() && i != (uint32_t)conker::possess_test::played_camera()) {
             return nullptr;
         }
         if (index != nullptr) {
@@ -786,7 +790,7 @@ extern "C" void conker_mouse_camera(uint8_t* rdram, recomp_context* ctx) {
     orbit.placed = false;
     // For the controller's input until the next update: whether the stick turns this camera.
     // (Online that's this machine's own player's camera that counts: it's the controller of this machine.)
-    if (!conker::netsession::active() || camera_index == conker::netsession::local_player()) {
+    if (conker::netsession::active() ? camera_index == conker::netsession::local_player() : camera_index == conker::possess_test::played_camera()) {
         was_normal_camera = orbit.follow_camera_ran && !orbit.look_mode_ran;
         stick_owns_camera = was_normal_camera && stick_turns_camera_setting();
     }

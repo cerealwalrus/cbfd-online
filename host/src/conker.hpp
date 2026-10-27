@@ -422,6 +422,11 @@ namespace conker {
         void watch_poll(const char* tag, uint32_t info);
     }
 
+    // possess_test.cpp (possess-test branch): offline, the camera controller 1 plays (0, or the extra camera's slot).
+    namespace possess_test {
+        int played_camera();
+    }
+
     // menu_skin.cpp: optional PNGs for the launcher (assets/menu_skin/), see that file.
 }
 namespace recompui { class LauncherMenu; class GameOptionsMenu; class GameOption; }

@@ -605,3 +605,7 @@ extern "C" void conker_possess_view_eye(uint8_t* rdram, recomp_context* ctx) {
     }
     ctx->r2 = (gpr)(int32_t)extra_camera(rdram);
 }
+
+int conker::possess_test::played_camera() {
+    return extra_played && extra_ready ? extra : 0;
+}
