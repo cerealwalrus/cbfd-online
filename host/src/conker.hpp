@@ -264,6 +264,9 @@ namespace conker {
     namespace netmenu {
         void set_open(bool open);
         bool is_open();
+        // (0.10.88) for the view (net_view.cpp): the menu is open, or its buttons were drawn into this frame's list (it closed since)
+        bool open_for_view();
+        void view_frame_begin();
         // The controller of the player who has the menu open, in a player slot nobody uses (stick: -80 to 80).
         void set_input(int slot, uint16_t buttons, int x, int y);
         // The menu reads the slot of a player in the game (all four are in): that slot's own input is kept and put back (net_menu.cpp).

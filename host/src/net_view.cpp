@@ -333,7 +333,7 @@ namespace {
         static int logged = 0;
         // (0.10.66) with this machine's pause menu open, its own HUD (the chocolate, the tail and the lives, shown by the game while
         // it's paused) isn't drawn either: the pause screen alone
-        const bool paused_here = conker::netmenu::is_open();
+        const bool paused_here = conker::netmenu::open_for_view();   // (0.10.88: or its buttons drawn this frame)
         for (int k = 0; k < players && k < 4; k++) {
             uint32_t from = 0, to = 0;
             if (!conker::netmenu::coop_hud_range(k, &from, &to) || (from >> 24) != 0x80 || to - from > 0x20000u) {
@@ -700,7 +700,18 @@ namespace {
         static const bool keep_old_hidden = SDL_getenv("CONKER_NET_HIDEOLD") != nullptr;
         // With the online pause menu open (net_menu.cpp) the pause screen is the game's own, drawn as it draws it: the game's HUD
         // behind it (the bars, the radars, the weapon) is hidden, as the game's pause hides it, and nothing else is moved.
-        const bool menu_open = conker::netmenu::is_open();
+        // (0.10.88: or the pause menu's buttons drawn into this frame, the menu closed since: the stray QUIT and stick at the bottom)
+        const bool menu_open = conker::netmenu::open_for_view();
+        {
+            static int disagree_logs = 0;
+            if (menu_open != conker::netmenu::is_open() && disagree_logs < 40) {
+                disagree_logs++;
+                char line[120];
+                std::snprintf(line, sizeof(line), "[net view] f=%u the pause menu drawn this frame, closed since: its pictures kept where drawn",
+                    (unsigned)conker::netsession::frame());
+                conker::netsession::log(line);
+            }
+        }
         const auto other_viewport = [&](uint32_t pointer) {
             for (int k = 0; k < players; k++) {
                 const uint32_t record = base + k * camera_size;
@@ -1654,6 +1665,7 @@ void conker::netview::port_read() {
 }
 
 void conker::netview::frame_begin(uint8_t* rdram) {
+    conker::netmenu::view_frame_begin();   // (0.10.88)
     conker::netmenu::coop_hud_clear();   // (0.10.61: the co-op HUD ranges are this frame's only)
     (void)rdram;
     if (conker::netsession::active()) {

@@ -62,6 +62,22 @@ bool conker::netmenu::is_open() {
     return menu_open;
 }
 
+// 0.10.88: the pause menu's buttons were drawn into this frame's list (conker_net_pause_hook 3 let them through). The menu can close
+// (net_session.cpp, at the frame's input) after the pause menu has drawn but before the view rewrites the frame (net_view.cpp's
+// frame_end): the view then took the menu as closed and moved its pictures as the game's HUD (to the corners of this machine's camera,
+// QUIT and the stick at the bottom of the screen) for that frame. The view goes by both. Cleared as each frame's list starts.
+namespace {
+    std::atomic<bool> pause_drawn_frame{ false };
+}
+
+bool conker::netmenu::open_for_view() {
+    return menu_open.load() || pause_drawn_frame.load();
+}
+
+void conker::netmenu::view_frame_begin() {
+    pause_drawn_frame = false;
+}
+
 void conker::netmenu::set_input(int slot, uint16_t buttons, int x, int y) {
     input_slot = slot;
     input_x = x;
@@ -232,6 +248,7 @@ extern "C" void conker_net_pause_hook(uint8_t* rdram, recomp_context* ctx, int w
         }
     } else if (which == 3) {
         ctx->r24 = 1;
+        pause_drawn_frame = true;   // (0.10.88: the buttons go into this frame's list)
         const int slot = input_slot;
         // the player slot the menu listens to, with this player's controller in it (D_800BE930: each slot's buttons, 2
         // bytes; D_800BE918: 6 bytes, the stick at +2 and +3)
