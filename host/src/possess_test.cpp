@@ -458,7 +458,7 @@ extern "C" void conker_possess_pad(uint8_t* rdram, recomp_context* ctx) {
         use_game_poses = !use_game_poses;
         log("f=%u D-pad Up: (experiment) the extra camera's view draws the characters with %s", (unsigned)frames,
             use_game_poses ? "the game's own poses" : "the poses it makes itself");
-        conker::notices::show(use_game_poses ? "Test: experiment ON (the game's own poses)" : "Test: experiment OFF (the view's own poses)", true);
+        conker::notices::show(use_game_poses ? "Test: the game's own poses for the 5th view (D-pad Up: its own)" : "Test: the 5th view's own poses (D-pad Up: the game's)", true);
     }
     const uint16_t toggles = (uint16_t)(pressed & (button_dpad_up | button_dpad_down));
     if (toggles != 0 && !extra_played) {
@@ -1082,6 +1082,7 @@ extern "C" void func_1510F800(uint8_t* rdram, recomp_context* ctx);
 extern "C" void func_1510B690(uint8_t* rdram, recomp_context* ctx);
 extern "C" void func_15112A80(uint8_t* rdram, recomp_context* ctx);
 extern "C" void func_15113218(uint8_t* rdram, recomp_context* ctx);
+extern "C" void func_1502E474(uint8_t* rdram, recomp_context* ctx);
 extern "C" void func_151749F8(uint8_t* rdram, recomp_context* ctx);
 extern "C" void func_1502BEE4(uint8_t* rdram, recomp_context* ctx);
 extern "C" void func_150636F0(uint8_t* rdram, recomp_context* ctx);
@@ -1503,6 +1504,13 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
     *ctx = saved;
     list = call_list(rdram, ctx, func_15019CC8, list, 0);
     *ctx = saved;
+    // (possess39) and the characters' poses made ready to be drawn, as func_1501878C does once its views are drawn: func_1502E474
+    // turns the frame's bone matrices (the pool at D_800C3E80[frame], D_800C3E7A of them) from the floats func_1502BEE4 works them out
+    // in to the fixed point the drawing reads (func_150A9984). The view's commands were drawing its characters from the floats: their
+    // limbs anywhere (or nowhere to be seen), and the big flat shapes across the screen. (possess38's experiment, the game's own
+    // poses, showed it.)
+    func_1502E474(rdram, ctx);
+    *ctx = saved;
     MEM_W(0, (gpr)(int32_t)view_now) = was_view;
     extra_view_now = false;
     for (int k = 0; k < 25; k++) {
@@ -1640,7 +1648,7 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
     // (possess38 diagnostics) the extra character's matrices in the view's commands: where each was named from (the address its command
     // names, through its segment), whether the view's passes changed it, where it was copied; the first two whole, as the view's
     // passes left them and as the game's memory has them (put back after)
-    if (local_views < 3 || local_views % 120 == 0) {
+    if (local_views < 3 || local_views % 600 == 0) {
         auto halves = [&](const uint8_t* mem, uint32_t a) {
             std::string out;
             for (int h = 0; h < 32; h++) {
