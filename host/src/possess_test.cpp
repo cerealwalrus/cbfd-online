@@ -1301,8 +1301,11 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
 }
 
 // func_1501878C's start (the next frame): what the view drew from, back as the game had it.
+void conker_possess_heartbeat();
+
 extern "C" void conker_possess_view_local_after(uint8_t* rdram, recomp_context* ctx) {
     (void)ctx;
+    conker_possess_heartbeat();
     if (!kept_back.empty()) {
         put_kept_back(rdram);
     }
@@ -1317,3 +1320,114 @@ extern "C" void conker_possess_frame_start(uint8_t* rdram) {
     start_copy.assign(rdram, rdram + game_size);
     start_copied = true;
 }
+
+// ---- (possess21) a watchdog for freezes ----
+// While the extra camera is there, the game's thread marks each frame (func_1501878C's start). If no frame comes for 4 seconds, a
+// thread of ours stops the game's for a moment, writes where it is (its stack, with the recompiled functions' names and lines: the
+// line gives the MIPS instruction) to conker_possess.log and crash.log, and lets it go on. Once.
+#if defined(_WIN32)
+#include <Windows.h>
+#include <DbgHelp.h>
+#include <atomic>
+#include <thread>
+#include <chrono>
+#include <string>
+#include <filesystem>
+#pragma comment(lib, "dbghelp.lib")
+
+namespace {
+    std::atomic<uint32_t> heartbeat{ 0 };
+    std::atomic<bool> watch_armed{ false };
+    HANDLE game_thread = nullptr;
+
+    void dump_game_thread() {
+        HANDLE process = GetCurrentProcess();
+        SymSetOptions(SYMOPT_LOAD_LINES | SYMOPT_DEFERRED_LOADS | SYMOPT_UNDNAME);
+        SymInitialize(process, nullptr, TRUE);
+        if (SuspendThread(game_thread) == (DWORD)-1) {
+            return;
+        }
+        CONTEXT context{};
+        context.ContextFlags = CONTEXT_FULL;
+        std::string report = "[host] freeze: the game's thread hasn't finished a frame in 4 seconds; it is at\n";
+        if (GetThreadContext(game_thread, &context)) {
+            STACKFRAME64 frame{};
+            frame.AddrPC.Offset = context.Rip;
+            frame.AddrPC.Mode = AddrModeFlat;
+            frame.AddrFrame.Offset = context.Rbp;
+            frame.AddrFrame.Mode = AddrModeFlat;
+            frame.AddrStack.Offset = context.Rsp;
+            frame.AddrStack.Mode = AddrModeFlat;
+            alignas(SYMBOL_INFO) char buffer[sizeof(SYMBOL_INFO) + 256];
+            SYMBOL_INFO* symbol = reinterpret_cast<SYMBOL_INFO*>(buffer);
+            for (int i = 0; i < 40; i++) {
+                if (!StackWalk64(IMAGE_FILE_MACHINE_AMD64, process, game_thread, &frame, &context, nullptr, SymFunctionTableAccess64,
+                        SymGetModuleBase64, nullptr) || frame.AddrPC.Offset == 0) {
+                    break;
+                }
+                std::memset(buffer, 0, sizeof(buffer));
+                symbol->SizeOfStruct = sizeof(SYMBOL_INFO);
+                symbol->MaxNameLen = 255;
+                DWORD64 offset = 0;
+                char line_text[400];
+                if (SymFromAddr(process, frame.AddrPC.Offset, &offset, symbol)) {
+                    IMAGEHLP_LINE64 line{};
+                    line.SizeOfStruct = sizeof(line);
+                    DWORD displacement = 0;
+                    if (SymGetLineFromAddr64(process, frame.AddrPC.Offset, &displacement, &line)) {
+                        std::snprintf(line_text, sizeof(line_text), "  %s+0x%llx (%s:%lu)\n", symbol->Name, (unsigned long long)offset,
+                            std::filesystem::path(line.FileName).filename().string().c_str(), line.LineNumber);
+                    } else {
+                        std::snprintf(line_text, sizeof(line_text), "  %s+0x%llx\n", symbol->Name, (unsigned long long)offset);
+                    }
+                } else {
+                    std::snprintf(line_text, sizeof(line_text), "  %p\n", (void*)frame.AddrPC.Offset);
+                }
+                report += line_text;
+            }
+        }
+        ResumeThread(game_thread);
+        log("%s", report.c_str());
+        if (FILE* f = std::fopen("crash.log", "a")) {
+            std::fputs(report.c_str(), f);
+            std::fputs("\n", f);
+            std::fclose(f);
+        }
+    }
+
+    void start_watchdog() {
+        static bool started = false;
+        if (started) {
+            return;
+        }
+        started = true;
+        DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &game_thread, 0, FALSE, DUPLICATE_SAME_ACCESS);
+        std::thread([]() {
+            uint32_t last = heartbeat.load();
+            auto since = std::chrono::steady_clock::now();
+            bool dumped = false;
+            for (;;) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(250));
+                const uint32_t now = heartbeat.load();
+                if (now != last || !watch_armed.load()) {
+                    last = now;
+                    since = std::chrono::steady_clock::now();
+                    continue;
+                }
+                if (!dumped && std::chrono::steady_clock::now() - since > std::chrono::seconds(4)) {
+                    dumped = true;
+                    dump_game_thread();
+                }
+            }
+        }).detach();
+    }
+}
+
+void conker_possess_heartbeat() {
+    start_watchdog();
+    heartbeat.fetch_add(1);
+    watch_armed = extra_ready;
+}
+#else
+void conker_possess_heartbeat() {}
+#endif
