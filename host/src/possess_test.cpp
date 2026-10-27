@@ -31,7 +31,7 @@
 //     copy would write into it).
 //   - conker_possess_brain (func_1504CB98, 0x1504CC9C): D-pad Up's bot, controller 1 put in its brain before it is copied.
 //   - conker_possess_move (func_1504CB98, 0x1504E0A4): D-pad Up's bot walks by the stick, not its path finder.
-// Writes conker_possess.log next to the game.
+// Writes conker_possess.log next to the game (a second window of the game on the same computer, an online test: conker_possess_2.log).
 
 #include <algorithm>
 #include <cmath>
@@ -39,8 +39,12 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <string>
 #include <vector>
+#if defined(_WIN32)
+#include <share.h>
+#endif
 
 #include "recomp.h"
 
@@ -248,13 +252,37 @@ namespace {
         }
     }
 
+    // (possess19: the last run's log kept as conker_possess.prev.log) (possess44: two windows of the game on one computer, an online
+    // test: the log the first has open is kept from the second's writing, which takes conker_possess_2.log)
+    FILE* open_log() {
+        static const char* const names[][2] = { { "conker_possess.log", "conker_possess.prev.log" }, { "conker_possess_2.log", "conker_possess_2.prev.log" } };
+        for (const auto& name : names) {
+            std::error_code ec;
+            if (std::filesystem::exists(name[0], ec)) {
+#if defined(_WIN32)
+                FILE* probe = _fsopen(name[0], "r+", _SH_DENYWR);
+                if (probe == nullptr) {
+                    continue;   // another window's log
+                }
+                std::fclose(probe);
+#endif
+                std::remove(name[1]);
+                std::rename(name[0], name[1]);
+            }
+#if defined(_WIN32)
+            FILE* file = _fsopen(name[0], "w", _SH_DENYWR);
+#else
+            FILE* file = std::fopen(name[0], "w");
+#endif
+            if (file != nullptr) {
+                return file;
+            }
+        }
+        return nullptr;
+    }
+
     void log(const char* format, ...) {
-        // (possess19: the last run's log kept as conker_possess.prev.log)
-        static FILE* file = []() {
-            std::remove("conker_possess.prev.log");
-            std::rename("conker_possess.log", "conker_possess.prev.log");
-            return std::fopen("conker_possess.log", "w");
-        }();
+        static FILE* file = open_log();
         if (file == nullptr) {
             return;
         }
@@ -972,6 +1000,11 @@ extern "C" void conker_possess_cameras_alloc(uint8_t* rdram, recomp_context* ctx
     online_prev_buttons = 0;
     online_told_playing = online_told_no_bot = false;
     online_match_frames = 0;
+    if (conker::netsession::active()) {
+        const int slot = conker::netsession::local_slot();
+        log("(online) a match of 5 players: this machine plays in slot %d (%s)", slot + 1,
+            slot == extra ? "the 5th player's: character 5 through the extra camera" : "one of the game's 4 controllers");
+    }
     if ((int32_t)ctx->r16 < 5) {
         log("cameras made for %d players: blocks with room for 5", (int)(int32_t)ctx->r16);
         ctx->r16 = 5;
