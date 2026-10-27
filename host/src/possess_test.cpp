@@ -809,6 +809,9 @@ extern "C" void conker_possess_view_eye(uint8_t* rdram, recomp_context* ctx) {
 
 namespace {
     bool extra_view_now = false;   // (possess34) the extra camera's view being drawn
+    // (possess35) the characters' fades and hidden bits in the extra camera's view (as view 1), kept from frame to frame
+    uint8_t extra_fade[25] = {}, extra_hidden[25] = {};
+    bool extra_fades_kept = false;
 }
 
 bool conker::possess_test::drawing_extra_view() {
@@ -1303,6 +1306,16 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
     // the game's memory as before its views were drawn, but for the frame's list (its commands so far) and the list's end
     put_back(rdram, start_copy, frame_list, list_before);
     MEM_W(0, (gpr)(int32_t)head) = (int32_t)list_before;
+    // (possess35) each character's fade and hidden bits in view 1 as the extra camera's view left them last frame (func_1502E4C4 fades
+    // a character in or out in a view by its distance from the view's camera, 50 a frame, func_150617BC): put back each frame to the
+    // game's (player 1's camera's), a character far from player 1 was faded in from nothing every frame, and stayed at 50 of 255
+    if (extra_fades_kept) {
+        for (int k = 0; k < 25; k++) {
+            const gpr c = (gpr)(int32_t)(0x800CC2D0u + (uint32_t)k * 0x32Cu);
+            MEM_B(0xB, c) = (int8_t)extra_fade[k];
+            MEM_B(0xF, c) = (int8_t)((MEM_BU(0xF, c) & ~0x11u) | extra_hidden[k]);
+        }
+    }
     // nothing else of the game's runs while the view is drawn: this thread first in line (its priority as high as it goes)
     const uint32_t self = (uint32_t)ultramodern::this_thread();
     int32_t self_priority = 0;
@@ -1391,6 +1404,12 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
         call1(func_151738C4, MEM_W(0, (gpr)(int32_t)0x800BE9F0));
         call0(func_1502C1A4);
         call0(func_15113C88);
+        // (possess35) and the render items made ready again: a character the game's state has none for (not near player 1) has one
+        // made just now (func_1502C1A4), drawn unready (its limbs where they'd never be) as the game's readying ran before
+        if (one_view_way) {
+            call0(func_1516706C);
+            call0(func_151671E8);
+        }
         if (one_view_way) {
             call0(func_15183D28);
             call0(func_151670C0);
@@ -1418,6 +1437,12 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
     *ctx = saved;
     MEM_W(0, (gpr)(int32_t)view_now) = was_view;
     extra_view_now = false;
+    for (int k = 0; k < 25; k++) {
+        const gpr c = (gpr)(int32_t)(0x800CC2D0u + (uint32_t)k * 0x32Cu);
+        extra_fade[k] = MEM_BU(0xB, c);
+        extra_hidden[k] = MEM_BU(0xF, c) & 0x11u;
+    }
+    extra_fades_kept = true;
     // past the list's room (the game's limit, with a margin for its end): the view's commands let go
     bool too_long = (int32_t)((list - frame_list) >> 3) + 64 > (int32_t)MEM_W(0, (gpr)(int32_t)list_most);
     if (too_long) {
@@ -1680,6 +1705,7 @@ extern "C" void conker_possess_view_local_after(uint8_t* rdram, recomp_context* 
 extern "C" void conker_possess_frame_start(uint8_t* rdram) {
     if (!local_view_wanted(rdram)) {
         start_copied = false;
+        extra_fades_kept = false;
         if (seen_marked && false) {   // (possess32: view 1's bit is the game's own, set again each frame)
             seen_marked = false;
             const uint32_t count = mem_word(rdram, objects_count), list = mem_word(rdram, objects_list);
@@ -1858,8 +1884,8 @@ namespace {
 // camera's, 4) would write its fade over the character's hidden-views bits (+0xB + 4 = +0xF). Such a call is let go.
 extern "C" int conker_possess_hide_skip(uint8_t* rdram, recomp_context* ctx) {
     (void)rdram;
-    // (only its modes 8 and up name a view in $a3: below, $a3 is a value)
-    const uint32_t view = (uint32_t)ctx->r7 & 0xFFu;
+    // (possess35: the view is its 5th argument, on the stack (0x10($sp)); $a3 is a value. Only its modes 8 and up name a view.)
+    const uint32_t view = (uint32_t)MEM_W(0x10, ctx->r29) & 0xFFu;
     if (((uint32_t)ctx->r5 & 0xFFu) < 8 || view < 4) {
         return 0;
     }
