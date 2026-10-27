@@ -561,7 +561,8 @@ namespace {
             const uint32_t brain = brain_of(rdram, k);
             const int32_t reach = brain != 0 ? (int32_t)MEM_BU(0x1AF, at(brain)) : -1;
             if (reach != reach_was[k]) {
-                if (reach_logs < 150) {
+                // (possess46: not the played extra character's, which its AI sets to 0 every other frame and camera_frame back to 0x40)
+                if (reach_logs < 150 && !(k == extra && extra_played)) {
                     reach_logs++;
                     log("f=%u [weapons] character %d's reach byte (brain +0x1AF) %d -> %d%s (AI %d)", (unsigned)frames, k, (int)reach_was[k], (int)reach,
                         k == extra && extra_played ? " (played)" : "", brain != 0 ? (int)MEM_BU(0x84, at(brain)) : -1);
@@ -713,6 +714,15 @@ namespace {
         const uint16_t held_now = (uint16_t)(buttons & ~button_start);
         int8_t sx = 0, sy = 0;
         convert_to_n64_range(x, y, sx, sy);
+        // (possess46) the stick as the game makes its own controllers' (func_1501BBB8, for each of its 4): under 8 nothing, past it 7
+        // less. The record had the stick as read, so one at rest a little off its middle (the possess45 test's, 2 to 4) walked the
+        // character and turned its aim on its own, and full tilt was 7 past the players'.
+        const auto game_stick = [](int8_t v) -> int8_t {
+            const int tilt = v < 0 ? -(int)v : (int)v;
+            return tilt < 8 ? (int8_t)0 : (int8_t)(v < 0 ? v + 7 : v - 7);
+        };
+        sx = game_stick(sx);
+        sy = game_stick(sy);
         const uint32_t record = pad_record(rdram, extra);
         if (in_rdram(record)) {
             MEM_H(0, (gpr)(int32_t)record) = (int16_t)held_now;

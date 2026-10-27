@@ -78,12 +78,6 @@ degrees a frame but up and down at 1.9, and up and down also eased by the spring
 for these two kinds, the stick's pitch is scaled to the yaw's rate and the view's pitch takes the target at once (`gun_aim_online` in
 `look_aim.cpp`). It isn't a setting: the game's state has to be the same on every machine. The sniper's scope is another aiming mode and is untouched.
 
-## The aiming reticle online
-
-Aiming: Reticle (Camera tab) works online too: it is drawn on this machine's own full-screen view (`reticle.cpp`), for the slingshot, the knives
-and the magnum as offline, and for the SMG and the M4 (the look mode's states 0x39 and 0x09) in the middle of the view. It is a local overlay and
-does not touch the game's state, so each player can turn it on or off for themselves.
-
 ## Nicknames
 
 The launcher's Online screen has a Nickname box (kept in `online_nickname.txt` beside the settings, up to 16 characters). It is sent when joining and

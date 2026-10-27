@@ -231,22 +231,6 @@ namespace conker {
         void game_frame();
     }
 
-    // reticle.cpp: Aiming: Reticle, a ring in the middle of the screen while aiming (issue #74).
-    namespace reticle {
-        // look_aim.cpp: whether the setting is on.
-        bool enabled();
-        // From the game thread, each frame a camera aims in the second aiming mode (conker_aim_stick,
-        // $s0 the camera state): player 1's shows the reticle, unless zoomed in or in split screen.
-        void aim_frame(uint8_t* rdram, gpr camera);
-        // The same each frame of the look mode (conker_look_targets), with its state: only the
-        // slingshot's and the throwing knives' show the reticle, not plain R-Look's.
-        void look_frame(uint8_t* rdram, gpr camera, uint32_t state);
-        // From the launcher's init (frontend.cpp): recompui's UI exists now, so the reticle can be made.
-        void on_ui_ready();
-        // On the main thread (update_gfx): shows or hides the reticle.
-        void update();
-    }
-
     // local_achievements.cpp: the program's own achievements, for reaching the game's scenes, kept on this computer.
     namespace local_achievements {
         // At start (frontend.cpp, once the config folder is known): reads the unlocks so far.

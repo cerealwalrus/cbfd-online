@@ -3726,7 +3726,9 @@ bool conker::netsession::five_players() {
 
 bool conker::netsession::fifth_input(uint16_t* buttons, float* x, float* y) {
     bool plugged = false;
-    if (!input(4, &plugged, buttons, x, y) || !plugged) {
+    // (possess46) as the game's own ports' input is (input_for_game): with Swap Sticks the C-buttons held back after R until let go, and
+    // the sticks still while R is held with the look off; the walking while aiming (look_aim.cpp) stays the 4 players'
+    if (!input_for_game(4, &plugged, buttons, x, y) || !plugged) {
         *buttons = 0;
         *x = 0.0f;
         *y = 0.0f;
@@ -3789,15 +3791,18 @@ bool conker::netsession::input_for_game(int port, bool* plugged, uint16_t* butto
     // Conker and the camera about; standing still the game just brought the look back. 0.9.99 did this where the input is sampled,
     // a few frames ahead of the game: the frames of the input delay right after the hit still had the sticks. Here it goes by the
     // game's own look (its stage, +0x73C of each of the player's look records) at the frame the input is played, on every machine.
-    if (swapped && rdram != nullptr && port >= 0 && port < 4 && (*buttons & 0x0010) != 0) {
+    // (possess46: the 5th player's too, slot 4, fifth_input: its look record is the extra camera's, the 5th)
+    const bool fifth = port == 4 && conker::possess_test::online_extra_camera();
+    if (swapped && rdram != nullptr && port >= 0 && (port < 4 || fifth) && (*buttons & 0x0010) != 0) {
         const uint32_t looks = (uint32_t)MEM_W(0, (gpr)(int32_t)0x800DBFF0);
-        if ((looks >> 24) == 0x80 && (looks & 0x7FFFFFu) + 4u * 0x9A0u <= 0x800000u) {
+        const uint32_t records = fifth ? 5u : 4u;
+        if ((looks >> 24) == 0x80 && (looks & 0x7FFFFFu) + records * 0x9A0u <= 0x800000u) {
             // (0.10.9: the second aiming mode, the sniper rifle's, the revolver's and the knives', has no look record stage: it counts as the
             // look, or the sticks were held still all through it and the right stick couldn't aim, the 0.10.8 logs: R held, the right stick
             // sent, nothing turned)
             const int game_player = conker::netsession::player_of_port(port);   // (0.10.92)
             bool look_on = conker::look_aim::second_aim_recent(game_player);
-            for (uint32_t k = 0; k < 4; k++) {
+            for (uint32_t k = 0; k < records; k++) {
                 const gpr record = (gpr)(int32_t)(looks + k * 0x9A0u);
                 if (game_player >= 0 && (int)MEM_BU(0x23D, record) == game_player && MEM_H(0x73C, record) != 0) {
                     look_on = true;

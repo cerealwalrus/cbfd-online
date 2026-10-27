@@ -107,8 +107,8 @@ namespace {
     float aim_remainder = 0.0f;
 
     // Aiming: Swap Sticks (issue #84): when each player's camera (by its player, +0x23D) last ran either aiming
-    // mode, from the game thread (steady clock ticks), for the input thread (swap_sticks_now). Like the reticle's,
-    // it counts as aiming a little over two game frames after, so a frame the game takes longer over doesn't swap
+    // mode, from the game thread (steady clock ticks), for the input thread (swap_sticks_now). It counts as
+    // aiming a little over two game frames after, so a frame the game takes longer over doesn't swap
     // the sticks back for a poll. Each player's, so in split screen each controller swaps as its player aims.
     constexpr int aim_players = 4;
     // (possess45) the signals the input thread reads for its own player (when it aims, its look's stage, the shotgun's aim): the 5th
@@ -238,7 +238,6 @@ namespace {
         const std::string mouse_camera = "mouse_turns_camera";
         const std::string stick_camera = "stick_free_camera";
         const std::string camera_fov = "camera_field_of_view_degrees";
-        const std::string aim_reticle = "aim_reticle";
         const std::string aim_swap_sticks = "aim_swap_sticks";
         const std::string aim_lock_on = "aim_lock_on";
     }
@@ -307,8 +306,8 @@ namespace {
         "<br /><recomp-color primary>Direct</recomp-color>: the view follows it exactly, with no easing.";
 }
 
-// The Camera tab: the normal camera, then aiming with the stick (R-Look and the second aiming mode) and
-// the reticle. Grouped by what they're about, each group's names starting alike.
+// The Camera tab: the normal camera, then aiming with the stick (R-Look and the second aiming mode).
+// Grouped by what they're about, each group's names starting alike.
 void conker::look_aim::add_camera_options(recomp::config::Config& config) {
     config.add_enum_option(options::camera_turn_invert, "Camera: Invert Turning",
         "Inverts the camera's left and right turning in single player, with the right stick or C-Left and C-Right. "
@@ -340,12 +339,6 @@ void conker::look_aim::add_camera_options(recomp::config::Config& config) {
     config.add_enum_option(options::stick_invert, "Stick: Invert Aiming",
         "Inverts the stick in R-Look (hold R and look around) and in the second aiming mode (e.g. the sniper scope, the magnum, throwables), separately from the mouse and gyro. <recomp-color primary>Invert Y</recomp-color> is the default and matches the original game: pushing the stick up looks down.",
         invert, Invert::Y);
-    config.add_enum_option(options::aim_reticle, "Aiming: Reticle",
-        "Shows a green ring in the middle of the screen while aiming the slingshot, the throwing knives or the magnum, "
-        "like Conker: Live & Reloaded's, where what you aim at is. Not in plain R-Look, zoomed in (the sniper scope has "
-        "its own crosshair) or in split screen. Online it's shown for your own view, and for the SMG and the M4 as well. "
-        "<recomp-color primary>Off</recomp-color> matches the original game, where you aim by eye.",
-        toggle, Toggle::Off);
     config.add_enum_option(options::aim_swap_sticks, "Aiming: Swap Sticks",
         "Controls aiming like a third-person shooter: while you aim, the right stick aims and the left stick moves, as "
         "the C-buttons do (e.g. the shotgun, the slingshot, the sniper scope, R-Look), in single player, and online with a gamepad (the SMG, the M4...). "
@@ -427,10 +420,6 @@ void conker::look_aim::on_input_poll() {
 }
 
 #if defined(CONKER_RT64)
-bool conker::reticle::enabled() {
-    return option<Toggle>(options::aim_reticle) == Toggle::On;
-}
-
 bool conker::look_aim::mouse_turns_camera() {
     return option<Toggle>(options::mouse_camera) == Toggle::On;
 }
@@ -1493,12 +1482,14 @@ namespace {
 // as func_1510B128 sets it.
 namespace {
     // (0.10.9: the frame each player's camera last ran the second aiming mode, online; second_aim_recent)
-    bool second_aim_seen[4] = {};
-    uint32_t second_aim_frame[4] = {};
+    // (possess46: the 5th player's too, its extra camera's, signal_player: net_session.cpp's input for its slot goes by it, on every
+    // machine alike, as the game runs that camera on all of them)
+    bool second_aim_seen[signal_players] = {};
+    uint32_t second_aim_frame[signal_players] = {};
 }
 
 bool conker::look_aim::second_aim_recent(int player) {
-    if (player < 0 || player >= 4 || !second_aim_seen[player]) {
+    if (player < 0 || player >= signal_players || !second_aim_seen[player]) {
         return false;
     }
     const uint32_t now = conker::netsession::frame();
@@ -1508,14 +1499,12 @@ bool conker::look_aim::second_aim_recent(int player) {
 extern "C" void conker_aim_stick(uint8_t* rdram, recomp_context* ctx) {
 #if defined(CONKER_RT64)
     if (conker::netsession::active()) {
-        const int aim_player = camera_player(rdram, ctx->r16);
-        if (aim_player >= 0 && aim_player < 4) {
+        const int aim_player = signal_player(rdram, ctx->r16);
+        if (aim_player >= 0 && aim_player < signal_players) {
             second_aim_seen[aim_player] = true;
             second_aim_frame[aim_player] = conker::netsession::frame();
         }
     }
-    // Aiming: Reticle (reticle.cpp): this camera aims this frame.
-    conker::reticle::aim_frame(rdram, ctx->r16);
     // Aiming: Swap Sticks: this camera's player is aiming.
     note_aiming(rdram, ctx->r16, signal_player(rdram, ctx->r16));
     if (look_flag(rdram, ctx->r16, look_turn_x)) {
@@ -1562,9 +1551,6 @@ extern "C" void conker_look_yaw_from_facing_scaled(uint8_t* rdram, recomp_contex
 extern "C" void conker_look_targets(uint8_t* rdram, recomp_context* ctx) {
     frame = Frame{};
 #if defined(CONKER_RT64)
-    // Aiming: Reticle (reticle.cpp): the look mode's state ($v0 saved at 0xA0($sp) as it starts,
-    // what picks its paths) says whether it's aiming something.
-    conker::reticle::look_frame(rdram, ctx->r16, (uint32_t)MEM_W(0xA0, ctx->r29));
     // Aiming: Swap Sticks: this camera's player is aiming (the look mode, R-Look too: the stick aims, not moves).
     note_aiming(rdram, ctx->r16, signal_player(rdram, ctx->r16));
     if (is_player_one(rdram, ctx->r16)) {
@@ -1803,6 +1789,8 @@ void conker::look_aim::reset_online_state() {
         gun_walk_dx[p] = 0;
         gun_walk_dy[p] = 0;
         gun_walk_set[p] = false;
+    }
+    for (int p = 0; p < signal_players; p++) {
         second_aim_seen[p] = false;
         second_aim_frame[p] = 0;
     }

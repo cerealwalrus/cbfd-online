@@ -329,7 +329,6 @@ namespace {
         conker::fps_counter::update();
         conker::notices::update();
         conker::netchat::update();
-        conker::reticle::update();
         std::string title;
         {
             std::lock_guard lock(title_mutex);
@@ -545,11 +544,10 @@ namespace {
         conker::texture_packs::apply();
         // And unpack the GLideN64 packs not unpacked yet, showing the progress over the launcher.
         conker::texture_packs::unpack_gliden64_packs();
-        // recompui's UI exists now: the FPS counter and the aiming reticle can make their own.
+        // recompui's UI exists now: the FPS counter and the notices can make their own.
         conker::fps_counter::on_ui_ready();
         conker::notices::on_ui_ready();
         conker::local_achievements::init();
-        conker::reticle::on_ui_ready();
         // (0.10.17: Single Player with or without a ROM: Add ROM, in the corner, is the only way to add one)
         start_option = options->add_start_game_or_load_rom_option("Single Player", "Single Player");   // (recompui's is "Start Game")
         start_option->set_callback(on_start_selected);

@@ -41,7 +41,6 @@ namespace conker {
         const char* const camera_json = R"CONKERJSON(
 {
  "aim_lock_on": "Off",
- "aim_reticle": "Off",
  "aim_swap_sticks": "On",
  "camera_field_of_view_degrees": 50,
  "camera_invert_turning": "None",
