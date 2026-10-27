@@ -275,9 +275,13 @@ namespace {
         log("f=%u %s: controller 1 back to player 1 (from character %d on the extra camera)", (unsigned)frames, why, extra);
     }
 
-    // Character 1 is a bot with no camera: the extra camera may be made for it.
+    // The extra character is in the match with no camera of its own (a bot; or one D-pad Right has taken from its AI this
+    // frame, its camera not made yet): the extra camera may be made for it.
     bool extra_possible(uint8_t* rdram) {
-        return bot_brain(rdram, extra) != 0 && have_args;
+        if (!have_args || !in_match(rdram, extra) || brain_of(rdram, extra) == 0 || word(rdram, character(extra) + 0x318) != 0) {
+            return false;
+        }
+        return MEM_BU(0x84, (gpr)(int32_t)brain_of(rdram, extra)) != 0 || extra_played;
     }
 }
 
@@ -308,7 +312,7 @@ extern "C" void conker_possess_pad(uint8_t* rdram, recomp_context* ctx) {
             if (brain != 0) {
                 MEM_B(0x84, (gpr)(int32_t)brain) = 0;
             }
-        } else if (extra_played && index == extra) {
+        } else if (extra_played && extra_ready && index == extra) {
             // a second player: controller 2's record (filled from controller 1) and its slot of pressed buttons
             const uint32_t record = pad_record(rdram, extra);
             if (in_rdram(record)) {
@@ -622,7 +626,8 @@ extern "C" void conker_possess_camera_frame(uint8_t* rdram, recomp_context* ctx)
     if (!extra_ready) {
         if (!extra_possible(rdram)) {
             log("f=%u character %d isn't a bot without a camera any more: no extra camera", (unsigned)frames, extra);
-            extra_wanted = extra_shown = extra_played = false;
+            extra_play_stop(rdram, "no extra camera");
+            extra_wanted = extra_shown = false;
             return;
         }
         const uint32_t width = (uint32_t)MEM_W(0, (gpr)(int32_t)frame_width);
