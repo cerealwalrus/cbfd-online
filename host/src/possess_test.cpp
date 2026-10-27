@@ -148,8 +148,9 @@ namespace {
         std::fflush(file);
     }
 
+    // An address in the game's memory, or in ours past its 8 MB (0x80F00000 on: the extra player's controller record and the like).
     bool in_rdram(uint32_t address) {
-        return (address >> 24) == 0x80 && (address & 0xFFFFFFu) < 0x7FFF00u;
+        return (address >> 24) == 0x80 && ((address & 0xFFFFFFu) < 0x7FFF00u || (address & 0xFFFFFFu) >= 0xF00000u);
     }
 
     uint32_t character(int k) {
@@ -648,6 +649,16 @@ extern "C" void conker_possess_camera_frame(uint8_t* rdram, recomp_context* ctx)
         extra_ready = true;
         log("f=%u the extra camera %08X made for character %d (now its camera: %08X)", (unsigned)frames, (unsigned)camera, extra,
             (unsigned)word(rdram, character(extra) + 0x318));
+    }
+    // still the extra character's (something in the match took it off: put back)
+    if (word(rdram, character(extra) + 0x318) != camera || word(rdram, camera + 0x3D0) != character(extra)) {
+        static uint32_t told = 0;
+        if (told++ < 10) {
+            log("f=%u the extra camera was off character %d (its camera %08X, the camera's character %08X): put back", (unsigned)frames, extra,
+                (unsigned)word(rdram, character(extra) + 0x318), (unsigned)word(rdram, camera + 0x3D0));
+        }
+        set_word(rdram, character(extra) + 0x318, camera);
+        camera_follow(rdram, camera, extra);
     }
     // as func_15122AE0 runs each of its cameras
     MEM_W(0x7B4, (gpr)(int32_t)camera) = MEM_W(0x7B4, (gpr)(int32_t)base);
