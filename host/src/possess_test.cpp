@@ -27,6 +27,7 @@
 //   - conker_possess_move (func_1504CB98, 0x1504E0A4): D-pad Up's bot walks by the stick, not its path finder.
 // Writes conker_possess.log next to the game.
 
+#include <algorithm>
 #include <cmath>
 #include <cstdarg>
 #include <cstdint>
@@ -98,40 +99,109 @@ namespace {
     // comes after each (other tables, other things). Every place that reads or writes one of them by a camera's index
     // (found from the code: the index from the camera's +0x23D, +0x368, +0x3CC, or the moving character's) has a hook
     // (conker_slot4) that sends slot 4 to an entry of ours instead.
-    struct Slot4Table { uint32_t base, stride; bool copy_slot0; };
+    // always: a camera's table (on while the extra camera is there); otherwise a view's (on only while the extra view is drawn)
+    struct Slot4Table { uint32_t base, stride; bool always; };
     constexpr Slot4Table slot4_tables[] = {
-        {0x80089524, 0x4, false},   // 0 A
-        {0x80089534, 0x4, false},   // 1 B
-        {0x80089560, 0x4, false},   // 2 C1
-        {0x80089570, 0x4, false},   // 3 C2
-        {0x80089580, 0x4, false},   // 4 C3
-        {0x800BE710, 0x2, false},   // 5 E: the buttons pressed this frame, per controller
-        {0x800DC028, 0x24, false},  // 6 H
-        {0x800DC0C0, 0x4C, false},  // 7 I (zeroed as the cameras are made, func_1512ABF8)
-        {0x800DC200, 0x20, true},   // 8 J (the cameras' screen areas, func_1512ABF8)
-        {0x800DC2C0, 0x68, false},  // 9 K
-        {0x800DCDE0, 0x18, false},  // 10 L
-        {0x800D2E30, 0x4, false},   // 11 M
+    // Generated (release/gen2.py): the tables of 4 whose 5th entry is kept in ours. always: the cameras' (on while the extra camera
+    // is there); otherwise the views' (on only while the extra view is drawn).
+        {0x80089524, 0x4, true},   // 0
+        {0x80089534, 0x4, true},   // 1
+        {0x80089560, 0x4, true},   // 2
+        {0x80089570, 0x4, true},   // 3
+        {0x80089580, 0x4, true},   // 4
+        {0x800BE2B0, 0x4, true},   // 5
+        {0x800BE6C0, 0x4, false},   // 6
+        {0x800BE6D0, 0x4, false},   // 7
+        {0x800BE710, 0x2, true},   // 8
+        {0x800CC5D4, 0x4, false},   // 9
+        {0x800D18A4, 0x1, false},   // 10
+        {0x800D2CA8, 0x40, false},   // 11
+        {0x800D2E30, 0x4, true},   // 12
+        {0x800D9B68, 0x3, false},   // 13
+        {0x800D9B78, 0x3, false},   // 14
+        {0x800D9C10, 0x40, false},   // 15
+        {0x800D9E10, 0x4, false},   // 16
+        {0x800D9E70, 0x6, false},   // 17
+        {0x800D9E88, 0x3, false},   // 18
+        {0x800D9E98, 0x3, false},   // 19
+        {0x800D9EA8, 0x3, false},   // 20
+        {0x800D9EB8, 0x3, false},   // 21
+        {0x800DBE30, 0x2, false},   // 22
+        {0x800DBE88, 0x8, false},   // 23
+        {0x800DBFF4, 0x1, true},   // 24
+        {0x800DC028, 0x24, true},   // 25
+        {0x800DC0C0, 0x4C, true},   // 26
+        {0x800DC200, 0x20, true},   // 27
+        {0x800DC2C0, 0x68, true},   // 28
+        {0x800DCD30, 0x3, false},   // 29
+        {0x800DCDE0, 0x18, true},   // 30
+        {0x800DD2B0, 0x1, false},   // 31
+        {0x800DD2C0, 0x1, false},   // 32
+        {0x800DDD78, 0x1, false},   // 33
+        {0x800DDD90, 0x3, false},   // 34
+        {0x800DDD9C, 0x1, false},   // 35
+        {0x800DDDA0, 0x3, false},   // 36
+        {0x800DDDAC, 0x1, false},   // 37
+        {0x800DDDB0, 0x4, false},   // 38
+        {0x800DDDC0, 0x1, false},   // 39
+        {0x800DDDC8, 0x4, false},   // 40
+        {0x800DDDD8, 0x4, false},   // 41
+        {0x800DDDE8, 0x8, false},   // 42
+        {0x800DDE10, 0x2, false},   // 43
+        {0x800DDE1C, 0x1, false},   // 44
+        {0x800DDE20, 0x1, false},   // 45
+        {0x800DDE28, 0x4, false},   // 46
+        {0x800DF090, 0x10, false},   // 47
     };
+    constexpr int slot4_count = (int)(sizeof(slot4_tables) / sizeof(slot4_tables[0]));
     constexpr uint32_t slot4_shadow = 0x80FD1000;    // ours: 0x100 a table
-    bool slot4_on = false;
+    bool slot4_on = false;          // the cameras' tables
+    bool view_pass_on = false;      // the views' tables: the extra view is being drawn
     uint32_t slot4_moves = 0;
 
+    uint32_t shadow_of(uint32_t base) {
+        for (int i = 0; i < slot4_count; i++) {
+            if (slot4_tables[i].base == base) {
+                return slot4_shadow + 0x100u * (uint32_t)i;
+            }
+        }
+        return 0;
+    }
+    constexpr uint32_t pressed_shadow_table = 0x800BE710;   // the buttons pressed this frame, per controller
+    constexpr uint32_t view_buffers = 0x800DBE88;           // D_800DBE88: two buffers a view (what it draws, a frame each)
+    constexpr uint32_t view_buffer_ours = 0x80FD8000;       // ours: the extra view's (up to 0x4000)
+
+    void log(const char* format, ...);
+
     void slot4_reset(uint8_t* rdram) {
-        int i = 0;
-        for (const Slot4Table& t : slot4_tables) {
-            const uint32_t shadow = slot4_shadow + 0x100u * (uint32_t)i++;
+        for (int i = 0; i < slot4_count; i++) {
+            const uint32_t shadow = slot4_shadow + 0x100u * (uint32_t)i;
             for (uint32_t b = 0; b < 0x100; b += 4) {
                 MEM_W(b, (gpr)(int32_t)shadow) = 0;
             }
-            if (t.copy_slot0) {
-                for (uint32_t b = 0; b < t.stride; b++) {
-                    MEM_B(b, (gpr)(int32_t)shadow) = MEM_B(b, (gpr)(int32_t)t.base);
+            // the cameras' screen areas (func_1512ABF8): as camera 1's
+            if (slot4_tables[i].base == 0x800DC200) {
+                for (uint32_t b = 0; b < slot4_tables[i].stride; b++) {
+                    MEM_B(b, (gpr)(int32_t)shadow) = MEM_B(b, (gpr)(int32_t)slot4_tables[i].base);
                 }
             }
         }
         for (uint32_t b = 0; b < 8; b++) {
             MEM_B(b, (gpr)(int32_t)extra_record) = 0;
+        }
+        // The extra view's two buffers (func_15000AD0 makes the views' at the scene's start): as large as view 1's, of ours. Two of 0x40
+        // with what's in view 1's (that kind of scene sets them up once), or two halves of one block the views fill each frame.
+        const uint32_t first = (uint32_t)MEM_W(0, (gpr)(int32_t)view_buffers), second = (uint32_t)MEM_W(4, (gpr)(int32_t)view_buffers);
+        const uint32_t shadow = shadow_of(view_buffers);
+        if (shadow != 0 && (first >> 24) == 0x80 && second > first) {
+            const uint32_t half = second - first;
+            const uint32_t size = half == 0x40 ? 0x80u : std::min(2u * half, 0x4000u);
+            for (uint32_t b = 0; b < size; b += 4) {
+                MEM_W(b, (gpr)(int32_t)view_buffer_ours) = half == 0x40 ? MEM_W(b, (gpr)(int32_t)first) : 0;
+            }
+            MEM_W(0, (gpr)(int32_t)shadow) = (int32_t)view_buffer_ours;
+            MEM_W(4, (gpr)(int32_t)shadow) = (int32_t)(view_buffer_ours + std::min(half, size / 2));
+            log("the extra view's buffers: ours, %X bytes (view 1's %08X, %08X)", (unsigned)size, (unsigned)first, (unsigned)second);
         }
     }
 
@@ -272,7 +342,7 @@ namespace {
                 MEM_B(i, (gpr)(int32_t)record) = 0;
             }
         }
-        MEM_H(0, (gpr)(int32_t)(slot4_shadow + 0x100u * 5)) = 0;
+        MEM_H(0, (gpr)(int32_t)shadow_of(pressed_shadow_table)) = 0;
         log("f=%u %s: controller 1 back to player 1 (from character %d on the extra camera)", (unsigned)frames, why, extra);
     }
 
@@ -319,7 +389,7 @@ extern "C" void conker_possess_pad(uint8_t* rdram, recomp_context* ctx) {
             if (in_rdram(record)) {
                 MEM_W(0, (gpr)(int32_t)controller_now) = (int32_t)record;
             }
-            MEM_H(0, (gpr)(int32_t)(slot4_shadow + 0x100u * 5)) = (int16_t)extra_pressed;
+            MEM_H(0, (gpr)(int32_t)shadow_of(pressed_shadow_table)) = (int16_t)extra_pressed;
             const uint32_t brain = brain_of(rdram, extra);
             if (brain != 0) {
                 MEM_B(0x84, (gpr)(int32_t)brain) = 0;
@@ -683,15 +753,6 @@ extern "C" void conker_possess_camera_frame(uint8_t* rdram, recomp_context* ctx)
         func_15122C5C(rdram, ctx);
     }
     *ctx = saved;
-    if (extra_shown) {
-        const uint32_t buffer = MEM_BU(0, (gpr)(int32_t)matrix_buffer) & 1u;
-        const uint32_t list = (uint32_t)MEM_W(4 * buffer, (gpr)(int32_t)matrices);
-        if (in_rdram(list)) {
-            for (uint32_t i = 0; i < 0x40; i += 4) {
-                MEM_W(i, (gpr)(int32_t)list) = MEM_W(0x40 * (uint32_t)extra + i, (gpr)(int32_t)list);
-            }
-        }
-    }
     static uint32_t logged = 0;
     if (logged < 3 || (frames % 600) == 0) {
         logged++;
@@ -702,10 +763,8 @@ extern "C" void conker_possess_camera_frame(uint8_t* rdram, recomp_context* ctx)
 
 // func_1510FC34, 0x1510FC74: view $s0's camera ($v0) about to give its eye, for what the view draws.
 extern "C" void conker_possess_view_eye(uint8_t* rdram, recomp_context* ctx) {
-    if (conker::netsession::active() || !extra_shown || !extra_ready || (int32_t)ctx->r16 != 0) {
-        return;
-    }
-    ctx->r2 = (gpr)(int32_t)extra_camera(rdram);
+    (void)rdram;
+    (void)ctx;   // (possess13: the extra view is drawn as a view of its own now)
 }
 
 int conker::possess_test::played_camera() {
@@ -714,10 +773,13 @@ int conker::possess_test::played_camera() {
 
 // Before an access to slot4_tables[table] through register *reg with offset off: slot 4 sent to our entry.
 extern "C" void conker_slot4(uint8_t* rdram, gpr* reg, int32_t off, int table) {
-    if (!slot4_on) {
+    if (table < 0 || table >= slot4_count) {
         return;
     }
     const Slot4Table& t = slot4_tables[table];
+    if (!(t.always ? slot4_on : view_pass_on)) {
+        return;
+    }
     const uint32_t at = (uint32_t)*reg + (uint32_t)off;
     const uint32_t from = t.base + 4u * t.stride;
     if (at >= from && at < from + t.stride) {
@@ -732,5 +794,112 @@ extern "C" void conker_slot4(uint8_t* rdram, gpr* reg, int32_t off, int table) {
 extern "C" void conker_slot4_pad(uint8_t* rdram, gpr* value, gpr camera) {
     if (slot4_on && (uint32_t)camera == extra_camera(rdram)) {
         *value = (gpr)(int32_t)extra_record;
+    }
+}
+
+// ---- The extra view (possess13) ----
+// What a view draws feeds back into the game (what each pass culls, the random numbers it draws: net_view.cpp's notes), so a 5th
+// player's view has to be drawn as a view of the game's own on every machine. Each frame, after the game's own views, the same
+// passes run for view 4, the extra camera's (D_80082FA4 the view being drawn, as the game's loops set it):
+//   func_15019130: func_1510FC34 (what's in sight from the view's camera), func_15094EA0 (the view's matrices);
+//   func_1501878C: func_15018F80 + func_15019464 (the first pass), func_1515D6D0 + func_150195A0 (the 3D), func_1515D6D0 +
+//   func_15019CC8 (the second).
+// The views' tables of 4 are sent to ours while it's drawn (conker_slot4, the views' set). The view is full screen (func_1501A8C0's
+// layout 0), so offline, drawn after the game's, it is what's seen.
+extern "C" void func_1510FC34(uint8_t* rdram, recomp_context* ctx);
+extern "C" void func_15094EA0(uint8_t* rdram, recomp_context* ctx);
+extern "C" void func_15018F80(uint8_t* rdram, recomp_context* ctx);
+extern "C" void func_15019464(uint8_t* rdram, recomp_context* ctx);
+extern "C" void func_1515D6D0(uint8_t* rdram, recomp_context* ctx);
+extern "C" void func_150195A0(uint8_t* rdram, recomp_context* ctx);
+extern "C" void func_15019CC8(uint8_t* rdram, recomp_context* ctx);
+
+namespace {
+    constexpr uint32_t view_now = 0x80082FA4;        // D_80082FA4: the view being drawn
+    constexpr uint32_t list_start = 0x800BE9C8;      // D_800BE9C8[2]: the start of this frame's display list
+    constexpr uint32_t list_most = 0x800BEBA4;       // D_800BEBA4: the most commands it may have
+    uint32_t passes = 0, passes_dropped = 0;
+
+    bool extra_view_drawn(uint8_t* rdram) {
+        if (!extra_ready || MEM_BU(0, (gpr)(int32_t)multiplayer) == 0) {
+            return false;
+        }
+        return !conker::netsession::active() && extra_shown;
+    }
+
+    uint32_t call_list(uint8_t* rdram, recomp_context* ctx, void (*fn)(uint8_t*, recomp_context*), uint32_t list, int view) {
+        ctx->r4 = (gpr)(int32_t)list;
+        ctx->r5 = (gpr)view;
+        fn(rdram, ctx);
+        return (uint32_t)ctx->r2;
+    }
+}
+
+// stage 0: func_15019130 after its views' func_1510FC34; 1: after their func_15094EA0; 2, 3, 4: func_1501878C after each of its loops
+// over the views ($s1 the address of the display list's end).
+extern "C" void conker_possess_view_pass(uint8_t* rdram, recomp_context* ctx, int stage) {
+    if (!extra_view_drawn(rdram)) {
+        return;
+    }
+    const recomp_context saved = *ctx;
+    const uint32_t head = (uint32_t)ctx->r17;
+    const int32_t was = MEM_W(0, (gpr)(int32_t)view_now);
+    MEM_W(0, (gpr)(int32_t)view_now) = extra;
+    view_pass_on = true;
+    switch (stage) {
+        case 0:
+            ctx->r4 = extra;
+            func_1510FC34(rdram, ctx);
+            break;
+        case 1:
+            ctx->r4 = extra;
+            func_15094EA0(rdram, ctx);
+            break;
+        case 2: {
+            ctx->r4 = extra;
+            func_15018F80(rdram, ctx);
+            *ctx = saved;
+            MEM_W(0, (gpr)(int32_t)head) = (int32_t)call_list(rdram, ctx, func_15019464, (uint32_t)MEM_W(0, (gpr)(int32_t)head), extra);
+            break;
+        }
+        case 3: {
+            const uint32_t before = (uint32_t)MEM_W(0, (gpr)(int32_t)head);
+            uint32_t list = call_list(rdram, ctx, func_1515D6D0, before, extra);
+            *ctx = saved;
+            list = call_list(rdram, ctx, func_150195A0, list, extra);
+            // as the game's loop does: past the list's room, the view's commands are let go
+            const uint32_t buffer = MEM_BU(0, (gpr)(int32_t)matrix_buffer) & 1u;
+            const uint32_t start = (uint32_t)MEM_W(4 * buffer, (gpr)(int32_t)list_start);
+            if ((int32_t)((list - start) >> 3) > (int32_t)MEM_W(0, (gpr)(int32_t)list_most)) {
+                list = before;
+                passes_dropped++;
+            }
+            MEM_W(0, (gpr)(int32_t)head) = (int32_t)list;
+            passes++;
+            break;
+        }
+        case 4: {
+            uint32_t list = call_list(rdram, ctx, func_1515D6D0, (uint32_t)MEM_W(0, (gpr)(int32_t)head), extra);
+            *ctx = saved;
+            list = call_list(rdram, ctx, func_15019CC8, list, extra);
+            MEM_W(0, (gpr)(int32_t)head) = (int32_t)list;
+            break;
+        }
+        default:
+            break;
+    }
+    view_pass_on = false;
+    MEM_W(0, (gpr)(int32_t)view_now) = was;
+    *ctx = saved;
+    if (stage == 3 && (passes == 1 || passes % 600 == 0)) {
+        log("f=%u the extra view drawn (%u times, %u let go for the list's room)", (unsigned)frames, (unsigned)passes, (unsigned)passes_dropped);
+    }
+}
+
+// func_15000AD0, before its allocations of a 0x80 block a view ($a0, D_80082FA0 * 0x80 + 0x80, kept at D_800DBEB0): room for 5.
+extern "C" void conker_possess_view_alloc(uint8_t* rdram, recomp_context* ctx) {
+    (void)rdram;
+    if (!conker::netsession::active() && (int32_t)ctx->r4 < 5 * 0x80) {
+        ctx->r4 = 5 * 0x80;
     }
 }
