@@ -666,19 +666,12 @@ namespace {
     }
     // (0.10.74, measuring the co-op pause's drift) in the co-op stage the memory comparison is on too: the copies every frame, and the
     // first four comparisons asked for
+    // (0.10.90: back to CONKER_NET_DIAG only; the co-op pause's drift is found and fixed)
     bool diag_copies_on() {
-        return diag_env_on() || (ram != nullptr && conker::netmenu::coop_running(ram));
+        return diag_env_on();
     }
     bool diag_dumps_on() {
-        if (diag_env_on()) {
-            return true;
-        }
-        static int coop_dumps = 0;
-        if (ram != nullptr && conker::netmenu::coop_running(ram) && coop_dumps < 4) {
-            coop_dumps++;
-            return true;
-        }
-        return false;
+        return diag_env_on();
     }
 
     // --- Input delay ---
@@ -3521,7 +3514,7 @@ void conker::netsession::on_port_read(int port) {
         log_line("[pos] f=%u o0=%08X,%08X,%08X o1=%08X,%08X,%08X h=%08X,%08X,%08X,%08X", f, pos[0], pos[1], pos[2], pos[3], pos[4], pos[5],
             objects_hash(0, 1), objects_hash(1, 1), objects_hash(2, 1), objects_hash(3, 1));
     }
-    if (ram != nullptr && change_lines < 30000) {
+    if (ram != nullptr && change_lines < 30000 && diag_env_on()) {   // (0.10.90: CONKER_NET_DIAG only)
         // Every frame where the players' inputs or either player's position or facing changed: the two machines' logs
         // can be compared line by line to find the first frame they disagree at.
         uint32_t t[12];
@@ -3582,6 +3575,10 @@ bool conker::netsession::input(int port, bool* plugged, uint16_t* buttons, float
         *y = 0.0f;
     }
     return true;
+}
+
+bool conker::netsession::diag_on() {
+    return diag_env_on();
 }
 
 uint32_t conker::netsession::hook_generation() {
@@ -4446,6 +4443,9 @@ namespace {
 // Diagnostic: the words at 0x80088540..0x80088580 (the first memory that differed between two machines) are
 // looked at now and then; each change is logged with the frame and where it was seen, to tell when it happens.
 void conker::netsession::watch_poll(const char* tag, uint32_t info) {
+    if (!diag_env_on()) {
+        return;   // (0.10.90: CONKER_NET_DIAG only)
+    }
     static uint32_t last[17];
     static bool first = true;
     static int lines = 0;

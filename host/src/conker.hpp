@@ -375,6 +375,8 @@ namespace conker {
         // 0.10.13: counts the times the hooks' own state (what they keep between frames, outside the game's memory) started over:
         // with a resync, on every machine at the frame after the resync's order (see hook_state_reset in net_session.cpp).
         uint32_t hook_generation();
+        // (0.10.90) CONKER_NET_DIAG=1: the heavy test logging and the memory comparisons (off in a normal game)
+        bool diag_on();
         int local_slot();
         // The name a player goes by on the screen: their nickname, or "Player N".
         std::string player_name(int slot);

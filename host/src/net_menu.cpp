@@ -862,7 +862,8 @@ extern "C" void conker_coop_frame(uint8_t* rdram, recomp_context* ctx) {
     }
     // (0.10.80, measuring, to take Conker's idle animations out) each player's character's animation (+0x84) as it changes, with how
     // many frames the player's controller had been still; the idle's animations are the ones that start after a long stillness
-    {
+    // (0.10.90: CONKER_NET_DIAG only)
+    if (conker::netsession::diag_on()) {
         static uint16_t last_anim[4] = { 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF };
         static uint32_t still_since[4] = { 0, 0, 0, 0 };
         static uint32_t last_input[4][3] = {};
@@ -998,20 +999,20 @@ extern "C" void conker_coop_frame(uint8_t* rdram, recomp_context* ctx) {
                 break;
             }
         }
-        // (0.10.52, measuring) the dumps
-        if (holder >= 0 && !coop_dumped) {
+        // (0.10.52, measuring) the dumps (0.10.90: CONKER_NET_DIAG only, with the control blocks' watch below)
+        if (holder >= 0 && !coop_dumped && conker::netsession::diag_on()) {
             coop_dumped = true;
             coop_dump_at = conker::netsession::frame() + 90;
             char why[64];
             std::snprintf(why, sizeof(why), "player %d has the shotgun out first", holder + 1);
             coop_dump(rdram, count, why);
         }
-        if (coop_dump_at != 0 && conker::netsession::frame() >= coop_dump_at) {
+        if (coop_dump_at != 0 && conker::netsession::frame() >= coop_dump_at && conker::netsession::diag_on()) {
             coop_dump_at = 0;
             coop_dump(rdram, count, "90 frames later");
         }
         // (0.10.52, measuring) the control blocks' bytes as they change (each byte's first 4 changes)
-        {
+        if (conker::netsession::diag_on()) {
             std::vector<uint8_t> now((size_t)count * coop_control_size, 0);
             for (int k = 0; k < count; k++) {
                 const uint32_t control = (uint32_t)MEM_W(0x31C, (gpr)(int32_t)(0x800CC2D0u + (uint32_t)k * 0x32Cu));
@@ -1125,6 +1126,9 @@ extern "C" void conker_coop_frame(uint8_t* rdram, recomp_context* ctx) {
                 conker::netsession::log(line);
             }
         }
+    }
+    if (!conker::netsession::diag_on()) {
+        return;   // (0.10.90: the watch below is CONKER_NET_DIAG only)
     }
     const uint32_t players = (uint32_t)std::min(std::max(coop_players, 1), 4);
     const uint32_t total = players * coop_object_size + coop_table_size;
