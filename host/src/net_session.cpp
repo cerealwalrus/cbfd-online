@@ -2306,17 +2306,71 @@ int conker::netsession::local_slot() {
     return my_slot;
 }
 
+// (0.10.92) see conker.hpp: the multiplayer match's players by the order they joined (D_8008FE40 of them, D_8008FE44 their
+// controllers), while D_800BE616 (a multiplayer match) is set. From the game's memory: the same on every machine.
+namespace {
+    bool match_players(int8_t* list, int* count) {
+        if (ram == nullptr || ram[(0x800BE616u ^ 3u) & 0x7FFFFFu] == 0) {
+            return false;
+        }
+        const int n = (int)(int8_t)ram[(0x8008FE40u ^ 3u) & 0x7FFFFFu];
+        if (n < 1 || n > 4) {
+            return false;
+        }
+        bool seen[4] = {};
+        for (int k = 0; k < n; k++) {
+            const int c = (int)(int8_t)ram[((0x8008FE44u + (uint32_t)k) ^ 3u) & 0x7FFFFFu];
+            if (c < 0 || c > 3 || seen[c]) {
+                return false;
+            }
+            seen[c] = true;
+            list[k] = (int8_t)c;
+        }
+        *count = n;
+        return true;
+    }
+}
+
+int conker::netsession::player_of_port(int port) {
+    int8_t list[4];
+    int n = 0;
+    if (port < 0 || port > 3 || !match_players(list, &n)) {
+        return port;
+    }
+    for (int k = 0; k < n; k++) {
+        if (list[k] == port) {
+            return k;
+        }
+    }
+    return -1;   // (a slot that isn't in the match)
+}
+
+int conker::netsession::port_of_player(int player) {
+    int8_t list[4];
+    int n = 0;
+    if (player < 0 || player > 3 || !match_players(list, &n)) {
+        return player;
+    }
+    return player < n ? (int)list[player] : -1;
+}
+
+int conker::netsession::local_player() {
+    return player_of_port(my_slot);
+}
+
 std::string conker::netsession::player_name(int slot) {
     std::lock_guard lock{ mtx };
     return name_of(slot);
 }
 
 uint8_t conker::netsession::look_flags(int player) {
+    player = port_of_player(player);   // (0.10.92: the game's player, its controller's input)
     std::lock_guard lock{ mtx };
     return (enabled && !failed && player >= 0 && player < max_players) ? current.p[player].look : 0;
 }
 
 bool conker::netsession::swap_flag(int player) {
+    player = port_of_player(player);   // (0.10.92)
     std::lock_guard lock{ mtx };
     return enabled && !failed && player >= 0 && player < max_players && current.p[player].swap != 0;
 }
@@ -2324,6 +2378,7 @@ bool conker::netsession::swap_flag(int player) {
 bool conker::netsession::camera_turn(int player, float* yaw, float* pitch) {
     *yaw = 0.0f;
     *pitch = 0.0f;
+    player = port_of_player(player);   // (0.10.92: the camera's player, its controller's input)
     std::lock_guard lock{ mtx };
     if (!enabled || failed || player < 0 || player >= max_players) {
         return false;
@@ -3641,10 +3696,11 @@ bool conker::netsession::input_for_game(int port, bool* plugged, uint16_t* butto
             // (0.10.9: the second aiming mode, the sniper rifle's, the revolver's and the knives', has no look record stage: it counts as the
             // look, or the sticks were held still all through it and the right stick couldn't aim, the 0.10.8 logs: R held, the right stick
             // sent, nothing turned)
-            bool look_on = conker::look_aim::second_aim_recent(port);
+            const int game_player = conker::netsession::player_of_port(port);   // (0.10.92)
+            bool look_on = conker::look_aim::second_aim_recent(game_player);
             for (uint32_t k = 0; k < 4; k++) {
                 const gpr record = (gpr)(int32_t)(looks + k * 0x9A0u);
-                if ((int)MEM_BU(0x23D, record) == port && MEM_H(0x73C, record) != 0) {
+                if (game_player >= 0 && (int)MEM_BU(0x23D, record) == game_player && MEM_H(0x73C, record) != 0) {
                     look_on = true;
                 }
             }

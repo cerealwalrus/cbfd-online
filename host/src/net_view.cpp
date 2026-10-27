@@ -1640,7 +1640,7 @@ bool conker::netview::full_view_bounds(uint8_t* rdram, int camera, float& left, 
         return false;
     }
     const int players = players_now(rdram);
-    const int local = conker::netsession::local_slot();
+    const int local = conker::netsession::local_player();
     if (players <= 1 || players > max_cameras || local < 0 || local >= players || camera != local) {
         return false;
     }
@@ -1701,7 +1701,11 @@ void conker::netview::frame_end(uint8_t* rdram, uint32_t list_end) {
     // CONKER_NET_VIEWSLOT=n (a test): every machine shows player n's view, whoever it plays, so that the two machines
     // rewrite their display lists the same way.
     static const int forced_slot = []() { const char* text = SDL_getenv("CONKER_NET_VIEWSLOT"); return text != nullptr ? std::atoi(text) : -1; }();
-    int local = forced_slot >= 0 ? forced_slot : conker::netsession::local_slot();
+    int local = forced_slot >= 0 ? forced_slot : conker::netsession::local_player();
+    // (0.10.92) a machine whose player isn't in the match (players 1 and 3 of four play, 2 and 4 watch): the first player's view
+    if (local < 0) {
+        local = 0;
+    }
     // 0.10.31: the co-op campaign stage: while a cutscene plays (a slot's byte at D_800C35EA is 1) its camera is the first player's,
     // so every machine shows the first camera's picture (the second player's own camera was shown: no cutscene there)
     // (0.10.65) only once the cutscene flag has been on for 6 frames in a row: a flag on for a frame or two (the 0.10.64 test's flicker
@@ -1962,7 +1966,7 @@ extern "C" void conker_player_visibility(uint8_t* rdram, recomp_context* ctx, in
     // and everything else is left to the game. Logged: the game's choice for this machine's camera, with the crossbow out, on a change.
     const int players = players_now(rdram);
     if (which == 0 && camera < 4 && object >= (uint32_t)players && object < 4 && conker::netsession::active() &&
-        (int)camera == conker::netsession::local_slot()) {
+        (int)camera == conker::netsession::local_player()) {
         const uint32_t looks = (uint32_t)MEM_W(0, (gpr)(int32_t)0x800DBFF0);
         if ((looks >> 24) == 0x80 && (looks & 0x7FFFFFu) + 4u * 0x9A0u <= 0x800000u) {
             for (uint32_t k = 0; k < 4; k++) {

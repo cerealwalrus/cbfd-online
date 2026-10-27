@@ -624,7 +624,7 @@ namespace {
     int camera_command_logs = 0;
     bool local_camera(uint8_t* rdram, gpr camera) {
         int index = -1;
-        return conker::netsession::active() && pick(rdram, camera, &index) != nullptr && index == conker::netsession::local_slot();
+        return conker::netsession::active() && pick(rdram, camera, &index) != nullptr && index == conker::netsession::local_player();
     }
 }
 
@@ -706,7 +706,7 @@ extern "C" void conker_mouse_camera(uint8_t* rdram, recomp_context* ctx) {
     // 0.10.10 (to find the 4 player game's camera jumps, the teddies' cameras 1 and 3 pulled right in for a frame or two about every
     // 35 frames): online, this machine's own camera, logged when the eye the view is built from jumps (closer or further from the
     // look-at point by a quarter, or moved 60 more than the look-at point did) and when the orbit starts or stops, with its state.
-    if (conker::netsession::active() && camera_index == conker::netsession::local_slot()) {
+    if (conker::netsession::active() && camera_index == conker::netsession::local_player()) {
         static bool have_last = false;
         static float last_eye[3] = {}, last_look[3] = {};
         static int jump_logs = 0;
@@ -786,7 +786,7 @@ extern "C" void conker_mouse_camera(uint8_t* rdram, recomp_context* ctx) {
     orbit.placed = false;
     // For the controller's input until the next update: whether the stick turns this camera.
     // (Online that's this machine's own player's camera that counts: it's the controller of this machine.)
-    if (!conker::netsession::active() || camera_index == conker::netsession::local_slot()) {
+    if (!conker::netsession::active() || camera_index == conker::netsession::local_player()) {
         was_normal_camera = orbit.follow_camera_ran && !orbit.look_mode_ran;
         stick_owns_camera = was_normal_camera && stick_turns_camera_setting();
     }
@@ -979,7 +979,7 @@ extern "C" void conker_view_snap_guard(uint8_t* rdram, recomp_context* ctx) {
         uint32_t bits;
         std::memcpy(&bits, &g.held_eye[2], sizeof(bits));
         ctx->r1 = (gpr)(int32_t)bits;
-        if (index == conker::netsession::local_slot() && snap_guard_logs < 200) {
+        if (index == conker::netsession::local_player() && snap_guard_logs < 200) {
             snap_guard_logs++;
             char line[160];
             std::snprintf(line, sizeof(line), "[camera] f=%u camera %d: the snap in (distance %.0f -> %.0f) not shown, the eye kept", now, index, g.distance, distance);
@@ -1038,7 +1038,7 @@ extern "C" void conker_cam_probe(uint8_t* rdram, recomp_context* ctx, int id) {
             camera_of[a] = (int)((args[a] - base) / camera_stride);
         }
     }
-    const int local = conker::netsession::local_slot();
+    const int local = conker::netsession::local_player();
     const bool mine = camera_of[0] == local || camera_of[1] == local;
     if (key->logged < 6 || (mine && key->logged < 40)) {
         key->logged++;

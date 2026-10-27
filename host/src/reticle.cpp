@@ -172,7 +172,7 @@ namespace {
     void aiming_frame(uint8_t* rdram, gpr camera, uint32_t state) {
         const uint32_t index = MEM_BU(0x23D, camera);
         const bool online = conker::netsession::active();
-        if (index != (uint32_t)(online ? conker::netsession::local_slot() : 0)) {
+        if (index != (uint32_t)(online ? conker::netsession::local_player() : 0)) {
             return;
         }
         const gpr view = (gpr)(int32_t)((uint32_t)MEM_W(0, cameras_pointer) + index * camera_size);

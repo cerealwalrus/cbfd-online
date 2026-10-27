@@ -507,7 +507,7 @@ namespace {
         if (h.checked && h.checked_frame == now && (!recheck || h.holding)) {
             return h.holding;
         }
-        const bool local = player == conker::netsession::local_slot();
+        const bool local = player == conker::netsession::local_player();
         const gpr walker = (gpr)(int32_t)MEM_W(0x3D0, camera);
         bool plugged = false;
         uint16_t agreed = 0;
@@ -797,7 +797,7 @@ extern "C" void conker_look_view(uint8_t* rdram, recomp_context* ctx) {
                 if (!holding[record]) {
                     holding[record] = true;
                     kept_face[record] = (uint16_t)MEM_HU(0x7A, knocked);
-                    if (player == conker::netsession::local_slot()) {
+                    if (player == conker::netsession::local_player()) {
                         char line[140];
                         std::snprintf(line, sizeof(line), "[look] f=%u knocked out of the look, R held: facing kept at %04X (it was moving at %04X)",
                             conker::netsession::frame(), (unsigned)kept_face[record], (unsigned)MEM_HU(0x76, knocked));
@@ -895,7 +895,7 @@ extern "C" void conker_look_view(uint8_t* rdram, recomp_context* ctx) {
         track.have = true;
     }
     // Online, this machine's player's look, its first 45 frames each time (the view's movement after R, for the logs).
-    if (conker::netsession::active() && player >= 0 && player == conker::netsession::local_slot()) {
+    if (conker::netsession::active() && player >= 0 && player == conker::netsession::local_player()) {
         static int frames_logged = -1;
         static int after_logged = 99;   // 0.9.99: the 30 frames after the look ends, to see a hit knock it out (Conker's facing and moving angle)
         static int last_stage = 0;
@@ -1008,6 +1008,8 @@ std::atomic<bool> grenade_held[4];
 void conker::look_aim::no_weapon_walk(uint8_t* rdram, int port, uint16_t* buttons) {
 #if defined(CONKER_RT64)
     constexpr uint16_t c_buttons = 0x000F;
+    // (0.10.92: the controller's player in the game, whose camera (+0x23D) and walking this is; port is that player from here on)
+    port = conker::netsession::player_of_port(port);
     if (port < 0 || port >= 4) {
         return;
     }
@@ -1123,6 +1125,7 @@ std::atomic<bool> gun_walk_set[4];
 
 void conker::look_aim::gun_side_walk(uint8_t* rdram, int port, uint16_t* buttons) {
 #if defined(CONKER_RT64)
+    port = conker::netsession::player_of_port(port);   // (0.10.92, as in no_weapon_walk)
     if (port < 0 || port >= 4) {
         return;
     }

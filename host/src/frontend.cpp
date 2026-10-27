@@ -1113,7 +1113,7 @@ namespace {
             // aim, three frames before this input is played: held R swaps at once, not after the aim has begun). The swap
             // travels with the frame's input (net_session.cpp) so every machine acts on it at the same frame.
             const bool online_game = conker::netsession::active();
-            const int aim_player = online_game ? conker::netsession::local_slot() : port;
+            const int aim_player = online_game ? conker::netsession::local_player() : port;
             const bool online_swap = online_game && port == 0 && pad != nullptr && conker::look_aim::online_swap_enabled();
             // 0.10.6: with R up the sticks are swapped only for an aim that has gone on without R for half a second (an aiming mode
             // R doesn't hold). Before, they stayed swapped while the game had aimed in the last 80 ms, and it aims a few frames on

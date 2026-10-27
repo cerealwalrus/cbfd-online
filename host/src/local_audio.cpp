@@ -157,7 +157,7 @@ namespace {
         const int32_t last = (int32_t)word(rdram, last_listener);
         const uint32_t base = word(rdram, look_cameras);
         int found = -1;
-        const int local = conker::netsession::local_slot();
+        const int local = conker::netsession::local_player();
         if (last >= 1 && last <= 3 && (base >> 24) == 0x80 && (base & 0x7FFFFFu) + 4u * look_size <= 0x800000u) {
             for (int k = 0; k <= last; k++) {
                 const gpr record = (gpr)(int32_t)(base + (uint32_t)k * look_size);
@@ -519,7 +519,7 @@ namespace {
             if (k_now >= 0 && ram_pointer(holder) && holder >= base && (holder - base) % look_size == 0 && (holder - base) / look_size < 4) {
                 const uint32_t n = (holder - base) / look_size;
                 const int holder_player = (int)MEM_BU(look_player, (gpr)(int32_t)holder);
-                if (holder_player != conker::netsession::local_slot() && (int32_t)n <= (int32_t)word(rdram, last_listener)) {
+                if (holder_player != conker::netsession::local_player() && (int32_t)n <= (int32_t)word(rdram, last_listener)) {
                     const uint32_t entry = listeners + n * listener_size;
                     const uint32_t x = word(rdram, entry + 0xC), y = word(rdram, entry + 0x10), z = word(rdram, entry + 0x14);
                     uint32_t attenuation = 0, pan = 0x40;
@@ -537,7 +537,7 @@ namespace {
             const uint32_t holder = index < 25 ? 0x800CC2D0u + index * 0x32Cu : 0;
             const int holder_player = holder != 0 ? character_player(rdram, holder) : -1;
             const int k_now = local_listener(rdram);
-            if (k_now >= 0 && holder_player >= 0 && holder_player != conker::netsession::local_slot()) {
+            if (k_now >= 0 && holder_player >= 0 && holder_player != conker::netsession::local_player()) {
                 uint32_t volume = 0, pan = 0x40;
                 character_sound(rdram, ctx, k_now, holder, (uint32_t)ctx->r6 & 0xFFFFu, 500, 4501, &volume, &pan);
                 ctx->r6 = (gpr)(int32_t)volume;
@@ -552,7 +552,7 @@ namespace {
         const int k = local_listener(rdram);
         const uint32_t owner = owner_of(rdram, caller_s0, (uint32_t)ctx->r5 & 0xFFFFu);
         const int player = character_player(rdram, owner);
-        if (k < 0 || player < 0 || player == conker::netsession::local_slot()) {
+        if (k < 0 || player < 0 || player == conker::netsession::local_player()) {
             return;   // this machine's own player's: in the middle, at full volume, as the game plays it
         }
         const uint32_t caller_sp = sp + 0x50;
@@ -613,7 +613,7 @@ namespace {
             }
             const uint32_t handle = ram_pointer(f.object) ? half(rdram, f.object + f.field) : 0;
             const int player = character_player(rdram, f.owner);
-            if (k < 0 || !slot_has(rdram, handle) || player < 0 || player == conker::netsession::local_slot()) {
+            if (k < 0 || !slot_has(rdram, handle) || player < 0 || player == conker::netsession::local_player()) {
                 f.object = 0;
                 continue;
             }
@@ -659,7 +659,7 @@ namespace {
             object = word(rdram, sp + 0x44);
             player = character_player(rdram, object);
             const int k = local_listener(rdram);
-            const bool own = ra == 0x10012760u && player == conker::netsession::local_slot();
+            const bool own = ra == 0x10012760u && player == conker::netsession::local_player();
             if (k >= 0 && ram_pointer(object) && !own && (ra == 0x100127BCu || player >= 0)) {
                 const int x = (int)float_at(rdram, object + 0x14), y = (int)float_at(rdram, object + 0x18), z = (int)float_at(rdram, object + 0x1C);
                 uint32_t volume = 0, pan = 0x40;
@@ -693,7 +693,7 @@ namespace {
                 continue;
             }
             const int player = character_player(rdram, f.owner);
-            if (player < 0 || player == conker::netsession::local_slot()) {
+            if (player < 0 || player == conker::netsession::local_player()) {
                 return;
             }
             if (what == 8) {
@@ -766,7 +766,7 @@ namespace {
         int player = -1;
         if (character) {
             player = character_player(rdram, shot_music_object);
-            if (player < 0 || player == conker::netsession::local_slot()) {
+            if (player < 0 || player == conker::netsession::local_player()) {
                 return true;   // this machine's own player's shot: as the game plays it
             }
             uint32_t attenuation = 0, p = 0x40;
@@ -788,7 +788,7 @@ namespace {
             const uint32_t now = (uint32_t)conker::netsession::frame();
             const bool recent = now - shot_layer_frame < shot_layer_hold_frames;
             const int shooter = character_player(rdram, shot_music_object);
-            const bool own = shooter >= 0 && shooter == conker::netsession::local_slot();
+            const bool own = shooter >= 0 && shooter == conker::netsession::local_player();
             const bool skip = !own && (volume == 0 || (recent && volume < shot_layer_volume));
             static int logged = 0;
             if (logged < 60) {

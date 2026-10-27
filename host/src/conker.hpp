@@ -378,6 +378,14 @@ namespace conker {
         // (0.10.90) CONKER_NET_DIAG=1: the heavy test logging and the memory comparisons (off in a normal game)
         bool diag_on();
         int local_slot();
+        // (0.10.92) In a multiplayer match the game's players are the ones who joined on the character select, in the order they
+        // joined (D_8008FE44): player k (its character, its camera k, +0x23D of the camera) plays with controller D_8008FE44[k],
+        // which online is that machine's slot. With every slot in, in order, the two are the same; with fewer (players 1 and 3 of
+        // four) they aren't. Outside a match, or with nothing to go by, they're the same.
+        int player_of_port(int port);
+        int port_of_player(int player);
+        // this machine's player in the game (its camera, its character): player_of_port(local_slot())
+        int local_player();
         // The name a player goes by on the screen: their nickname, or "Player N".
         std::string player_name(int slot);
         // Online: whether that player's right stick turns their camera this frame (the frame's agreed input), and by how
