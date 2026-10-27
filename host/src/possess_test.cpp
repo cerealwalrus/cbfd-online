@@ -222,7 +222,12 @@ namespace {
     }
 
     void log(const char* format, ...) {
-        static FILE* file = std::fopen("conker_possess.log", "w");
+        // (possess19: the last run's log kept as conker_possess.prev.log)
+        static FILE* file = []() {
+            std::remove("conker_possess.prev.log");
+            std::rename("conker_possess.log", "conker_possess.prev.log");
+            return std::fopen("conker_possess.log", "w");
+        }();
         if (file == nullptr) {
             return;
         }
