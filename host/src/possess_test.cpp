@@ -1014,6 +1014,8 @@ extern "C" void conker_possess_diff_game(uint8_t* rdram, recomp_context* ctx, in
 extern "C" void func_15094EA0(uint8_t* rdram, recomp_context* ctx);
 extern "C" void func_1510F800(uint8_t* rdram, recomp_context* ctx);
 extern "C" void func_1510B690(uint8_t* rdram, recomp_context* ctx);
+extern "C" void func_15112A80(uint8_t* rdram, recomp_context* ctx);
+extern "C" void func_15113218(uint8_t* rdram, recomp_context* ctx);
 
 namespace {
     constexpr uint32_t game_size = 0x400000;
@@ -1311,6 +1313,13 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
     *ctx = saved;
     ctx->r4 = 0;
     func_15094EA0(rdram, ctx);
+    *ctx = saved;
+    // (possess28) what each object is in sight of (func_15019130's after its views' loops: func_15112A80 and func_15113218 clear
+    // and set each object's bit of the views that see it, the bit a view's passes draw it by), for the extra camera as view 1
+    ctx->r4 = 0;
+    func_15112A80(rdram, ctx);
+    *ctx = saved;
+    func_15113218(rdram, ctx);
     *ctx = saved;
     ctx->r4 = 0;
     func_15018F80(rdram, ctx);
