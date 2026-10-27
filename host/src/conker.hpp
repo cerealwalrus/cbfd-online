@@ -425,6 +425,8 @@ namespace conker {
     // possess_test.cpp (possess-test branch): offline, the camera controller 1 plays (0, or the extra camera's slot).
     namespace possess_test {
         int played_camera();
+        // (possess34) the extra camera's view being drawn (as view 1, on this machine alone)
+        bool drawing_extra_view();
     }
 
     // menu_skin.cpp: optional PNGs for the launcher (assets/menu_skin/), see that file.

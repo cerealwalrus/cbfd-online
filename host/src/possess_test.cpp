@@ -807,6 +807,14 @@ extern "C" void conker_possess_view_eye(uint8_t* rdram, recomp_context* ctx) {
     (void)ctx;   // (possess13: the extra view is drawn as a view of its own now)
 }
 
+namespace {
+    bool extra_view_now = false;   // (possess34) the extra camera's view being drawn
+}
+
+bool conker::possess_test::drawing_extra_view() {
+    return extra_view_now;
+}
+
 int conker::possess_test::played_camera() {
     return extra_played && extra_ready ? extra : 0;
 }
@@ -1344,6 +1352,7 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
     }
 
     // 3. its passes
+    extra_view_now = true;
     const recomp_context saved = *ctx;
     const int32_t was_view = MEM_W(0, (gpr)(int32_t)view_now);
     MEM_W(0, (gpr)(int32_t)view_now) = 0;
@@ -1408,6 +1417,7 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
     list = call_list(rdram, ctx, func_15019CC8, list, 0);
     *ctx = saved;
     MEM_W(0, (gpr)(int32_t)view_now) = was_view;
+    extra_view_now = false;
     // past the list's room (the game's limit, with a margin for its end): the view's commands let go
     bool too_long = (int32_t)((list - frame_list) >> 3) + 64 > (int32_t)MEM_W(0, (gpr)(int32_t)list_most);
     if (too_long) {

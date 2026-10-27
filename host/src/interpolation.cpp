@@ -116,7 +116,10 @@ extern "C" void conker_object_matrix_group_begin(uint8_t* rdram, recomp_context*
     // In split screen (and online, where every camera's pass is still in the frame's list) an object is drawn once for each
     // camera, with a different modelview matrix each time: the camera being drawn is part of the group's ID, so that
     // RT64 pairs each with last frame's draw from the same camera, not with another camera's.
-    const uint32_t camera = (uint32_t)MEM_W(0, (gpr)(int32_t)0x80082FA4) & 3u;   // D_80082FA4: the camera being drawn
+    // (possess34: the possess test's extra camera, drawn as view 1, a camera of its own here: paired with player 1's view, its characters'
+    // parts were drawn between where they are in the two views)
+    const uint32_t camera = conker::possess_test::drawing_extra_view() ? 4u :
+        (uint32_t)MEM_W(0, (gpr)(int32_t)0x80082FA4) & 3u;   // D_80082FA4: the camera being drawn
     put_group(rdram, dl, ((0x80u | camera) << 24) | (kind << 16) | object, object_group_params);
     ctx->r4 = dl;
 }
@@ -135,7 +138,7 @@ extern "C" void conker_shadow_matrix_group_begin(uint8_t* rdram, recomp_context*
     gpr dl = ctx->r4;
     shadow_index = shadow;
     shadow_dl_start = dl;
-    const uint32_t camera = (uint32_t)MEM_W(0, (gpr)(int32_t)0x80082FA4) & 3u;
+    const uint32_t camera = conker::possess_test::drawing_extra_view() ? 4u : (uint32_t)MEM_W(0, (gpr)(int32_t)0x80082FA4) & 3u;
     put_group(rdram, dl, ((0x90u | camera) << 24) | 0x00480000u | shadow, shadow_group_params);
     ctx->r4 = dl;
 }
