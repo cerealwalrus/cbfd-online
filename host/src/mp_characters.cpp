@@ -63,7 +63,7 @@ extern "C" void conker_team_caps(uint8_t* rdram, recomp_context* ctx) {
         return;
     }
     const int humans = humans_now(rdram);
-    if (humans < 3) {
+    if (humans < 2) {   // (0.10.91: two players as well, with the computer players conker_bots_most lets them have)
         return;
     }
     // (0.10.26: all of them on one team, the other then the computer players'; and as many characters as the mode has with fewer
@@ -90,7 +90,7 @@ extern "C" void conker_team_trim(uint8_t* rdram, recomp_context* ctx) {
         return;
     }
     const int humans = humans_now(rdram);
-    if (humans < 3) {
+    if (humans < 2) {   // (0.10.91: two players as well, with the computer players conker_bots_most lets them have)
         return;
     }
     const uint32_t state = (uint32_t)MEM_W(0, (gpr)(int32_t)game_state);
@@ -157,6 +157,7 @@ extern "C" void conker_race_places(uint8_t* rdram, recomp_context* ctx) {
 }
 
 // 0.10.26: online, computer players with three or four players too, as many as the mode has with fewer players.
+// (0.10.91: and with two: as many as with one, the row's largest: two players against eight in the war)
 //
 // The modes with a character select count their computer players on the screen after it (func_151E1214), up to the most characters
 // for the number of players: a row of four (one to four players) at D_800AB74C, the mode's row from D_8008FEE4 (most modes 10, 8, 4, 4;
@@ -167,7 +168,8 @@ extern "C" void conker_bots_most(uint8_t* rdram, recomp_context* ctx) {
         return;
     }
     const int humans = (int)(int32_t)ctx->r5;
-    if (humans < 3) {
+    // (0.10.91: with two players too: the war's row gives two players four computer players, three and four players eight)
+    if (humans < 2) {
         return;
     }
     int most = (int)(int32_t)ctx->r20;
