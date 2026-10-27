@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 
 #include "recomp.h"
 
@@ -29,6 +30,61 @@ extern "C" void conker_mp_characters(uint8_t* rdram) {
     const uint32_t value = (uint32_t)MEM_W(0, (gpr)(int32_t)cheats);
     if ((value & character_cheats) != character_cheats) {
         MEM_W(0, (gpr)(int32_t)cheats) = (int32_t)(value | character_cheats);
+    }
+    // (0.10.93, logging, for the 10 a team: whether the characters past the game's 8 have places of their own) in a multiplayer
+    // match (D_800BE616), each character's place (gObjects, +0x14 x, +0x18 y, +0x1C z) where it first stands and each time it jumps
+    // there (a spawn or a respawn: over 400 units in a frame), and two that spawn within 40 units of each other
+    static bool in_match = false;
+    static float last[16][3];
+    static bool have[16];
+    static int lines = 0;
+    const bool match = MEM_BU(0, (gpr)(int32_t)0x800BE616) != 0;
+    if (match != in_match) {
+        in_match = match;
+        for (int k = 0; k < 16; k++) {
+            have[k] = false;
+        }
+    }
+    if (!match || lines >= 400) {
+        return;
+    }
+    for (int k = 0; k < 16; k++) {
+        const uint32_t object = 0x800CC2D0u + (uint32_t)k * 0x32Cu;
+        if ((int32_t)MEM_W(0, (gpr)(int32_t)object) == 0) {
+            have[k] = false;
+            continue;
+        }
+        float p[3];
+        for (int i = 0; i < 3; i++) {
+            const uint32_t bits = (uint32_t)MEM_W(0x14 + 4 * i, (gpr)(int32_t)object);
+            std::memcpy(&p[i], &bits, 4);
+        }
+        const float dx = p[0] - last[k][0], dy = p[1] - last[k][1], dz = p[2] - last[k][2];
+        const bool jumped = !have[k] || dx * dx + dy * dy + dz * dz > 400.0f * 400.0f;
+        std::memcpy(last[k], p, sizeof(p));
+        have[k] = true;
+        if (!jumped) {
+            continue;
+        }
+        int near = -1;
+        for (int j = 0; j < 16; j++) {
+            if (j == k || !have[j]) {
+                continue;
+            }
+            const float ex = p[0] - last[j][0], ez = p[2] - last[j][2];
+            if (ex * ex + ez * ez < 40.0f * 40.0f) {
+                near = j;
+            }
+        }
+        char line[200];
+        std::snprintf(line, sizeof(line), "[spawn] f=%u character %d (kind %02X) at %.0f %.0f %.0f%s", (unsigned)conker::netsession::frame(), k,
+            (unsigned)MEM_BU(4, (gpr)(int32_t)object), p[0], p[1], p[2], near >= 0 ? " (on top of another)" : "");
+        conker::netsession::log(line);
+        if (near >= 0) {
+            std::snprintf(line, sizeof(line), "[spawn]   within 40 of character %d", near);
+            conker::netsession::log(line);
+        }
+        lines++;
     }
 }
 
