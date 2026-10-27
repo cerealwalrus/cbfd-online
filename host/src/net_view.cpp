@@ -1085,6 +1085,22 @@ namespace {
                 // health bar, to this machine's corner, or away with another camera's)
                 const bool lives_digit = bar && op != 0xF6 && width <= 8.5f && height <= 9.5f && near_left;
                 const bool leave = bar && radar_camera < 0 && (op == 0xF6 || !(width <= 16.5f && height <= 5.5f && near_left)) && !lives_digit;
+                // (0.10.94) the camera whose whole rectangle the piece covers (most of its width and height: 3/4 for a fill, 9/10 for a
+                // picture), or -1
+                int screen_camera = -1;
+                bool stretch = false;
+                if (!menu_open && players >= 2) {
+                    const float share = op == 0xF6 ? 0.75f : 0.9f;
+                    for (int k = 0; k < players; k++) {
+                        const uint32_t record = base + k * camera_size;
+                        const float l = get_float(rdram, record, field_left), r = get_float(rdram, record, field_right);
+                        const float t = get_float(rdram, record, field_top), b = get_float(rdram, record, field_bottom);
+                        if (in_rect(l, t, r, b) && width >= share * (r - l) && height >= share * (b - t)) {
+                            screen_camera = k;
+                            break;
+                        }
+                    }
+                }
                 if (menu_open) {
                     // 0.9.89: the race's pause. The race's HUD is drawn in the HUD's passes (the war's is drawn after the cameras', with
                     // the health bars, and the pause hides it there): with the menu open each camera's lap ("LAP 1/3" and the bricks, at
@@ -1184,6 +1200,17 @@ namespace {
                             bar ? " bar" : "", kind_name);
                         conker::netsession::log(line);
                         race_menu_logged++;
+                    }
+                } else if (screen_camera >= 0) {
+                    // 0.10.94: a piece the size of a camera's whole rectangle (the fade to black as a match ends, drawn over each camera):
+                    // this machine's camera's is stretched over the full view, another camera's hidden. Moved as a corner piece, this
+                    // machine's showed as a black rectangle over part of the view for the fade's first frames.
+                    if (screen_camera == local) {
+                        stretch = true;
+                        kind_name = "camera-sized: stretched to the view";
+                    } else {
+                        hide = true;
+                        kind_name = "camera-sized: other";
                     }
                 } else if (radar_camera >= 0 && race_frame && players >= 3) {
                     // 0.10.25: the race with three or four players. The game draws the track map (and its dots) twice only, at the top right
@@ -1372,6 +1399,23 @@ namespace {
                     // nothing left of it: as wide and as high as a point
                     MEM_W(0, (gpr)(int32_t)address) = (int32_t)((w0 & ~0xFFFFFFu) | (uint32_t)(((uint32_t)xh & 0xFFFu) << 12) | ((uint32_t)yh & 0xFFFu));
                     rects_hidden++;
+                } else if (stretch) {
+                    // (0.10.94) each corner from this machine's camera's rectangle to the full view's, in quarter pixels
+                    const float sx = (right - left) / std::max(1.0f, own_r - own_l), sy = (bottom - top) / std::max(1.0f, own_b - own_t);
+                    const auto map_x = [&](int32_t v) { return (int32_t)std::lround((left + ((float)v * 0.25f - own_l) * sx) * 4.0f); };
+                    const auto map_y = [&](int32_t v) { return (int32_t)std::lround((top + ((float)v * 0.25f - own_t) * sy) * 4.0f); };
+                    const int32_t a0 = std::clamp(map_x(xl), 0, 0xFFF), a1 = std::clamp(map_x(xh), 0, 0xFFF);
+                    const int32_t b0 = std::clamp(map_y(yl), 0, 0xFFF), b1 = std::clamp(map_y(yh), 0, 0xFFF);
+                    MEM_W(0, (gpr)(int32_t)address) = (int32_t)((w0 & ~0xFFFFFFu) | ((uint32_t)a0 << 12) | (uint32_t)b0);
+                    MEM_W(4, (gpr)(int32_t)address) = (int32_t)((w1 & ~0xFFFFFFu) | ((uint32_t)a1 << 12) | (uint32_t)b1);
+                    static int stretch_logged = 0;
+                    if (stretch_logged < 20) {
+                        stretch_logged++;
+                        char line[160];
+                        std::snprintf(line, sizeof(line), "[net view] f=%u camera-sized piece %08X (op %02X, %gx%g) stretched over the view", (unsigned)conker::netsession::frame(),
+                            address, (unsigned)op, width, height);
+                        conker::netsession::log(line);
+                    }
                 } else if (dx != 0 || dy != 0) {
                     const int32_t a0 = xl + dx, a1 = xh + dx, b0 = yl + dy, b1 = yh + dy;
                     // Expand: the side it goes to (1 left, 2 right)

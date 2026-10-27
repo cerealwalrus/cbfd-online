@@ -512,7 +512,7 @@ namespace {
         bool plugged = false;
         uint16_t agreed = 0;
         float ax = 0.0f, ay = 0.0f;
-        const bool r_held = conker::netsession::input(player, &plugged, &agreed, &ax, &ay) && (agreed & 0x0010) != 0;
+        const bool r_held = conker::netsession::input(conker::netsession::port_of_player(player), &plugged, &agreed, &ax, &ay) && (agreed & 0x0010) != 0;   // (0.10.94: the player's controller)
         if (((uint32_t)walker & 0xFF000000u) != 0x80000000u || MEM_H(0x73C, camera) == 0 || !r_held || !swap_state(player)) {
             if (h.holding && local) {
                 conker::netsession::log("[look] the hit's hold ends: the look is over or R let go");
@@ -784,7 +784,7 @@ extern "C" void conker_look_view(uint8_t* rdram, recomp_context* ctx) {
             bool plugged = false;
             uint16_t agreed = 0;
             float ax = 0.0f, ay = 0.0f;
-            const bool r_held = conker::netsession::input(player, &plugged, &agreed, &ax, &ay) && (agreed & 0x0010) != 0;
+            const bool r_held = conker::netsession::input(conker::netsession::port_of_player(player), &plugged, &agreed, &ax, &ay) && (agreed & 0x0010) != 0;   // (0.10.94: the player's controller)
             const gpr knocked = (gpr)(int32_t)MEM_W(0x3D0, camera);
             const bool knocked_ok = ((uint32_t)knocked & 0xFF000000u) == 0x80000000u;
             if (!r_held || stage_now == 1) {
