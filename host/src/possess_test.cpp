@@ -1042,6 +1042,11 @@ namespace {
     struct Kept { uint32_t at, size; std::vector<uint8_t> was; };
     std::vector<Kept> kept_back;                           // put back at the next frame's start
     uint32_t local_views = 0;
+    constexpr uint32_t objects_count = 0x800DBEF0;   // D_800DBEF0: the objects (0xA0 each, at *D_800DBEF4) func_15112A80 sees to
+    constexpr uint32_t objects_list = 0x800DBEF4;
+    constexpr uint32_t object_record = 0xA0;
+    constexpr uint8_t extra_seen_bit = 0x08;         // (possess30) +0x6F: seen by the extra camera
+    bool seen_marked = false;
 
     uint32_t mem_word(uint8_t* rdram, uint32_t address) {
         return (uint32_t)MEM_W(0, (gpr)(int32_t)address);
@@ -1478,6 +1483,18 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
     for (const Kept& k : keep) {
         now.emplace_back(rdram + (k.at - 0x80000000u), rdram + (k.at - 0x80000000u) + k.size);
     }
+    // (possess30) What the view saw (func_15112A80's bit of view 1, in each object's +0x6F): kept once the game's memory is put
+    // back, as view 4's bit (0x08: no view 4 offline). The next frame's func_15113180 updates (animates, makes the model of) only
+    // the objects some view saw (+0x6F & 0xF), func_15113E54 by the 0x40 it sets: the ones only the extra camera saw were left as
+    // they were, and drawn so (or not at all).
+    const uint32_t seen_count = mem_word(rdram, objects_count), seen_list = mem_word(rdram, objects_list);
+    std::vector<uint8_t> seen;
+    if (seen_count > 0 && seen_count < 2048 && in_rdram(seen_list) && in_rdram(seen_list + seen_count * object_record)) {
+        seen.resize(seen_count);
+        for (uint32_t i = 0; i < seen_count; i++) {
+            seen[i] = MEM_BU(0x6F, (gpr)(int32_t)(seen_list + i * object_record)) & 1u;
+        }
+    }
     // (possess26) What the view's passes wrote to the characters that player 1's view didn't (S and E alike there, ours not): kept
     // once the game's memory is put back, as if a 5th view of the game's own had drawn them. The game notes which characters a view
     // has drawn (to animate them, and to draw their models, the next frame): those only the extra camera sees would be dropped.
@@ -1548,6 +1565,20 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
     for (const auto& m : drawn_marks) {
         rdram[m.first] = m.second;
     }
+    if (!seen.empty() && mem_word(rdram, objects_count) == seen_count && mem_word(rdram, objects_list) == seen_list) {
+        uint32_t marked = 0;
+        for (uint32_t i = 0; i < seen_count; i++) {
+            const gpr at = (gpr)(int32_t)(seen_list + i * object_record);
+            const uint8_t was = MEM_BU(0x6F, at);
+            MEM_B(0x6F, at) = (int8_t)(seen[i] ? (was | extra_seen_bit) : (was & ~extra_seen_bit));
+            marked += seen[i];
+        }
+        seen_marked = true;
+        if (local_views < 3 || local_views % 600 == 0) {
+            log("f=%u %u of %u objects seen by the extra camera, marked for the next frame's updates", (unsigned)frames, (unsigned)marked,
+                (unsigned)seen_count);
+        }
+    }
     local_views++;
     if (local_views <= 3 || local_views % 600 == 0) {
         log("f=%u (the frame's list: %u commands of %d)", (unsigned)frames, (unsigned)((list - frame_list) >> 3), (int)MEM_W(0, (gpr)(int32_t)list_most));
@@ -1573,6 +1604,16 @@ extern "C" void conker_possess_view_local_after(uint8_t* rdram, recomp_context* 
 extern "C" void conker_possess_frame_start(uint8_t* rdram) {
     if (!local_view_wanted(rdram)) {
         start_copied = false;
+        if (seen_marked) {
+            seen_marked = false;
+            const uint32_t count = mem_word(rdram, objects_count), list = mem_word(rdram, objects_list);
+            if (count > 0 && count < 2048 && in_rdram(list) && in_rdram(list + count * object_record)) {
+                for (uint32_t i = 0; i < count; i++) {
+                    const gpr at = (gpr)(int32_t)(list + i * object_record);
+                    MEM_B(0x6F, at) = (int8_t)(MEM_BU(0x6F, at) & ~extra_seen_bit);
+                }
+            }
+        }
         return;
     }
     start_copy.assign(rdram, rdram + game_size);
