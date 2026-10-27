@@ -33,6 +33,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <vector>
 
 #include "recomp.h"
 
@@ -850,6 +851,47 @@ namespace {
     }
 }
 
+namespace {
+    // (possess14 diagnostics) the game's memory before and after each of the extra view's passes, its first 2 frames: what they wrote
+    // outside of ours, in the log (to find a table of 4 still written past its end).
+    std::vector<uint32_t> diff_before;
+    uint32_t diff_frames = 0;
+    constexpr uint32_t diff_size = 0x400000;   // the game's first 4 MB (its data and heap)
+
+    void diff_begin(uint8_t* rdram) {
+        if (diff_frames >= 2) {
+            return;
+        }
+        diff_before.assign(reinterpret_cast<const uint32_t*>(rdram), reinterpret_cast<const uint32_t*>(rdram) + diff_size / 4);
+    }
+
+    void diff_end(uint8_t* rdram, int stage) {
+        if (diff_frames >= 2 || diff_before.size() != diff_size / 4) {
+            return;
+        }
+        const uint32_t* now = reinterpret_cast<const uint32_t*>(rdram);
+        int ranges = 0;
+        uint32_t words = 0;
+        for (uint32_t i = 0; i < diff_size / 4; i++) {
+            if (now[i] == diff_before[i]) {
+                continue;
+            }
+            uint32_t j = i;
+            while (j + 1 < diff_size / 4 && (now[j + 1] != diff_before[j + 1] || (j + 2 < diff_size / 4 && now[j + 2] != diff_before[j + 2]))) {
+                j++;
+            }
+            words += j - i + 1;
+            if (ranges++ < 80) {
+                log("  [diff] stage %d: %08X-%08X (%u words) first %08X -> %08X", stage, 0x80000000u + i * 4, 0x80000000u + j * 4 + 3,
+                    j - i + 1, diff_before[i], now[i]);
+            }
+            i = j;
+        }
+        log("  [diff] stage %d: %d ranges, %u words changed", stage, ranges, (unsigned)words);
+        diff_before.clear();
+    }
+}
+
 // stage 0: func_15019130 after its views' func_1510FC34; 1: after their func_15094EA0; 2, 3, 4: func_1501878C after each of its loops
 // over the views ($s1 the address of the display list's end).
 extern "C" void conker_possess_view_pass(uint8_t* rdram, recomp_context* ctx, int stage) {
@@ -861,6 +903,7 @@ extern "C" void conker_possess_view_pass(uint8_t* rdram, recomp_context* ctx, in
     const int32_t was = MEM_W(0, (gpr)(int32_t)view_now);
     MEM_W(0, (gpr)(int32_t)view_now) = extra;
     view_pass_on = true;
+    diff_begin(rdram);
     switch (stage) {
         case 0:
             ctx->r4 = extra;
@@ -905,6 +948,10 @@ extern "C" void conker_possess_view_pass(uint8_t* rdram, recomp_context* ctx, in
     }
     view_pass_on = false;
     MEM_W(0, (gpr)(int32_t)view_now) = was;
+    diff_end(rdram, stage);
+    if (stage == 4) {
+        diff_frames++;
+    }
     *ctx = saved;
     if (stage == 3 && (passes == 1 || passes % 600 == 0)) {
         log("f=%u the extra view drawn (%u times, %u let go for the list's room)", (unsigned)frames, (unsigned)passes, (unsigned)passes_dropped);
