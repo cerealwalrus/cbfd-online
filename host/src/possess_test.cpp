@@ -4,9 +4,9 @@
 //   D-pad Down: the nearest bot among characters 2 to 4 gets player 1's camera and controller and is moved as a person is
 //               (camera-relative stick, R-Look, the C-buttons); player 1 stands without a camera.
 //   Either again: back to player 1.
-//   D-pad Left: a camera the game doesn't count (slot 2 of its cameras, made for character 2, a bot) is made and run each frame,
-//               and the screen shows it; again: the screen shows player 1's again (the camera keeps running).
-//   D-pad Right: controller 1 plays character 2 through that camera (made first if need be), as a second player would; again: back.
+//   D-pad Left: a camera the game doesn't count (slot 5 of its cameras, made for character 5, a bot: a 5th player's) is made and
+//               run each frame, and the screen shows it; again: the screen shows player 1's again (the camera keeps running).
+//   D-pad Right: controller 1 plays character 5 through that camera (made first if need be), as a 5th player would; again: back.
 // The game is told of one player all along: the extra camera is the step towards a 5th player's.
 //
 // How the game drives a bot: its AI (the script commands, func_1509DFC4, e.g. func_1508CAD8 "go to") never touches a controller. It
@@ -74,7 +74,8 @@ namespace {
     constexpr uint32_t matrix_buffer = 0x800BE9C0;   //   D_800BE9C0
     constexpr uint32_t last_player = 0x80082FA0;     // D_80082FA0: players - 1
     constexpr uint32_t extra_buffer = 0x80FD0000;    // ours, past the game's 8 MB: the extra camera's buffer
-    constexpr int extra = 1;                         // the extra camera's slot and character
+    constexpr int extra = 4;                         // the extra camera's slot and character: a 5th player's
+    constexpr uint32_t extra_record = 0x80FD0800;    // ours: the extra player's controller record (the game has 4)
     bool have_args = false;
     uint32_t camera_arg2 = 0, camera_arg3 = 0;       // func_150054C4's last two, as the game made camera 0
     bool extra_wanted = false, extra_ready = false, extra_shown = false, extra_played = false;
@@ -85,8 +86,53 @@ namespace {
         return (uint32_t)MEM_W(0, (gpr)(int32_t)camera_base) + (uint32_t)extra * camera_size;
     }
     uint32_t pad_record(uint8_t* rdram, int k) {
+        if (k >= 4) {
+            return extra_record;
+        }
         const uint32_t table = (uint32_t)MEM_W(0, (gpr)(int32_t)pads);
         return (table >> 24) == 0x80 ? (uint32_t)MEM_W(4 * k, (gpr)(int32_t)table) : 0;
+    }
+
+    // ---- Slot 4 of the game's tables of 4 (one entry per player or camera) ----
+    // The camera code keeps its cameras' data in a dozen tables of 4 at fixed addresses; a 5th camera's entry would be what
+    // comes after each (other tables, other things). Every place that reads or writes one of them by a camera's index
+    // (found from the code: the index from the camera's +0x23D, +0x368, +0x3CC, or the moving character's) has a hook
+    // (conker_slot4) that sends slot 4 to an entry of ours instead.
+    struct Slot4Table { uint32_t base, stride; bool copy_slot0; };
+    constexpr Slot4Table slot4_tables[] = {
+        {0x80089524, 0x4, false},   // 0 A
+        {0x80089534, 0x4, false},   // 1 B
+        {0x80089560, 0x4, false},   // 2 C1
+        {0x80089570, 0x4, false},   // 3 C2
+        {0x80089580, 0x4, false},   // 4 C3
+        {0x800BE710, 0x2, false},   // 5 E: the buttons pressed this frame, per controller
+        {0x800DC028, 0x24, false},  // 6 H
+        {0x800DC0C0, 0x4C, false},  // 7 I (zeroed as the cameras are made, func_1512ABF8)
+        {0x800DC200, 0x20, true},   // 8 J (the cameras' screen areas, func_1512ABF8)
+        {0x800DC2C0, 0x68, false},  // 9 K
+        {0x800DCDE0, 0x18, false},  // 10 L
+        {0x800D2E30, 0x4, false},   // 11 M
+    };
+    constexpr uint32_t slot4_shadow = 0x80FD1000;    // ours: 0x100 a table
+    bool slot4_on = false;
+    uint32_t slot4_moves = 0;
+
+    void slot4_reset(uint8_t* rdram) {
+        int i = 0;
+        for (const Slot4Table& t : slot4_tables) {
+            const uint32_t shadow = slot4_shadow + 0x100u * (uint32_t)i++;
+            for (uint32_t b = 0; b < 0x100; b += 4) {
+                MEM_W(b, (gpr)(int32_t)shadow) = 0;
+            }
+            if (t.copy_slot0) {
+                for (uint32_t b = 0; b < t.stride; b++) {
+                    MEM_B(b, (gpr)(int32_t)shadow) = MEM_B(b, (gpr)(int32_t)t.base);
+                }
+            }
+        }
+        for (uint32_t b = 0; b < 8; b++) {
+            MEM_B(b, (gpr)(int32_t)extra_record) = 0;
+        }
     }
 
     void log(const char* format, ...) {
@@ -225,7 +271,7 @@ namespace {
                 MEM_B(i, (gpr)(int32_t)record) = 0;
             }
         }
-        MEM_H(2 * (uint32_t)extra, (gpr)(int32_t)pressed_table) = 0;
+        MEM_H(0, (gpr)(int32_t)(slot4_shadow + 0x100u * 5)) = 0;
         log("f=%u %s: controller 1 back to player 1 (from character %d on the extra camera)", (unsigned)frames, why, extra);
     }
 
@@ -268,7 +314,7 @@ extern "C" void conker_possess_pad(uint8_t* rdram, recomp_context* ctx) {
             if (in_rdram(record)) {
                 MEM_W(0, (gpr)(int32_t)controller_now) = (int32_t)record;
             }
-            MEM_H(2 * (uint32_t)extra, (gpr)(int32_t)pressed_table) = (int16_t)extra_pressed;
+            MEM_H(0, (gpr)(int32_t)(slot4_shadow + 0x100u * 5)) = (int16_t)extra_pressed;
             const uint32_t brain = brain_of(rdram, extra);
             if (brain != 0) {
                 MEM_B(0x84, (gpr)(int32_t)brain) = 0;
@@ -357,11 +403,11 @@ extern "C" void conker_possess_pad(uint8_t* rdram, recomp_context* ctx) {
             } else if (extra_possible(rdram)) {
                 extra_wanted = extra_shown = true;
                 log("f=%u D-pad Left: the extra camera is made for character %d, and shown", (unsigned)frames, extra);
-                conker::notices::show("Test: an extra camera on the 2nd character (D-pad Left to switch view)", true);
+                conker::notices::show("Test: an extra camera on the 5th character (D-pad Left to switch view)", true);
             } else {
                 log("f=%u D-pad Left: character %d isn't a bot without a camera (or camera 0 not seen made): no extra camera",
                     (unsigned)frames, extra);
-                conker::notices::show("Test: the 2nd character isn't a bot: no extra camera", true);
+                conker::notices::show("Test: the 5th character isn't a bot: no extra camera", true);
             }
         } else {
             if (extra_played) {
@@ -378,10 +424,10 @@ extern "C" void conker_possess_pad(uint8_t* rdram, recomp_context* ctx) {
                     extra_brain_flag = 1;
                 }
                 log("f=%u D-pad Right: controller 1 plays character %d through the extra camera", (unsigned)frames, extra);
-                conker::notices::show("Test: you're playing the 2nd character on the extra camera (D-pad Right to stop)", true);
+                conker::notices::show("Test: you're playing the 5th character on the extra camera (D-pad Right to stop)", true);
             } else {
                 log("f=%u D-pad Right: character %d isn't a bot without a camera: nothing to play", (unsigned)frames, extra);
-                conker::notices::show("Test: the 2nd character isn't a bot: nothing to play", true);
+                conker::notices::show("Test: the 5th character isn't a bot: nothing to play", true);
             }
         }
     }
@@ -478,6 +524,11 @@ extern "C" void conker_possess_cameras_alloc(uint8_t* rdram, recomp_context* ctx
     }
     extra_wanted = extra_ready = extra_shown = extra_played = false;
     have_args = false;
+    if (slot4_on) {
+        log("slot 4: %u accesses sent to ours this match", (unsigned)slot4_moves);
+    }
+    slot4_on = false;
+    slot4_moves = 0;
 }
 
 // func_15005290, 0x15005464: $a0 = D_80082FA0, for the last block (cameras + 1).
@@ -546,14 +597,17 @@ extern "C" void conker_possess_camera_frame(uint8_t* rdram, recomp_context* ctx)
         for (uint32_t i = 0; i < 2 * width && i < 0x4000; i++) {
             MEM_B(i, (gpr)(int32_t)extra_buffer) = 0;
         }
-        MEM_W(4 * (uint32_t)extra, (gpr)(int32_t)camera_buffers) = (int32_t)extra_buffer;
-        MEM_B(extra, (gpr)(int32_t)camera_bytes) = 0;
+        slot4_reset(rdram);
+        slot4_on = true;
+        MEM_B(extra, (gpr)(int32_t)camera_bytes) = 0;   // D_800DBFF4's 5th byte: nothing else names it
         ctx->r4 = (gpr)(int32_t)camera;
         ctx->r5 = (gpr)extra;
         ctx->r6 = (gpr)(int32_t)camera_arg2;
         ctx->r7 = (gpr)(int32_t)camera_arg3;
         func_150054C4(rdram, ctx);
         *ctx = saved;
+        // its buffer (func_150054C4 read it from D_800BE2B0[4], past that table's 4)
+        MEM_W(0x8BC, (gpr)(int32_t)camera) = (int32_t)extra_buffer;
         extra_ready = true;
         log("f=%u the extra camera %08X made for character %d (now its camera: %08X)", (unsigned)frames, (unsigned)camera, extra,
             (unsigned)word(rdram, character(extra) + 0x318));
@@ -608,4 +662,27 @@ extern "C" void conker_possess_view_eye(uint8_t* rdram, recomp_context* ctx) {
 
 int conker::possess_test::played_camera() {
     return extra_played && extra_ready ? extra : 0;
+}
+
+// Before an access to slot4_tables[table] through register *reg with offset off: slot 4 sent to our entry.
+extern "C" void conker_slot4(uint8_t* rdram, gpr* reg, int32_t off, int table) {
+    if (!slot4_on) {
+        return;
+    }
+    const Slot4Table& t = slot4_tables[table];
+    const uint32_t at = (uint32_t)*reg + (uint32_t)off;
+    const uint32_t from = t.base + 4u * t.stride;
+    if (at >= from && at < from + t.stride) {
+        *reg = (gpr)(int32_t)((uint32_t)*reg - from + slot4_shadow + 0x100u * (uint32_t)table);
+        if (slot4_moves++ < 40) {
+            log("slot 4: table %d (%08X x%X) +%X sent to ours", table, (unsigned)t.base, (unsigned)t.stride, (unsigned)(at - from));
+        }
+    }
+}
+
+// Before the camera keeps its controller's record (+0x36C) from the game's 4: the extra camera's is ours.
+extern "C" void conker_slot4_pad(uint8_t* rdram, gpr* value, gpr camera) {
+    if (slot4_on && (uint32_t)camera == extra_camera(rdram)) {
+        *value = (gpr)(int32_t)extra_record;
+    }
 }

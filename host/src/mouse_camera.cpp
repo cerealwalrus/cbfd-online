@@ -214,7 +214,7 @@ namespace {
         float placed_eye[3] = {};
         std::chrono::steady_clock::time_point stick_time;
     };
-    Orbit orbits[max_cameras];
+    Orbit orbits[max_cameras + 1];   // (possess-test: + the extra camera, slot 4)
 
     float read_float(uint8_t* rdram, gpr base, int32_t offset);
 
@@ -227,11 +227,11 @@ namespace {
             return nullptr;
         }
         const uint32_t i = (at - base) / camera_stride;
-        if (at != base + i * camera_stride || i >= (uint32_t)max_cameras) {
+        if (at != base + i * camera_stride || i > (uint32_t)max_cameras) {
             return nullptr;
         }
         // offline: the camera controller 1 plays (player 1's, or the possess test's extra camera)
-        if (!conker::netsession::active() && i != (uint32_t)conker::possess_test::played_camera()) {
+        if (conker::netsession::active() ? i >= (uint32_t)max_cameras : i != (uint32_t)conker::possess_test::played_camera()) {
             return nullptr;
         }
         if (index != nullptr) {

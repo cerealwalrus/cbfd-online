@@ -1441,3 +1441,819 @@ text = "{ extern void conker_possess_camera_frame(uint8_t*, recomp_context*); co
 func = "func_1510FC34"
 before_vram = 0x1510FC74
 text = "{ extern void conker_possess_view_eye(uint8_t*, recomp_context*); conker_possess_view_eye(rdram, ctx); }"
+
+# possess-test: slot 4 of the camera code's tables of 4 sent to ours (host/src/possess_test.cpp, conker_slot4), one hook per place
+# that reads or writes one of them by a camera's (or the moving character's) index; generated from the code.
+[[patches.hook]]
+func = "func_150054C4"
+before_vram = 0x150057DC
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r1, -27356, 0); }"
+[[patches.hook]]
+func = "func_150054C4"
+before_vram = 0x150057F0
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r1, -27340, 1); }"
+[[patches.hook]]
+func = "func_15097798"
+before_vram = 0x15097810
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r3, 0, 11); }"
+[[patches.hook]]
+func = "func_15097798"
+before_vram = 0x15097848
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r3, 0, 11); }"
+[[patches.hook]]
+func = "func_15097798"
+before_vram = 0x1509786C
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r3, 0, 11); }"
+[[patches.hook]]
+func = "func_15097798"
+before_vram = 0x15097890
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r3, 0, 11); }"
+[[patches.hook]]
+func = "func_15097798"
+before_vram = 0x150978B4
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r3, 0, 11); }"
+[[patches.hook]]
+func = "func_15097798"
+before_vram = 0x150978D8
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r3, 0, 11); }"
+[[patches.hook]]
+func = "func_15122C5C"
+before_vram = 0x15122D80
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r9, -6384, 5); }"
+[[patches.hook]]
+func = "func_15125DB4"
+before_vram = 0x15125EB8
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r9, -6384, 5); }"
+[[patches.hook]]
+func = "func_15128CB0"
+before_vram = 0x15128E80
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r15, 0, 0); }"
+[[patches.hook]]
+func = "func_15128CB0"
+before_vram = 0x15128E90
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r8, 0, 1); }"
+[[patches.hook]]
+func = "func_15128CB0"
+before_vram = 0x15128EA8
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r12, 0, 0); }"
+[[patches.hook]]
+func = "func_15128CB0"
+before_vram = 0x15128EC0
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r25, 0, 1); }"
+[[patches.hook]]
+func = "func_15128CB0"
+before_vram = 0x151290F4
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r24, -6384, 5); }"
+[[patches.hook]]
+func = "func_15128CB0"
+before_vram = 0x15129148
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r24, 0, 1); }"
+[[patches.hook]]
+func = "func_15128CB0"
+before_vram = 0x15129154
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r12, 0, 0); }"
+[[patches.hook]]
+func = "func_15128CB0"
+before_vram = 0x15129180
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r12, 0, 0); }"
+[[patches.hook]]
+func = "func_15128CB0"
+before_vram = 0x151291FC
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r15, 0, 0); }"
+[[patches.hook]]
+func = "func_15128CB0"
+before_vram = 0x15129230
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r11, 0, 0); }"
+[[patches.hook]]
+func = "func_15128CB0"
+before_vram = 0x15129240
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r13, 0, 1); }"
+[[patches.hook]]
+func = "func_151298C0"
+before_vram = 0x151298FC
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r25, 2, 6); }"
+[[patches.hook]]
+func = "func_151298C0"
+before_vram = 0x15129910
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r10, 4, 6); }"
+[[patches.hook]]
+func = "func_151298C0"
+before_vram = 0x15129928
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r13, 8, 6); }"
+[[patches.hook]]
+func = "func_15129C30"
+before_vram = 0x15129DFC
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r6, 0, 2); }"
+[[patches.hook]]
+func = "func_15129C30"
+before_vram = 0x15129E04
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r6, 0, 2); }"
+[[patches.hook]]
+func = "func_15129C30"
+before_vram = 0x15129E08
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r6, 0, 2); }"
+[[patches.hook]]
+func = "func_15129C30"
+before_vram = 0x15129E40
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r6, 0, 2); }"
+[[patches.hook]]
+func = "func_15129C30"
+before_vram = 0x15129E48
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r6, 0, 2); }"
+[[patches.hook]]
+func = "func_15129C30"
+before_vram = 0x15129E4C
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r6, 0, 2); }"
+[[patches.hook]]
+func = "func_15129C30"
+before_vram = 0x15129E74
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r6, 0, 2); }"
+[[patches.hook]]
+func = "func_15129C30"
+before_vram = 0x15129E9C
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r4, 0, 4); }"
+[[patches.hook]]
+func = "func_15129C30"
+before_vram = 0x15129EB4
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r4, 0, 4); }"
+[[patches.hook]]
+func = "func_15129C30"
+before_vram = 0x15129EB8
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r4, 0, 4); }"
+[[patches.hook]]
+func = "func_15129C30"
+before_vram = 0x15129EEC
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r4, 0, 4); }"
+[[patches.hook]]
+func = "func_15129C30"
+before_vram = 0x15129F04
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r4, 0, 4); }"
+[[patches.hook]]
+func = "func_15129C30"
+before_vram = 0x15129F08
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r4, 0, 4); }"
+[[patches.hook]]
+func = "func_15129C30"
+before_vram = 0x15129F2C
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r4, 0, 4); }"
+[[patches.hook]]
+func = "func_15129C30"
+before_vram = 0x15129FB0
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 0, 3); }"
+[[patches.hook]]
+func = "func_15129C30"
+before_vram = 0x15129FBC
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 0, 3); }"
+[[patches.hook]]
+func = "func_15129C30"
+before_vram = 0x15129FC4
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 0, 3); }"
+[[patches.hook]]
+func = "func_15129C30"
+before_vram = 0x15129FF8
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 0, 3); }"
+[[patches.hook]]
+func = "func_15129C30"
+before_vram = 0x1512A004
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 0, 3); }"
+[[patches.hook]]
+func = "func_15129C30"
+before_vram = 0x1512A00C
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 0, 3); }"
+[[patches.hook]]
+func = "func_15129C30"
+before_vram = 0x1512A030
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 0, 3); }"
+[[patches.hook]]
+func = "func_15129C30"
+before_vram = 0x1512A034
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 0, 3); }"
+[[patches.hook]]
+func = "func_15129C30"
+before_vram = 0x1512A058
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 0, 3); }"
+[[patches.hook]]
+func = "func_15129C30"
+before_vram = 0x1512A060
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 0, 3); }"
+[[patches.hook]]
+func = "func_15129C30"
+before_vram = 0x1512A064
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 0, 3); }"
+[[patches.hook]]
+func = "func_15129C30"
+before_vram = 0x1512A090
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 0, 3); }"
+[[patches.hook]]
+func = "func_15129C30"
+before_vram = 0x1512A098
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 0, 3); }"
+[[patches.hook]]
+func = "func_15129C30"
+before_vram = 0x1512A09C
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 0, 3); }"
+[[patches.hook]]
+func = "func_15129C30"
+before_vram = 0x1512A0B8
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 0, 3); }"
+[[patches.hook]]
+func = "func_15129C30"
+before_vram = 0x1512A0BC
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 0, 3); }"
+[[patches.hook]]
+func = "func_15129C30"
+before_vram = 0x1512A0D4
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 0, 3); }"
+[[patches.hook]]
+func = "func_15129C30"
+before_vram = 0x1512A0DC
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 0, 3); }"
+[[patches.hook]]
+func = "func_15129C30"
+before_vram = 0x1512A0E4
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 0, 3); }"
+[[patches.hook]]
+func = "func_15129C30"
+before_vram = 0x1512A0EC
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r4, 0, 4); }"
+[[patches.hook]]
+func = "func_15129C30"
+before_vram = 0x1512A0FC
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r4, 0, 4); }"
+[[patches.hook]]
+func = "func_15129C30"
+before_vram = 0x1512A104
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r4, 0, 4); }"
+[[patches.hook]]
+func = "func_15129C30"
+before_vram = 0x1512A10C
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r4, 0, 4); }"
+[[patches.hook]]
+func = "func_15129C30"
+before_vram = 0x1512A114
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r6, 0, 2); }"
+[[patches.hook]]
+func = "func_15129C30"
+before_vram = 0x1512A124
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r6, 0, 2); }"
+[[patches.hook]]
+func = "func_15129C30"
+before_vram = 0x1512A12C
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r6, 0, 2); }"
+[[patches.hook]]
+func = "func_15129C30"
+before_vram = 0x1512A134
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r6, 0, 2); }"
+[[patches.hook]]
+func = "func_1512B1B8"
+before_vram = 0x1512B21C
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 0, 8); }"
+[[patches.hook]]
+func = "func_1512B1B8"
+before_vram = 0x1512B224
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 2, 8); }"
+[[patches.hook]]
+func = "func_1512B630"
+before_vram = 0x1512B668
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, -15868, 8); }"
+[[patches.hook]]
+func = "func_1512B630"
+before_vram = 0x1512B68C
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, -15866, 8); }"
+[[patches.hook]]
+func = "func_1512B730"
+before_vram = 0x1512B760
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r9, 4, 7); }"
+[[patches.hook]]
+func = "func_1512B730"
+before_vram = 0x1512B764
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r9, 16, 7); }"
+[[patches.hook]]
+func = "func_1512B730"
+before_vram = 0x1512B768
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r9, 0, 7); }"
+[[patches.hook]]
+func = "func_1512B730"
+before_vram = 0x1512B774
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r9, 12, 7); }"
+[[patches.hook]]
+func = "func_1512B730"
+before_vram = 0x1512B77C
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r9, 24, 7); }"
+[[patches.hook]]
+func = "func_1512B730"
+before_vram = 0x1512B780
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r9, 36, 7); }"
+[[patches.hook]]
+func = "func_1512B730"
+before_vram = 0x1512B7A0
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r9, 48, 7); }"
+[[patches.hook]]
+func = "func_1512B730"
+before_vram = 0x1512B7C0
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r9, 48, 7); }"
+[[patches.hook]]
+func = "func_1512B730"
+before_vram = 0x1512B7F0
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r24, 48, 7); }"
+[[patches.hook]]
+func = "func_1512B730"
+before_vram = 0x1512B820
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r14, 48, 7); }"
+[[patches.hook]]
+func = "func_1512B730"
+before_vram = 0x1512B858
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r15, -15872, 8); }"
+[[patches.hook]]
+func = "func_1512B730"
+before_vram = 0x1512B8E8
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r9, 16, 7); }"
+[[patches.hook]]
+func = "func_1512B730"
+before_vram = 0x1512B8EC
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r9, 4, 7); }"
+[[patches.hook]]
+func = "func_1512B730"
+before_vram = 0x1512B90C
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r9, 48, 7); }"
+[[patches.hook]]
+func = "func_1512B730"
+before_vram = 0x1512B920
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r9, 48, 7); }"
+[[patches.hook]]
+func = "func_1512B730"
+before_vram = 0x1512B960
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r9, 0, 7); }"
+[[patches.hook]]
+func = "func_1512B730"
+before_vram = 0x1512B970
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r9, 4, 7); }"
+[[patches.hook]]
+func = "func_1512B730"
+before_vram = 0x1512B978
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r9, 4, 7); }"
+[[patches.hook]]
+func = "func_1512B730"
+before_vram = 0x1512B998
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r9, 4, 7); }"
+[[patches.hook]]
+func = "func_1512B730"
+before_vram = 0x1512B9BC
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r9, 16, 7); }"
+[[patches.hook]]
+func = "func_1512B730"
+before_vram = 0x1512B9C4
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r9, 16, 7); }"
+[[patches.hook]]
+func = "func_1512B730"
+before_vram = 0x1512B9E4
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r9, 16, 7); }"
+[[patches.hook]]
+func = "func_1512C490"
+before_vram = 0x1512CCEC
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 12, 10); }"
+[[patches.hook]]
+func = "func_1512C490"
+before_vram = 0x1512CCF0
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 16, 10); }"
+[[patches.hook]]
+func = "func_1512C490"
+before_vram = 0x1512CCF4
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 20, 10); }"
+[[patches.hook]]
+func = "func_1512C490"
+before_vram = 0x1512CD18
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 0, 10); }"
+[[patches.hook]]
+func = "func_1512C490"
+before_vram = 0x1512CD1C
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 4, 10); }"
+[[patches.hook]]
+func = "func_1512C490"
+before_vram = 0x1512CD20
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 8, 10); }"
+[[patches.hook]]
+func = "func_1512C490"
+before_vram = 0x1512CEE4
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 12, 10); }"
+[[patches.hook]]
+func = "func_1512C490"
+before_vram = 0x1512CF00
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 16, 10); }"
+[[patches.hook]]
+func = "func_1512C490"
+before_vram = 0x1512CF14
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r1, -15584, 9); }"
+[[patches.hook]]
+func = "func_1512C490"
+before_vram = 0x1512CF34
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 20, 10); }"
+[[patches.hook]]
+func = "func_1512C490"
+before_vram = 0x1512CFF0
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r3, 84, 9); }"
+[[patches.hook]]
+func = "func_1512C490"
+before_vram = 0x1512CFF4
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 0, 10); }"
+[[patches.hook]]
+func = "func_1512C490"
+before_vram = 0x1512CFF8
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 4, 10); }"
+[[patches.hook]]
+func = "func_1512C490"
+before_vram = 0x1512D004
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r3, 88, 9); }"
+[[patches.hook]]
+func = "func_1512C490"
+before_vram = 0x1512D010
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 8, 10); }"
+[[patches.hook]]
+func = "func_1512C490"
+before_vram = 0x1512D014
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r3, 92, 9); }"
+[[patches.hook]]
+func = "func_1512D6F0"
+before_vram = 0x1512D724
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 80, 9); }"
+[[patches.hook]]
+func = "func_1512D6F0"
+before_vram = 0x1512D728
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 84, 9); }"
+[[patches.hook]]
+func = "func_1512D6F0"
+before_vram = 0x1512D72C
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 88, 9); }"
+[[patches.hook]]
+func = "func_1512D6F0"
+before_vram = 0x1512D730
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 92, 9); }"
+[[patches.hook]]
+func = "func_1512D6F0"
+before_vram = 0x1512D734
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 96, 9); }"
+[[patches.hook]]
+func = "func_1512D6F0"
+before_vram = 0x1512D738
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 44, 9); }"
+[[patches.hook]]
+func = "func_1512D6F0"
+before_vram = 0x1512D73C
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 40, 9); }"
+[[patches.hook]]
+func = "func_1512D748"
+before_vram = 0x1512D7B4
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 0, 9); }"
+[[patches.hook]]
+func = "func_1512D748"
+before_vram = 0x1512D7D8
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 4, 9); }"
+[[patches.hook]]
+func = "func_1512D748"
+before_vram = 0x1512D7FC
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 8, 9); }"
+[[patches.hook]]
+func = "func_1512D748"
+before_vram = 0x1512D820
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 12, 9); }"
+[[patches.hook]]
+func = "func_1512D748"
+before_vram = 0x1512D844
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 16, 9); }"
+[[patches.hook]]
+func = "func_1512D748"
+before_vram = 0x1512D868
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 20, 9); }"
+[[patches.hook]]
+func = "func_1512D748"
+before_vram = 0x1512D88C
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 24, 9); }"
+[[patches.hook]]
+func = "func_1512D748"
+before_vram = 0x1512D8B0
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 28, 9); }"
+[[patches.hook]]
+func = "func_1512D748"
+before_vram = 0x1512D8D4
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 32, 9); }"
+[[patches.hook]]
+func = "func_1512D748"
+before_vram = 0x1512D8F8
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 16, 9); }"
+[[patches.hook]]
+func = "func_1512D748"
+before_vram = 0x1512D8FC
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 20, 9); }"
+[[patches.hook]]
+func = "func_1512D748"
+before_vram = 0x1512D900
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 24, 9); }"
+[[patches.hook]]
+func = "func_1512D748"
+before_vram = 0x1512D904
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 32, 9); }"
+[[patches.hook]]
+func = "func_1512D748"
+before_vram = 0x1512D90C
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 28, 9); }"
+[[patches.hook]]
+func = "func_1512D748"
+before_vram = 0x1512D910
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 36, 9); }"
+[[patches.hook]]
+func = "func_1512D748"
+before_vram = 0x1512D920
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 52, 9); }"
+[[patches.hook]]
+func = "func_1512D748"
+before_vram = 0x1512D928
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 56, 9); }"
+[[patches.hook]]
+func = "func_1512D748"
+before_vram = 0x1512D92C
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 48, 9); }"
+[[patches.hook]]
+func = "func_1512D748"
+before_vram = 0x1512D930
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 40, 9); }"
+[[patches.hook]]
+func = "func_1512D748"
+before_vram = 0x1512D938
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 44, 9); }"
+[[patches.hook]]
+func = "func_1512D748"
+before_vram = 0x1512D93C
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 60, 9); }"
+[[patches.hook]]
+func = "func_1512D748"
+before_vram = 0x1512D940
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 36, 9); }"
+[[patches.hook]]
+func = "func_1512D748"
+before_vram = 0x1512D944
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 64, 9); }"
+[[patches.hook]]
+func = "func_1512D748"
+before_vram = 0x1512D958
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 72, 9); }"
+[[patches.hook]]
+func = "func_1512D748"
+before_vram = 0x1512D960
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 68, 9); }"
+[[patches.hook]]
+func = "func_1512D748"
+before_vram = 0x1512D968
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 80, 9); }"
+[[patches.hook]]
+func = "func_1512D748"
+before_vram = 0x1512D96C
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 100, 9); }"
+[[patches.hook]]
+func = "func_1512D748"
+before_vram = 0x1512D974
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 76, 9); }"
+[[patches.hook]]
+func = "func_1512D980"
+before_vram = 0x1512D9E8
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r16, 40, 9); }"
+[[patches.hook]]
+func = "func_1512D980"
+before_vram = 0x1512D9FC
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r16, 80, 9); }"
+[[patches.hook]]
+func = "func_1512D980"
+before_vram = 0x1512DA28
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r16, 0, 9); }"
+[[patches.hook]]
+func = "func_1512D980"
+before_vram = 0x1512DA64
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r16, 44, 9); }"
+[[patches.hook]]
+func = "func_1512D980"
+before_vram = 0x1512DA6C
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r16, 40, 9); }"
+[[patches.hook]]
+func = "func_1512D980"
+before_vram = 0x1512DA74
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r16, 4, 9); }"
+[[patches.hook]]
+func = "func_1512D980"
+before_vram = 0x1512DA7C
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r16, 84, 9); }"
+[[patches.hook]]
+func = "func_1512D980"
+before_vram = 0x1512DABC
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r16, 44, 9); }"
+[[patches.hook]]
+func = "func_1512D980"
+before_vram = 0x1512DAC4
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r16, 40, 9); }"
+[[patches.hook]]
+func = "func_1512D980"
+before_vram = 0x1512DACC
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r16, 8, 9); }"
+[[patches.hook]]
+func = "func_1512D980"
+before_vram = 0x1512DAD4
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r16, 88, 9); }"
+[[patches.hook]]
+func = "func_1512D980"
+before_vram = 0x1512DB14
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r16, 44, 9); }"
+[[patches.hook]]
+func = "func_1512D980"
+before_vram = 0x1512DB1C
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r16, 40, 9); }"
+[[patches.hook]]
+func = "func_1512D980"
+before_vram = 0x1512DB24
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r16, 12, 9); }"
+[[patches.hook]]
+func = "func_1512D980"
+before_vram = 0x1512DB2C
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r16, 92, 9); }"
+[[patches.hook]]
+func = "func_1512D980"
+before_vram = 0x1512DB6C
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r16, 44, 9); }"
+[[patches.hook]]
+func = "func_1512D980"
+before_vram = 0x1512DB70
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r16, 60, 9); }"
+[[patches.hook]]
+func = "func_1512D980"
+before_vram = 0x1512DB74
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r16, 40, 9); }"
+[[patches.hook]]
+func = "func_1512D980"
+before_vram = 0x1512DB88
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r16, 96, 9); }"
+[[patches.hook]]
+func = "func_1512D980"
+before_vram = 0x1512DBA0
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r16, 80, 9); }"
+[[patches.hook]]
+func = "func_1512D980"
+before_vram = 0x1512DBA8
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r16, 48, 9); }"
+[[patches.hook]]
+func = "func_1512D980"
+before_vram = 0x1512DBB8
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r16, 52, 9); }"
+[[patches.hook]]
+func = "func_1512D980"
+before_vram = 0x1512DBC0
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r16, 80, 9); }"
+[[patches.hook]]
+func = "func_1512D980"
+before_vram = 0x1512DBC4
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r16, 64, 9); }"
+[[patches.hook]]
+func = "func_1512D980"
+before_vram = 0x1512DBCC
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r16, 100, 9); }"
+[[patches.hook]]
+func = "func_1512D980"
+before_vram = 0x1512DBD4
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r16, 64, 9); }"
+[[patches.hook]]
+func = "func_1512D980"
+before_vram = 0x1512DBDC
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r16, 80, 9); }"
+[[patches.hook]]
+func = "func_1512D980"
+before_vram = 0x1512DBE0
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r16, 44, 9); }"
+[[patches.hook]]
+func = "func_1512D980"
+before_vram = 0x1512DBE4
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r16, 64, 9); }"
+[[patches.hook]]
+func = "func_1512D980"
+before_vram = 0x1512DBEC
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r16, 40, 9); }"
+[[patches.hook]]
+func = "func_1512D980"
+before_vram = 0x1512DBF8
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r16, 44, 9); }"
+[[patches.hook]]
+func = "func_1512D980"
+before_vram = 0x1512DC00
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r16, 52, 9); }"
+[[patches.hook]]
+func = "func_1512D980"
+before_vram = 0x1512DC0C
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r16, 56, 9); }"
+[[patches.hook]]
+func = "func_1512D980"
+before_vram = 0x1512DC14
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r16, 80, 9); }"
+[[patches.hook]]
+func = "func_1512D980"
+before_vram = 0x1512DC24
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r16, 100, 9); }"
+[[patches.hook]]
+func = "func_1512D980"
+before_vram = 0x1512DC34
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r16, 80, 9); }"
+[[patches.hook]]
+func = "func_1512D980"
+before_vram = 0x1512DC38
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r16, 44, 9); }"
+[[patches.hook]]
+func = "func_1512D980"
+before_vram = 0x1512DC44
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r16, 68, 9); }"
+[[patches.hook]]
+func = "func_1512D980"
+before_vram = 0x1512DC48
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r16, 40, 9); }"
+[[patches.hook]]
+func = "func_1512D980"
+before_vram = 0x1512DC54
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r16, 44, 9); }"
+[[patches.hook]]
+func = "func_1512D980"
+before_vram = 0x1512DC5C
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r16, 56, 9); }"
+[[patches.hook]]
+func = "func_1512D980"
+before_vram = 0x1512DC70
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r16, 80, 9); }"
+[[patches.hook]]
+func = "func_1512D980"
+before_vram = 0x1512DC80
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r16, 100, 9); }"
+[[patches.hook]]
+func = "func_1512D980"
+before_vram = 0x1512DC90
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r16, 80, 9); }"
+[[patches.hook]]
+func = "func_1512D980"
+before_vram = 0x1512DC94
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r16, 40, 9); }"
+[[patches.hook]]
+func = "func_1512D980"
+before_vram = 0x1512DCAC
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r16, 80, 9); }"
+[[patches.hook]]
+func = "func_1512D980"
+before_vram = 0x1512DCBC
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r16, 100, 9); }"
+[[patches.hook]]
+func = "func_1512D980"
+before_vram = 0x1512DCCC
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r16, 80, 9); }"
+[[patches.hook]]
+func = "func_1512D980"
+before_vram = 0x1512DCD0
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r16, 44, 9); }"
+[[patches.hook]]
+func = "func_1512D980"
+before_vram = 0x1512DCDC
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r16, 76, 9); }"
+[[patches.hook]]
+func = "func_1512D980"
+before_vram = 0x1512DCE0
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r16, 40, 9); }"
+[[patches.hook]]
+func = "func_1512D980"
+before_vram = 0x1512DCEC
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r16, 44, 9); }"
+[[patches.hook]]
+func = "func_1512D980"
+before_vram = 0x1512DCFC
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r16, 40, 9); }"
+[[patches.hook]]
+func = "func_1512D980"
+before_vram = 0x1512DD28
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r16, 40, 9); }"
+[[patches.hook]]
+func = "func_1512D980"
+before_vram = 0x1512DD30
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r16, 80, 9); }"
+[[patches.hook]]
+func = "func_1504CB98"
+before_vram = 0x1504CBD8
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r24, 0, 5); }"
+[[patches.hook]]
+func = "func_1504CB98"
+before_vram = 0x1504CD44
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r12, 0, 5); }"
+
+# possess-test: the camera about to keep its controller's record (+0x36C) from the game's 4 (conker_slot4_pad).
+[[patches.hook]]
+func = "func_15122C5C"
+before_vram = 0x15122D7C
+text = "{ extern void conker_slot4_pad(uint8_t*, gpr*, gpr); conker_slot4_pad(rdram, &ctx->r15, ctx->r16); }"
+
+[[patches.hook]]
+func = "func_15128CB0"
+before_vram = 0x151290F0
+text = "{ extern void conker_slot4_pad(uint8_t*, gpr*, gpr); conker_slot4_pad(rdram, &ctx->r13, ctx->r17); }"
+
+[[patches.hook]]
+func = "func_15128CB0"
+before_vram = 0x151293C4
+text = "{ extern void conker_slot4_pad(uint8_t*, gpr*, gpr); conker_slot4_pad(rdram, &ctx->r11, ctx->r17); }"
+
