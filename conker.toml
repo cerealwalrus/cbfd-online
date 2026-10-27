@@ -1392,3 +1392,10 @@ text = "{ extern void conker_possess_pad(uint8_t*, recomp_context*); conker_poss
 func = "func_1504CB98"
 before_vram = 0x1504CC9C
 text = "{ extern void conker_possess_brain(uint8_t*, recomp_context*); conker_possess_brain(rdram, ctx); }"
+
+# possess-test: walking, func_1504CB98 is about to pick the AI's way and speed (+0x78, +0x44) over the stick's for an AI-driven
+# character ($t5 = brain + 0x84).
+[[patches.hook]]
+func = "func_1504CB98"
+before_vram = 0x1504E0A4
+text = "{ extern void conker_possess_move(uint8_t*, recomp_context*); conker_possess_move(rdram, ctx); }"

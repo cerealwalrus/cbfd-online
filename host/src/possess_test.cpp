@@ -10,6 +10,8 @@
 //     controller 1 and gives player 1 an empty one (Start kept, for the pause) while a bot is driven;
 //   - conker_possess_brain (func_1504CB98, 0x1504CC9C, about to copy the brain into the controller): for the driven bot, puts
 //     controller 1 into its brain first.
+//   - conker_possess_move (func_1504CB98, 0x1504E0A4): walking, an AI-driven character goes the way and speed its path finder put
+//     in the character (+0x78, +0x44), not the stick's; for the driven bot $t5 (brain + 0x84) reads 0, so the stick's are used.
 // Writes conker_possess.log next to the game.
 
 #include <cmath>
@@ -177,5 +179,17 @@ extern "C" void conker_possess_brain(uint8_t* rdram, recomp_context* ctx) {
     if (buttons != last_buttons) {
         last_buttons = buttons;
         log("f=%u character %d: buttons %04X stick %d,%d", (unsigned)frames, target, (unsigned)buttons, (int)stick_x, (int)stick_y);
+    }
+}
+
+extern "C" void conker_possess_move(uint8_t* rdram, recomp_context* ctx) {
+    if (!driving || target < 0 || conker::netsession::active() || (uint32_t)ctx->r16 != character(target)) {
+        return;
+    }
+    ctx->r13 = 0;
+    static uint32_t logged = 0;
+    if (logged < 3) {
+        logged++;
+        log("f=%u character %d walks by the stick, not its path finder", (unsigned)frames, target);
     }
 }
