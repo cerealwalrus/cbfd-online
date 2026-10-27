@@ -1380,11 +1380,11 @@ before_vram = 0x151E21C0
 text = "{ extern void conker_team_sound(uint8_t*, recomp_context*); conker_team_sound(rdram, ctx); }"
 
 
-# possess-test branch only: offline, D-pad Up hands controller 1 to the nearest bot (host/src/possess_test.cpp). func_1504A730 has
-# just picked the character's ($s0, index $s1) controller (D_800CC284).
+# possess-test branch only: offline, D-pad Up / Down hand controller 1 (and player 1's camera) to a bot (host/src/possess_test.cpp).
+# func_1504A730 has picked the character's ($s0, index $s1) controller (D_800CC284), or not for one past D_8008FD8C; $v0 is its camera.
 [[patches.hook]]
 func = "func_1504A730"
-before_vram = 0x1504A970
+before_vram = 0x1504A974
 text = "{ extern void conker_possess_pad(uint8_t*, recomp_context*); conker_possess_pad(rdram, ctx); }"
 
 # possess-test: func_1504CB98 is about to copy an AI-driven character's brain (stick, buttons) into its controller.
