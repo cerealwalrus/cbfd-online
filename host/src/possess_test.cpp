@@ -980,13 +980,19 @@ extern "C" void conker_possess_view_alloc(uint8_t* rdram, recomp_context* ctx) {
     }
 }
 
+extern "C" void conker_possess_frame_start(uint8_t* rdram);
+
 // (possess15 diagnostics) at the start of the game's loop over its views for each stage: its memory then, to set what its own views'
 // passes write against what the extra view's do.
 extern "C" void conker_possess_diff_game(uint8_t* rdram, recomp_context* ctx, int stage) {
     (void)ctx;
-    (void)stage;
     if (extra_view_drawn(rdram)) {
         diff_begin(rdram);
+    }
+    // (possess19) the game's memory before its views' passes (func_15019130, before func_1510FC34's loop): the extra camera's view is
+    // drawn from it, as the game draws its own views (nothing of theirs drawn yet this frame)
+    if (stage == 0) {
+        conker_possess_frame_start(rdram);
     }
 }
 
@@ -1004,10 +1010,14 @@ extern "C" void conker_possess_diff_game(uint8_t* rdram, recomp_context* ctx, in
 //      at the start of the next frame, once the frame has been drawn.
 // So the game's memory is the same as on any other machine, and the new commands, drawn last, are the extra camera's view.
 extern "C" void func_15094EA0(uint8_t* rdram, recomp_context* ctx);
+extern "C" void func_1510F800(uint8_t* rdram, recomp_context* ctx);
+extern "C" void func_1510B690(uint8_t* rdram, recomp_context* ctx);
 
 namespace {
     constexpr uint32_t game_size = 0x400000;
-    std::vector<uint8_t> local_copy;                       // the game's memory before the view
+    std::vector<uint8_t> local_copy;                       // the game's memory before the view (as the frame ended)
+    std::vector<uint8_t> start_copy;                       // (possess19) and before the frame's views were drawn
+    bool start_copied = false;
     struct Kept { uint32_t at, size; std::vector<uint8_t> was; };
     std::vector<Kept> kept_back;                           // put back at the next frame's start
     uint32_t local_views = 0;
@@ -1117,8 +1127,29 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
         return;
     }
     put_kept_back(rdram);   // (none should be left; to be safe)
+    if (!start_copied) {
+        return;
+    }
+    start_copied = false;
     local_copy.assign(rdram, rdram + game_size);
     const uint32_t list_before = mem_word(rdram, head);
+    const uint32_t frame_list = mem_word(rdram, list_start + 4 * (MEM_BU(0, (gpr)(int32_t)matrix_buffer) & 1u));
+    // the room left in the frame's list (the game's own limit, func_1501878C's: its commands so far, and a margin for its end)
+    if (!in_rdram(frame_list) || list_before < frame_list || (int32_t)((list_before - frame_list) >> 3) + 64 > (int32_t)MEM_W(0, (gpr)(int32_t)list_most)) {
+        static uint32_t told = 0;
+        if (told++ < 10) {
+            log("f=%u no room in the frame's list for the extra camera's view (%u commands of %d)", (unsigned)frames,
+                (unsigned)((list_before - frame_list) >> 3), (int)MEM_W(0, (gpr)(int32_t)list_most));
+        }
+        return;
+    }
+    // the game's memory as before its views were drawn, but for the frame's list (its commands so far) and the list's end
+    {
+        const uint32_t a = frame_list - 0x80000000u, b = list_before - 0x80000000u;
+        std::memcpy(rdram, start_copy.data(), a);
+        std::memcpy(rdram + b, start_copy.data() + b, game_size - b);
+        MEM_W(0, (gpr)(int32_t)head) = (int32_t)list_before;
+    }
 
     // 2. view 1 the extra camera's
     std::memcpy(rdram + (base - 0x80000000u), rdram + (base + (uint32_t)extra * camera_size - 0x80000000u), camera_size);
@@ -1131,7 +1162,12 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
     const int32_t was_view = MEM_W(0, (gpr)(int32_t)view_now);
     MEM_W(0, (gpr)(int32_t)view_now) = 0;
     ctx->r4 = 0;
+    func_1510F800(rdram, ctx);
+    *ctx = saved;
+    ctx->r4 = 0;
     func_1510FC34(rdram, ctx);
+    *ctx = saved;
+    func_1510B690(rdram, ctx);
     *ctx = saved;
     ctx->r4 = 0;
     func_15094EA0(rdram, ctx);
@@ -1146,6 +1182,16 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
     list = call_list(rdram, ctx, func_150195A0, list, 0);
     *ctx = saved;
     MEM_W(0, (gpr)(int32_t)view_now) = was_view;
+    // past the list's room (the game's limit, with a margin for its end): the view's commands let go
+    bool too_long = (int32_t)((list - frame_list) >> 3) + 64 > (int32_t)MEM_W(0, (gpr)(int32_t)list_most);
+    if (too_long) {
+        static uint32_t told = 0;
+        if (told++ < 10) {
+            log("f=%u the extra camera's view let go: the frame's list would have %u commands of %d", (unsigned)frames,
+                (unsigned)((list - frame_list) >> 3), (int)MEM_W(0, (gpr)(int32_t)list_most));
+        }
+        list = list_before;
+    }
 
     // 4. what the new commands draw from: what the view's passes changed is copied to ours and the commands pointed at the copies (a
     // command of the new ones, directly; one of a list they call, through the segment a new command set); what can't be is kept
@@ -1247,6 +1293,7 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
     kept_back = std::move(keep);
     local_views++;
     if (local_views <= 3 || local_views % 600 == 0) {
+        log("f=%u (the frame's list: %u commands of %d)", (unsigned)frames, (unsigned)((list - frame_list) >> 3), (int)MEM_W(0, (gpr)(int32_t)list_most));
         log("f=%u the extra camera's view drawn here (%u times): %u commands (%u walked), %u pieces copied to ours, %u segments moved, %u kept "
             "for the frame (%u bytes of copies)", (unsigned)frames, (unsigned)local_views, (unsigned)((list - list_before) / 8),
             (unsigned)walker.commands, (unsigned)relocated, (unsigned)by_segment, (unsigned)kept_back.size(), (unsigned)copies_used);
@@ -1259,4 +1306,14 @@ extern "C" void conker_possess_view_local_after(uint8_t* rdram, recomp_context* 
     if (!kept_back.empty()) {
         put_kept_back(rdram);
     }
+}
+
+// (possess19) func_15019130 before its views' func_1510FC34 loop: a copy of the game's memory, to draw the extra camera's view from.
+extern "C" void conker_possess_frame_start(uint8_t* rdram) {
+    if (!local_view_wanted(rdram)) {
+        start_copied = false;
+        return;
+    }
+    start_copy.assign(rdram, rdram + game_size);
+    start_copied = true;
 }
