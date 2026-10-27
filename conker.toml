@@ -2926,3 +2926,24 @@ text = "{ extern void conker_possess_view_alloc(uint8_t*, recomp_context*); conk
 func = "func_15000AD0"
 before_vram = 0x150012C8
 text = "{ extern void conker_possess_view_alloc(uint8_t*, recomp_context*); conker_possess_view_alloc(rdram, ctx); }"
+
+# possess-test (diagnostics): the start of the game's own loops over its views, for the passes the extra view repeats.
+[[patches.hook]]
+func = "func_15019130"
+before_vram = 0x15019228
+text = "{ extern void conker_possess_diff_game(uint8_t*, recomp_context*, int); conker_possess_diff_game(rdram, ctx, 0); }"
+
+[[patches.hook]]
+func = "func_1501878C"
+before_vram = 0x15018938
+text = "{ extern void conker_possess_diff_game(uint8_t*, recomp_context*, int); conker_possess_diff_game(rdram, ctx, 2); }"
+
+[[patches.hook]]
+func = "func_1501878C"
+before_vram = 0x15018AC4
+text = "{ extern void conker_possess_diff_game(uint8_t*, recomp_context*, int); conker_possess_diff_game(rdram, ctx, 3); }"
+
+[[patches.hook]]
+func = "func_1501878C"
+before_vram = 0x15018B70
+text = "{ extern void conker_possess_diff_game(uint8_t*, recomp_context*, int); conker_possess_diff_game(rdram, ctx, 4); }"

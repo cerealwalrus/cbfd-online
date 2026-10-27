@@ -881,7 +881,7 @@ namespace {
                 j++;
             }
             words += j - i + 1;
-            if (ranges++ < 80) {
+            if (ranges++ < 150) {
                 log("  [diff] stage %d: %08X-%08X (%u words) first %08X -> %08X", stage, 0x80000000u + i * 4, 0x80000000u + j * 4 + 3,
                     j - i + 1, diff_before[i], now[i]);
             }
@@ -898,6 +898,7 @@ extern "C" void conker_possess_view_pass(uint8_t* rdram, recomp_context* ctx, in
     if (!extra_view_drawn(rdram)) {
         return;
     }
+    diff_end(rdram, 10 + stage);   // the game's own pass for its views (begun at the loop's start, conker_possess_diff_game)
     const recomp_context saved = *ctx;
     const uint32_t head = (uint32_t)ctx->r17;
     const int32_t was = MEM_W(0, (gpr)(int32_t)view_now);
@@ -963,5 +964,15 @@ extern "C" void conker_possess_view_alloc(uint8_t* rdram, recomp_context* ctx) {
     (void)rdram;
     if (!conker::netsession::active() && (int32_t)ctx->r4 < 5 * 0x80) {
         ctx->r4 = 5 * 0x80;
+    }
+}
+
+// (possess15 diagnostics) at the start of the game's loop over its views for each stage: its memory then, to set what its own views'
+// passes write against what the extra view's do.
+extern "C" void conker_possess_diff_game(uint8_t* rdram, recomp_context* ctx, int stage) {
+    (void)ctx;
+    (void)stage;
+    if (extra_view_drawn(rdram)) {
+        diff_begin(rdram);
     }
 }
