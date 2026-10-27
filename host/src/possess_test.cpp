@@ -83,6 +83,7 @@ namespace {
     bool have_args = false;
     uint32_t camera_arg2 = 0, camera_arg3 = 0;       // func_150054C4's last two, as the game made camera 0
     bool extra_wanted = false, extra_ready = false, extra_shown = false, extra_played = false;
+    bool use_game_poses = false;   // (possess38 experiment) D-pad Up while playing the extra character
     uint32_t extra_brain_flag = 1;
     uint16_t extra_pressed = 0;
 
@@ -453,6 +454,12 @@ extern "C" void conker_possess_pad(uint8_t* rdram, recomp_context* ctx) {
     pressed = (uint16_t)MEM_HU(0, (gpr)(int32_t)pressed_table);
     constexpr uint16_t dpad = button_dpad_up | button_dpad_down | button_dpad_left | button_dpad_right;
 
+    if (extra_played && (pressed & button_dpad_up) != 0) {
+        use_game_poses = !use_game_poses;
+        log("f=%u D-pad Up: (experiment) the extra camera's view draws the characters with %s", (unsigned)frames,
+            use_game_poses ? "the game's own poses" : "the poses it makes itself");
+        conker::notices::show(use_game_poses ? "Test: experiment ON (the game's own poses)" : "Test: experiment OFF (the view's own poses)", true);
+    }
     const uint16_t toggles = (uint16_t)(pressed & (button_dpad_up | button_dpad_down));
     if (toggles != 0 && !extra_played) {
         if (mode != off) {
@@ -811,18 +818,28 @@ namespace {
     // (possess37 diagnostics) the objects drawn in the extra camera's view this frame: their kind, index and commands
     struct Drawn { uint32_t kind, object, start, end; };
     std::vector<Drawn> drawn_now;
+    std::vector<Drawn> game_drawn;   // (possess38) the extra character drawn by the game's own views this frame (player 1's)
+    int extra_object = -1;
 }
 
-void conker::possess_test::note_drawn(uint32_t kind, uint32_t object, uint32_t start) {
-    if (drawn_now.size() < 400) {
-        drawn_now.push_back({ kind, object, start, 0 });
+void conker::possess_test::note_drawn(uint32_t kind, uint32_t object, uint32_t start, bool extra_view) {
+    std::vector<Drawn>& to = extra_view ? drawn_now : game_drawn;
+    if (to.size() >= 400) {
+        return;
     }
+    // (the game's views: only the extra character kept; the others' as placeholders while open, so ends pair with their starts)
+    const bool placeholder = !extra_view && (int)object != extra_object;
+    to.push_back({ placeholder ? 0xFFFFFFFFu : kind, object, start, 0 });
 }
 
-void conker::possess_test::note_drawn_end(uint32_t end) {
-    for (auto it = drawn_now.rbegin(); it != drawn_now.rend(); ++it) {
-        if (it->end == 0) {
-            it->end = end;
+void conker::possess_test::note_drawn_end(uint32_t end, bool extra_view) {
+    std::vector<Drawn>& in = extra_view ? drawn_now : game_drawn;
+    for (size_t i = in.size(); i-- > 0;) {
+        if (in[i].end == 0) {
+            in[i].end = end;
+            if (in[i].kind == 0xFFFFFFFFu) {
+                in.erase(in.begin() + (std::ptrdiff_t)i);
+            }
             break;
         }
     }
@@ -1551,14 +1568,26 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
             need[b] = 1;
         }
     }
+    // (possess38 experiment, D-pad Up while playing the extra character) the characters' poses (their bones' matrices, from the pool
+    // at D_800C3E8C, D_800C3E7C of 0x40) left as the game made them, not the view's
+    const uint32_t pose_pool = mem_word(rdram, 0x800C3E8C), pose_pool_end = pose_pool + 0x40u * (uint32_t)MEM_HU(0, (gpr)(int32_t)0x800C3E7C);
+    uint32_t poses_left = 0;
     for (size_t i = 0; i < walker.refs.size(); i++) {
         const auto& r = walker.refs[i];
+        if (use_game_poses && r.at >= pose_pool && r.at < pose_pool_end) {
+            poses_left++;
+            continue;
+        }
         if (changed(r.at, r.size)) {
             ref_changed[i] = 1;
             if (r.body >= 0) {
                 need[r.body] = 1;
             }
         }
+    }
+    if (use_game_poses && (local_views < 3 || local_views % 120 == 0)) {
+        log("f=%u (experiment) %u of the view's matrices left as the game's poses (pool %08X to %08X)", (unsigned)frames, (unsigned)poses_left,
+            (unsigned)pose_pool, (unsigned)pose_pool_end);
     }
     for (int b = body_count - 1; b >= 0; b--) {
         if (need[b] && walker.bodies[b].parent >= 0) {
@@ -1592,6 +1621,7 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
             keep_ranges.push_back({ bd.at, std::min(size, 0x80000000u + game_size - bd.at) });
         }
     }
+    std::vector<uint32_t> ref_to(walker.refs.size(), 0);
     for (size_t i = 0; i < walker.refs.size(); i++) {
         if (!ref_changed[i]) {
             continue;
@@ -1601,9 +1631,59 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
         const uint32_t to = at != 0 ? copy_out(r.at, r.size) : 0;
         if (to != 0) {
             patches.push_back({ at + 4, to });
+            ref_to[i] = to;
             relocated++;
         } else {
             keep_ranges.push_back({ r.at, r.size });
+        }
+    }
+    // (possess38 diagnostics) the extra character's matrices in the view's commands: where each was named from (the address its command
+    // names, through its segment), whether the view's passes changed it, where it was copied; the first two whole, as the view's
+    // passes left them and as the game's memory has them (put back after)
+    if (local_views < 3 || local_views % 120 == 0) {
+        auto halves = [&](const uint8_t* mem, uint32_t a) {
+            std::string out;
+            for (int h = 0; h < 32; h++) {
+                int16_t v = 0;
+                std::memcpy(&v, mem + (((a - 0x80000000u) + 2u * (uint32_t)h) ^ 2u), 2);
+                char piece[8];
+                std::snprintf(piece, sizeof(piece), "%s%04X", h == 0 ? "" : (h == 16 ? " | " : " "), (unsigned)(uint16_t)v);
+                out += piece;
+            }
+            return out;
+        };
+        for (const Drawn& d : drawn_now) {
+            if (d.object != (uint32_t)extra || d.end <= d.start) {
+                continue;
+            }
+            std::vector<uint8_t> inside(walker.bodies.size(), 0);
+            for (size_t b = 0; b < walker.bodies.size(); b++) {
+                const auto& bd = walker.bodies[b];
+                inside[b] = (bd.command >= d.start && bd.command < d.end) || (bd.parent >= 0 && inside[(size_t)bd.parent]);
+            }
+            int shown = 0;
+            for (size_t i = 0; i < walker.refs.size() && shown < 6; i++) {
+                const auto& r = walker.refs[i];
+                const bool ours_here = r.body < 0 ? (r.command >= d.start && r.command < d.end) : inside[(size_t)r.body] != 0;
+                if (!ours_here || (mem_word(rdram, r.command) >> 24) != 0xDA || r.at < 0x80000000u || r.at + 64 > 0x80000000u + game_size) {
+                    continue;
+                }
+                log("f=%u [mtx] the extra character's matrix %d: command %08X (in %s) names %08X (segment %d) = %08X, %s, copied to %08X",
+                    (unsigned)frames, shown, (unsigned)r.command, r.body < 0 ? "the view's own commands" : "a list they call",
+                    (unsigned)mem_word(rdram, r.command + 4), r.segment, (unsigned)r.at, ref_changed[i] ? "changed by the view" : "as the game has it",
+                    (unsigned)ref_to[i]);
+                if (shown < 2) {
+                    log("f=%u [mtx]   as the view left it: %s", (unsigned)frames, halves(rdram, r.at).c_str());
+                    log("f=%u [mtx]   as the game has it:  %s", (unsigned)frames, halves(local_copy.data(), r.at).c_str());
+                }
+                shown++;
+            }
+            // and its pose (+0x1D4), the same two ways
+            const uint32_t pose = mem_word(rdram, 0x800CC2D0u + (uint32_t)extra * 0x32Cu + 0x1D4u);
+            if ((pose >> 24) == 0x80 && pose + 64 <= 0x80000000u + game_size) {
+                log("f=%u [mtx] its pose %08X as the view left it: %s", (unsigned)frames, (unsigned)pose, halves(rdram, pose).c_str());
+                log("f=%u [mtx] its pose %08X as the game has it:  %s", (unsigned)frames, (unsigned)pose, halves(local_copy.data(), pose).c_str());
+            }
         }
     }
     const uint32_t by_segment = lists_copied;
@@ -1727,10 +1807,7 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
             }
         }
         log("f=%u [drawn] %u objects in the extra camera's view:%s", (unsigned)frames, (unsigned)drawn_now.size(), out.c_str());
-        for (const Drawn& d : drawn_now) {
-            if (d.object != (uint32_t)extra || d.end <= d.start) {
-                continue;
-            }
+        auto dump_one = [&](const Drawn& d, const char* where) {
             std::string dump;
             uint32_t seg[16] = {};
             for (int sg = 0; sg < 16; sg++) {
@@ -1807,8 +1884,18 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
                 }
                 at += 8;
             }
-            log("f=%u [drawn] the extra character (kind %X, %u commands):%s", (unsigned)frames, (unsigned)d.kind,
+            log("f=%u [drawn] the extra character %s (kind %X, %u commands):%s", (unsigned)frames, where, (unsigned)d.kind,
                 (unsigned)((d.end - d.start) / 8), dump.c_str());
+        };
+        for (const Drawn& d : drawn_now) {
+            if (d.object == (uint32_t)extra && d.end > d.start) {
+                dump_one(d, "in the extra camera's view");
+            }
+        }
+        for (const Drawn& d : game_drawn) {
+            if (d.object == (uint32_t)extra && d.end > d.start) {
+                dump_one(d, "in player 1's view");
+            }
         }
     }
     // (possess32: drawn_marks no longer put in: with the whole of the game's drawing preparation run for the view, they held the render
@@ -1851,6 +1938,8 @@ extern "C" void conker_possess_view_local_after(uint8_t* rdram, recomp_context* 
 
 // (possess19) func_15019130 before its views' func_1510FC34 loop: a copy of the game's memory, to draw the extra camera's view from.
 extern "C" void conker_possess_frame_start(uint8_t* rdram) {
+    game_drawn.clear();
+    extra_object = extra_ready ? extra : -1;
     if (!local_view_wanted(rdram)) {
         start_copied = false;
         extra_fades_kept = false;
