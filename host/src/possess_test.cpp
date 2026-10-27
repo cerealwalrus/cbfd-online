@@ -104,54 +104,58 @@ namespace {
     constexpr Slot4Table slot4_tables[] = {
     // Generated (release/gen2.py): the tables of 4 whose 5th entry is kept in ours. always: the cameras' (on while the extra camera
     // is there); otherwise the views' (on only while the extra view is drawn).
-        {0x80089524, 0x4, true},   // 0
-        {0x80089534, 0x4, true},   // 1
-        {0x80089560, 0x4, true},   // 2
-        {0x80089570, 0x4, true},   // 3
-        {0x80089580, 0x4, true},   // 4
-        {0x800BE2B0, 0x4, true},   // 5
-        {0x800BE6C0, 0x4, false},   // 6
-        {0x800BE6D0, 0x4, false},   // 7
-        {0x800BE710, 0x2, true},   // 8
-        {0x800CC5D4, 0x4, false},   // 9
-        {0x800D18A4, 0x1, false},   // 10
-        {0x800D2CA8, 0x40, false},   // 11
-        {0x800D2E30, 0x4, true},   // 12
-        {0x800D9B68, 0x3, false},   // 13
-        {0x800D9B78, 0x3, false},   // 14
-        {0x800D9C10, 0x40, false},   // 15
-        {0x800D9E10, 0x4, false},   // 16
-        {0x800D9E70, 0x6, false},   // 17
-        {0x800D9E88, 0x3, false},   // 18
-        {0x800D9E98, 0x3, false},   // 19
-        {0x800D9EA8, 0x3, false},   // 20
-        {0x800D9EB8, 0x3, false},   // 21
-        {0x800DBE30, 0x2, false},   // 22
-        {0x800DBE88, 0x8, false},   // 23
-        {0x800DBFF4, 0x1, true},   // 24
-        {0x800DC028, 0x24, true},   // 25
-        {0x800DC0C0, 0x4C, true},   // 26
-        {0x800DC200, 0x20, true},   // 27
-        {0x800DC2C0, 0x68, true},   // 28
-        {0x800DCD30, 0x3, false},   // 29
-        {0x800DCDE0, 0x18, true},   // 30
-        {0x800DD2B0, 0x1, false},   // 31
-        {0x800DD2C0, 0x1, false},   // 32
-        {0x800DDD78, 0x1, false},   // 33
-        {0x800DDD90, 0x3, false},   // 34
-        {0x800DDD9C, 0x1, false},   // 35
-        {0x800DDDA0, 0x3, false},   // 36
-        {0x800DDDAC, 0x1, false},   // 37
-        {0x800DDDB0, 0x4, false},   // 38
-        {0x800DDDC0, 0x1, false},   // 39
-        {0x800DDDC8, 0x4, false},   // 40
-        {0x800DDDD8, 0x4, false},   // 41
-        {0x800DDDE8, 0x8, false},   // 42
-        {0x800DDE10, 0x2, false},   // 43
-        {0x800DDE1C, 0x1, false},   // 44
-        {0x800DDE20, 0x1, false},   // 45
-        {0x800DDE28, 0x4, false},   // 46
-        {0x800DF090, 0x10, false},   // 47
+        {0x80089240, 0x4, false},   // 0
+        {0x80089524, 0x4, true},   // 1
+        {0x80089534, 0x4, true},   // 2
+        {0x80089560, 0x4, true},   // 3
+        {0x80089570, 0x4, true},   // 4
+        {0x80089580, 0x4, true},   // 5
+        {0x800BE2B0, 0x4, true},   // 6
+        {0x800BE6C0, 0x4, false},   // 7
+        {0x800BE6D0, 0x4, false},   // 8
+        {0x800BE710, 0x2, true},   // 9
+        {0x800CC5D4, 0x4, false},   // 10
+        {0x800D18A4, 0x1, false},   // 11
+        {0x800D2CA8, 0x40, false},   // 12
+        {0x800D2E30, 0x4, true},   // 13
+        {0x800D9B68, 0x3, false},   // 14
+        {0x800D9B78, 0x3, false},   // 15
+        {0x800D9BD0, 0x10, false},   // 16
+        {0x800D9C10, 0x40, false},   // 17
+        {0x800D9D10, 0x40, true},   // 18
+        {0x800D9E10, 0x4, false},   // 19
+        {0x800D9E70, 0x6, false},   // 20
+        {0x800D9E88, 0x3, false},   // 21
+        {0x800D9E98, 0x3, false},   // 22
+        {0x800D9EA8, 0x3, false},   // 23
+        {0x800D9EB8, 0x3, false},   // 24
+        {0x800DBE30, 0x2, false},   // 25
+        {0x800DBE88, 0x8, false},   // 26
+        {0x800DBEE8, 0x2, false},   // 27
+        {0x800DBFF4, 0x1, true},   // 28
+        {0x800DC028, 0x24, true},   // 29
+        {0x800DC0C0, 0x4C, true},   // 30
+        {0x800DC200, 0x20, true},   // 31
+        {0x800DC2C0, 0x68, true},   // 32
+        {0x800DCD30, 0x3, false},   // 33
+        {0x800DCDE0, 0x18, true},   // 34
+        {0x800DD2B0, 0x1, false},   // 35
+        {0x800DD2C0, 0x1, false},   // 36
+        {0x800DDD78, 0x1, false},   // 37
+        {0x800DDD90, 0x3, false},   // 38
+        {0x800DDD9C, 0x1, false},   // 39
+        {0x800DDDA0, 0x3, false},   // 40
+        {0x800DDDAC, 0x1, false},   // 41
+        {0x800DDDB0, 0x4, false},   // 42
+        {0x800DDDC0, 0x1, false},   // 43
+        {0x800DDDC8, 0x4, false},   // 44
+        {0x800DDDD8, 0x4, false},   // 45
+        {0x800DDDE8, 0x8, false},   // 46
+        {0x800DDE10, 0x2, false},   // 47
+        {0x800DDE1C, 0x1, false},   // 48
+        {0x800DDE20, 0x1, false},   // 49
+        {0x800DDE28, 0x4, false},   // 50
+        {0x800DF090, 0x10, false},   // 51
     };
     constexpr int slot4_count = (int)(sizeof(slot4_tables) / sizeof(slot4_tables[0]));
     constexpr uint32_t slot4_shadow = 0x80FD1000;    // ours: 0x100 a table
@@ -170,6 +174,8 @@ namespace {
     constexpr uint32_t pressed_shadow_table = 0x800BE710;   // the buttons pressed this frame, per controller
     constexpr uint32_t view_buffers = 0x800DBE88;           // D_800DBE88: two buffers a view (what it draws, a frame each)
     constexpr uint32_t view_buffer_ours = 0x80FD8000;       // ours: the extra view's (up to 0x4000)
+    constexpr uint32_t view_lights = 0x800D9E10;            // D_800D9E10: a block of 11 x 0x60 a view (func_150006E0, func_1515D480)
+    constexpr uint32_t view_lights_ours = 0x80FDC000;       // ours: the extra view's
 
     void log(const char* format, ...);
 
@@ -179,8 +185,10 @@ namespace {
             for (uint32_t b = 0; b < 0x100; b += 4) {
                 MEM_W(b, (gpr)(int32_t)shadow) = 0;
             }
-            // the cameras' screen areas (func_1512ABF8): as camera 1's
-            if (slot4_tables[i].base == 0x800DC200) {
+            // the cameras' screen areas (func_1512ABF8), and a view's tables: as camera / view 1's (the same scene, full screen); the
+            // views' pointers (their buffers) apart, below
+            const uint32_t base = slot4_tables[i].base;
+            if (base == 0x800DC200 || (!slot4_tables[i].always && base != view_buffers && base != view_lights)) {
                 for (uint32_t b = 0; b < slot4_tables[i].stride; b++) {
                     MEM_B(b, (gpr)(int32_t)shadow) = MEM_B(b, (gpr)(int32_t)slot4_tables[i].base);
                 }
@@ -188,6 +196,13 @@ namespace {
         }
         for (uint32_t b = 0; b < 8; b++) {
             MEM_B(b, (gpr)(int32_t)extra_record) = 0;
+        }
+        // The extra view's block of func_150006E0's (func_1515D480(11): 11 x 0x60, zeroed): ours.
+        for (uint32_t b = 0; b < 11 * 0x60; b += 4) {
+            MEM_W(b, (gpr)(int32_t)view_lights_ours) = 0;
+        }
+        if (const uint32_t lights = shadow_of(view_lights)) {
+            MEM_W(0, (gpr)(int32_t)lights) = (int32_t)view_lights_ours;
         }
         // The extra view's two buffers (func_15000AD0 makes the views' at the scene's start): as large as view 1's, of ours. Two of 0x40
         // with what's in view 1's (that kind of scene sets them up once), or two halves of one block the views fill each frame.
