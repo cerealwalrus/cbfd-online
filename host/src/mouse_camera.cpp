@@ -393,7 +393,7 @@ extern "C" void conker_mouse_camera_follow(uint8_t* rdram, recomp_context* ctx) 
 extern "C" void conker_mouse_camera_look_mode(uint8_t* rdram, recomp_context* ctx) {
     // ($a0 the camera.) Offline it's player 1's whatever camera it is; online each player's own.
     if (!conker::netsession::active()) {
-        orbits[0].look_mode_ran = true;
+        orbits[conker::possess_test::played_camera()].look_mode_ran = true;
         return;
     }
     if (Orbit* picked = pick(rdram, ctx->r4)) {
