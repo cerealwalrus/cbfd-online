@@ -380,6 +380,178 @@ namespace {
     }
 }
 
+// ---- (possess41) The weapons lying about, and who takes them ----
+// A weapon on the ground is a prop (D_800DBEF4's records of 0xA0) run by func_1511DF6C, from func_15113E54 at the frame's start, for
+// the props some view saw the frame before (+0x6F's 0x40, func_15113180). It spins, and the first character of the match's (gObjects 0
+// to D_8008FD8C) that is alive, has moved (+0x300, func_1504A730's last run), is of the team it's for (its +0x84 by the character's
+// +0x128) and within reach of it (100 across: the brain's +0x1AF / 64, and 1.4 times that with the AI flag, +0x84) takes it: the prop's
+// +0x80 gets the character's +0x3B (its index + 1), and it shrinks away. The match's script (func_1508DC24, D_800D23B0's tables of the
+// pickups: +0x1070 each one's state, 0 waiting; +0xEB0 the pickup each character holds) then gives it: the weapon the character wants
+// (its brain's +0x75), drawn by func_1506045C. Logged as [weapons] lines: the weapons and pickups as the match starts; any pickup's
+// state, any character's held pickup, and player 1's and the extra character's weapon, as they change; and, while player 1 or the
+// extra character is within 200 of a weapon, each check func_1511DF6C makes of it (every 10 frames).
+namespace {
+    constexpr uint32_t weapon_behaviour = 0x1511DF6C;
+    constexpr uint32_t props_count = 0x800DBEF0, props_list = 0x800DBEF4, prop_size = 0xA0;
+    constexpr uint32_t pickups_block = 0x800D23B0;
+    constexpr int pickups_most = 64, props_most = 256;
+    bool weapons_listed = false;
+    int32_t pickup_state_was[pickups_most];
+    int32_t held_was[25];
+    uint32_t weapon_was[25];
+    int32_t taken_was[props_most];
+    uint32_t near_told[props_most][2];
+    uint32_t weapons_frame = 0xFFFFFFFFu;
+
+    float float_word(uint8_t* rdram, uint32_t address) {
+        const uint32_t bits = word(rdram, address);
+        float value;
+        std::memcpy(&value, &bits, sizeof(value));
+        return value;
+    }
+
+    void weapons_reset() {
+        weapons_listed = false;
+        weapons_frame = 0xFFFFFFFFu;
+        std::memset(near_told, 0, sizeof(near_told));
+        std::memset(taken_was, 0, sizeof(taken_was));
+    }
+
+    void weapons_watch(uint8_t* rdram) {
+        if (weapons_frame == frames) {
+            return;
+        }
+        weapons_frame = frames;
+        const uint32_t count = word(rdram, props_count), list = word(rdram, props_list);
+        if (count == 0 || count > 1024 || !in_rdram(list) || !in_rdram(list + count * prop_size)) {
+            return;
+        }
+        auto at = [](uint32_t address) { return (gpr)(int32_t)address; };
+        const uint32_t block = word(rdram, pickups_block);
+        const bool have_block = in_rdram(block);
+        const int32_t pickups = have_block ? std::max(0, std::min((int32_t)MEM_W(0xEA4, at(block)), (int32_t)pickups_most)) : 0;
+        const int32_t chars = have_block ? std::max(0, std::min((int32_t)MEM_W(0x10, at(block)), 25)) : 0;
+        const uint32_t props = std::min(count, (uint32_t)props_most);
+        auto weapon_of = [&](int k) -> uint32_t {
+            const uint32_t brain = brain_of(rdram, k);
+            return brain != 0 ? (uint32_t)MEM_BU(0x75, at(brain)) | (uint32_t)MEM_BU(0x78, at(brain)) << 8 | (uint32_t)MEM_BU(0x7C, at(brain)) << 16 : 0u;
+        };
+        if (!weapons_listed) {
+            weapons_listed = true;
+            std::string out;
+            int n = 0;
+            for (uint32_t i = 0; i < props; i++) {
+                const uint32_t p = list + i * prop_size;
+                if (word(rdram, p + 0x38) != weapon_behaviour) {
+                    continue;
+                }
+                char piece[128];
+                std::snprintf(piece, sizeof(piece), " | prop %u: id %u type %X team %d at %d %d %d", (unsigned)i, (unsigned)MEM_BU(0x72, at(p)),
+                    (unsigned)MEM_HU(0x54, at(p)), (int)MEM_W(0x84, at(p)), (int)MEM_H(0x10, at(p)), (int)MEM_H(0x12, at(p)), (int)MEM_H(0x14, at(p)));
+                out += piece;
+                n++;
+                taken_was[i] = MEM_W(0x80, at(p));
+            }
+            log("f=%u [weapons] %d weapons lying about (of %u props)%s", (unsigned)frames, n, (unsigned)count, out.c_str());
+            if (have_block) {
+                std::string pick;
+                for (int32_t i = 0; i < pickups; i++) {
+                    char piece[128];
+                    pickup_state_was[i] = MEM_W(0x1070 + 4 * (uint32_t)i, at(block));
+                    std::snprintf(piece, sizeof(piece), " | %d: id %u type %X flags %X state %d", (int)i,
+                        (unsigned)MEM_BU(0xEF0 + 4 * (uint32_t)i + 3, at(block)), (unsigned)MEM_W(0x1174 + 4 * (uint32_t)i, at(block)),
+                        (unsigned)MEM_W(0x11F4 + 4 * (uint32_t)i, at(block)), (int)pickup_state_was[i]);
+                    pick += piece;
+                }
+                log("f=%u [weapons] the match's pickups (its mode %X, %d characters, %d pickups)%s", (unsigned)frames,
+                    (unsigned)(uint16_t)MEM_H(0x16BC, at(block)), (int)chars, (int)pickups, pick.c_str());
+            } else {
+                log("f=%u [weapons] no table of the match's pickups (D_800D23B0 %08X)", (unsigned)frames, (unsigned)block);
+            }
+            for (int k = 0; k < 25; k++) {
+                held_was[k] = have_block && k < chars ? MEM_W(0xEB0 + 4 * (uint32_t)k, at(block)) : -1;
+                weapon_was[k] = weapon_of(k);
+            }
+            log("f=%u [weapons] player 1's weapon: wanted %02X, out %02X, has %02X; the extra character's: wanted %02X, out %02X, has %02X",
+                (unsigned)frames, (unsigned)(weapon_was[0] & 0xFF), (unsigned)(weapon_was[0] >> 8 & 0xFF), (unsigned)(weapon_was[0] >> 16),
+                (unsigned)(weapon_was[extra] & 0xFF), (unsigned)(weapon_was[extra] >> 8 & 0xFF), (unsigned)(weapon_was[extra] >> 16));
+            return;
+        }
+        for (int32_t i = 0; i < pickups; i++) {
+            const int32_t state = MEM_W(0x1070 + 4 * (uint32_t)i, at(block));
+            if (state != pickup_state_was[i]) {
+                log("f=%u [weapons] pickup %d (id %u, type %X): its state %d -> %d (its holder %d)", (unsigned)frames, (int)i,
+                    (unsigned)MEM_BU(0xEF0 + 4 * (uint32_t)i + 3, at(block)), (unsigned)MEM_W(0x1174 + 4 * (uint32_t)i, at(block)),
+                    (int)pickup_state_was[i], (int)state, (int)MEM_W(0xF70 + 4 * (uint32_t)i, at(block)));
+                pickup_state_was[i] = state;
+            }
+        }
+        for (int k = 0; k < chars; k++) {
+            const int32_t held = MEM_W(0xEB0 + 4 * (uint32_t)k, at(block));
+            if (held != held_was[k]) {
+                log("f=%u [weapons] character %d holds pickup %d (it had %d)", (unsigned)frames, k, (int)held, (int)held_was[k]);
+                held_was[k] = held;
+            }
+        }
+        for (int k = 0; k < 25; k++) {
+            const uint32_t now = weapon_of(k);
+            if (now != weapon_was[k]) {
+                if (k == 0 || k == extra) {
+                    log("f=%u [weapons] character %d's weapon: wanted %02X, out %02X, has %02X (it was %02X, %02X, %02X)%s", (unsigned)frames, k,
+                        (unsigned)(now & 0xFF), (unsigned)(now >> 8 & 0xFF), (unsigned)(now >> 16), (unsigned)(weapon_was[k] & 0xFF),
+                        (unsigned)(weapon_was[k] >> 8 & 0xFF), (unsigned)(weapon_was[k] >> 16), k == extra && extra_played ? " (played)" : "");
+                }
+                weapon_was[k] = now;
+            }
+        }
+        for (uint32_t i = 0; i < props; i++) {
+            const uint32_t p = list + i * prop_size;
+            if (word(rdram, p + 0x38) != weapon_behaviour) {
+                continue;
+            }
+            const int32_t by = MEM_W(0x80, at(p));
+            if (by != taken_was[i]) {
+                if (by != 0) {
+                    log("f=%u [weapons] prop %u (id %u) taken by character %d", (unsigned)frames, (unsigned)i, (unsigned)MEM_BU(0x72, at(p)), (int)by - 1);
+                }
+                taken_was[i] = by;
+            }
+        }
+        for (int which = 0; which < 2; which++) {
+            const int k = which == 0 ? 0 : extra;
+            const uint32_t c = character(k);
+            const uint32_t brain = brain_of(rdram, k);
+            if (word(rdram, c) == 0 || brain == 0 || (which == 1 && !extra_ready)) {
+                continue;
+            }
+            const float cx = float_word(rdram, c + 0x14), cy = float_word(rdram, c + 0x18), cz = float_word(rdram, c + 0x1C);
+            for (uint32_t i = 0; i < props; i++) {
+                const uint32_t p = list + i * prop_size;
+                if (word(rdram, p + 0x38) != weapon_behaviour) {
+                    continue;
+                }
+                const float dx = (float)MEM_H(0x10, at(p)) - cx, dz = (float)MEM_H(0x14, at(p)) - cz;
+                const float away = std::sqrt(dx * dx + dz * dz);
+                if (away > 200.0f || (near_told[i][which] != 0 && frames - near_told[i][which] < 10)) {
+                    continue;
+                }
+                near_told[i][which] = frames;
+                const bool ai = MEM_BU(0x84, at(brain)) != 0;
+                const float reach = 100.0f * (float)MEM_BU(0x1AF, at(brain)) / 64.0f * (ai ? 1.4f : 1.0f);
+                const uint32_t own = word(rdram, p + 0x7C);
+                const int state = in_rdram(own) ? (int)MEM_HU(4, at(own)) : -1;
+                log("f=%u [weapons] character %d%s by prop %u: %.0f away (its reach %.0f), at height %.0f (the prop's %d, the ceiling %.0f); moved %u, "
+                    "health %u, team %u (the prop's %d), index %u, id %u, AI %u; the prop hidden %u, +0x6F %02X (0x40: run this frame), +0x70 %02X, "
+                    "its state %d, +0x80 %d", (unsigned)frames, k, which == 1 && extra_played ? " (played)" : "", (unsigned)i, away, reach, cy,
+                    (int)MEM_H(0x12, at(p)), float_word(rdram, c + 0x17C), (unsigned)MEM_BU(0x300, at(c)), (unsigned)MEM_BU(0x1CA, at(c)),
+                    (unsigned)MEM_BU(0x128, at(c)), (int)MEM_W(0x84, at(p)), (unsigned)MEM_BU(0x127, at(c)), (unsigned)MEM_BU(0x3B, at(c)),
+                    (unsigned)ai, (unsigned)MEM_BU(0x6E, at(p)), (unsigned)MEM_BU(0x6F, at(p)), (unsigned)MEM_BU(0x70, at(p)), state,
+                    (int)MEM_W(0x80, at(p)));
+            }
+        }
+    }
+}
+
 extern "C" void conker_possess_pad(uint8_t* rdram, recomp_context* ctx) {
     if (conker::netsession::active()) {
         return;
@@ -390,6 +562,10 @@ extern "C" void conker_possess_pad(uint8_t* rdram, recomp_context* ctx) {
     const bool frozen = mode != off || extra_played;     // player 1 stands while controller 1 plays another
 
     if (index != 0) {
+        // (possess41) once a frame, past player 1's own move (its +0x300 as func_1504A730 left it), before the extra character's
+        if (MEM_BU(0, (gpr)(int32_t)multiplayer) != 0) {
+            weapons_watch(rdram);
+        }
         if (!frozen) {
             return;
         }
@@ -440,6 +616,7 @@ extern "C" void conker_possess_pad(uint8_t* rdram, recomp_context* ctx) {
         target = -1;
         pressed_hidden = false;
         extra_wanted = extra_ready = extra_shown = extra_played = false;
+        weapons_reset();
         return;
     }
     frames++;
@@ -1921,6 +2098,30 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
         if (local_views < 3 || local_views % 600 == 0) {
             log("f=%u %u of %u objects seen by the extra camera, marked for the next frame's updates", (unsigned)frames, (unsigned)marked,
                 (unsigned)seen_count);
+        }
+    }
+    // (possess41) and the weapons lying near the extra character (within 400 across), in its camera's sight or not: func_1511DF6C, which
+    // gives a weapon to whoever walks into it, is run only for the props some view saw
+    if (!seen.empty() && extra_ready && mem_word(rdram, objects_count) == seen_count && mem_word(rdram, objects_list) == seen_list) {
+        const uint32_t c = character(extra);
+        const float cx = float_word(rdram, c + 0x14), cz = float_word(rdram, c + 0x1C);
+        uint32_t added = 0;
+        for (uint32_t i = 0; i < seen_count; i++) {
+            const uint32_t prop = seen_list + i * object_record;
+            if (word(rdram, prop + 0x38) != weapon_behaviour) {
+                continue;
+            }
+            const float dx = (float)MEM_H(0x10, (gpr)(int32_t)prop) - cx, dz = (float)MEM_H(0x14, (gpr)(int32_t)prop) - cz;
+            const uint8_t was = MEM_BU(0x6F, (gpr)(int32_t)prop);
+            if (dx * dx + dz * dz <= 400.0f * 400.0f && (was & extra_seen_bit) == 0) {
+                MEM_B(0x6F, (gpr)(int32_t)prop) = (int8_t)(was | extra_seen_bit);
+                added++;
+            }
+        }
+        static uint32_t told_added = 0;
+        if (added != 0 && told_added < 40) {
+            told_added++;
+            log("f=%u [weapons] %u weapons near the extra character, out of its camera's sight, run anyway", (unsigned)frames, (unsigned)added);
         }
     }
     local_views++;
