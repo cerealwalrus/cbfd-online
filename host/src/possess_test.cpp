@@ -1308,6 +1308,14 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
     MEM_B(0x23D, (gpr)(int32_t)base) = 0;
     std::memcpy(rdram + (views - 0x80000000u), rdram + (views + (uint32_t)extra * 0x180u - 0x80000000u), 0x180);
     std::memcpy(rdram + (mats - 0x80000000u), rdram + (mats + (uint32_t)extra * 0x40u - 0x80000000u), 0x40);
+    // (possess33) played or not, the extra character drawn as the bot it is while only shown (its brain's AI flag, +0x84; the game's memory
+    // is put back after): shown, it's drawn; played (+0x84 0, a player's), it wasn't, with its fade, hidden bits and render item the same
+    if (extra_played) {
+        const uint32_t brain = brain_of(rdram, extra);
+        if (brain != 0) {
+            MEM_B(0x84, (gpr)(int32_t)brain) = (int8_t)extra_brain_flag;
+        }
+    }
     // (possess25) the cameras' tables of 4 (each camera's entry: what the camera code worked out for it this frame, what's in sight
     // from it among them): the extra camera's is ours (conker_slot4), so camera 1's entry as the extra camera's for the view. (Not
     // the buttons pressed, the cameras' screen areas, nor the table inside camera 1's own block.)
@@ -1840,8 +1848,9 @@ namespace {
 // camera's, 4) would write its fade over the character's hidden-views bits (+0xB + 4 = +0xF). Such a call is let go.
 extern "C" int conker_possess_hide_skip(uint8_t* rdram, recomp_context* ctx) {
     (void)rdram;
+    // (only its modes 8 and up name a view in $a3: below, $a3 is a value)
     const uint32_t view = (uint32_t)ctx->r7 & 0xFFu;
-    if (view < 4) {
+    if (((uint32_t)ctx->r5 & 0xFFu) < 8 || view < 4) {
         return 0;
     }
     static uint32_t told = 0;
