@@ -1011,22 +1011,29 @@ namespace {
         return (uint32_t)MEM_W(0, (gpr)(int32_t)address);
     }
 
-    // The display list's commands from `from` (an RDRAM address), following calls; every range of memory they name goes in `out`.
+    // The display list's commands from `from` (an RDRAM address), following calls: every piece of memory they name (with the command
+    // that names it, and the segment it's named through), and where each segment was set.
     struct ListWalk {
         uint8_t* rdram;
         uint32_t seg[16] = {};
-        std::vector<std::pair<uint32_t, uint32_t>> out;
+        uint32_t seg_set_at[16] = {};   // the command that set it (0: before the walk)
+        struct Ref { uint32_t command, at, size; int segment; };
+        std::vector<Ref> refs;
         uint32_t commands = 0;
-        uint32_t resolve(uint32_t a) const {
+        uint32_t resolve(uint32_t a, int* segment) const {
             const uint32_t s = (a >> 24) & 0xFF;
             if (s < 16) {
+                *segment = s == 0 ? -1 : (int)s;
                 return 0x80000000u | ((seg[s] + (a & 0x00FFFFFFu)) & 0x00FFFFFFu);
             }
+            *segment = -1;
             return 0x80000000u | (a & 0x00FFFFFFu);
         }
-        void note(uint32_t at, uint32_t size) {
+        void note(uint32_t command, uint32_t w1, uint32_t size) {
+            int segment = -1;
+            const uint32_t at = resolve(w1, &segment);
             if (at >= 0x80000000u && at < 0x80000000u + game_size && size > 0 && size <= 0x10000) {
-                out.push_back({ at, std::min(size, 0x80000000u + game_size - at) });
+                refs.push_back({ command, at, std::min(size, 0x80000000u + game_size - at), segment });
             }
         }
         void walk(uint32_t at, int depth, uint32_t stop) {
@@ -1039,24 +1046,25 @@ namespace {
                 }
                 const uint32_t w0 = mem_word(rdram, at), w1 = mem_word(rdram, at + 4);
                 commands++;
-                const uint32_t op = w0 >> 24;
-                switch (op) {
+                switch (w0 >> 24) {
                     case 0x01:   // G_VTX
-                        note(resolve(w1), ((w0 >> 12) & 0xFFu) * 16u);
+                        note(at, w1, ((w0 >> 12) & 0xFFu) * 16u);
                         break;
                     case 0xDA:   // G_MTX
-                        note(resolve(w1), 64);
+                        note(at, w1, 64);
                         break;
                     case 0xDC:   // G_MOVEMEM
-                        note(resolve(w1), (((w0 >> 19) & 0x1Fu) + 1u) * 8u);
+                        note(at, w1, (((w0 >> 19) & 0x1Fu) + 1u) * 8u);
                         break;
                     case 0xDB:   // G_MOVEWORD: a segment
                         if (((w0 >> 16) & 0xFFu) == 0x06 && (w0 & 0xFFFFu) < 64u) {
                             seg[(w0 & 0xFFFFu) / 4u] = w1 & 0x00FFFFFFu;
+                            seg_set_at[(w0 & 0xFFFFu) / 4u] = at;
                         }
                         break;
                     case 0xDE: {  // G_DL: a call (or a jump)
-                        const uint32_t target = resolve(w1);
+                        int segment = -1;
+                        const uint32_t target = resolve(w1, &segment);
                         if (((w0 >> 16) & 0xFFu) != 0) {
                             at = target;
                             stop = 0;
@@ -1074,6 +1082,12 @@ namespace {
             }
         }
     };
+
+    // ours, past the game's 8 MB: copies of what the extra camera's view draws from, two halves (this frame's, the last one's, which
+    // may still be being drawn)
+    constexpr uint32_t copies_start = 0x80E00000;
+    constexpr uint32_t copies_half = 0x80000;
+    uint32_t copies_frame = 0;
 
     // (the next frame's start) what the view's commands drew from, put back
     void put_kept_back(uint8_t* rdram) {
@@ -1128,7 +1142,9 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
     *ctx = saved;
     MEM_W(0, (gpr)(int32_t)view_now) = was_view;
 
-    // 4. what the new commands draw from
+    // 4. what the new commands draw from: what the view's passes changed is copied to ours and the commands pointed at the copies (a
+    // command of the new ones, directly; one of a list they call, through the segment a new command set); what can't be is kept
+    // in the game's memory for the frame and put back at the next one's start
     ListWalk walker{ rdram };
     // the segments as the frame's list set them before (its top level, from its start)
     const uint32_t start = mem_word(rdram, list_start + 4 * buffer);
@@ -1139,13 +1155,67 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
         }
     }
     walker.walk(list_before, 0, list);
+    auto changed = [&](uint32_t at, uint32_t size) {
+        return std::memcmp(local_copy.data() + (at - 0x80000000u), rdram + (at - 0x80000000u), size) != 0;
+    };
+    auto ours = [&](uint32_t command) { return command >= list_before && command < list; };
+    const uint32_t copies = copies_start + (copies_frame++ & 1u) * copies_half;
+    uint32_t copies_used = 0;
+    auto copy_out = [&](uint32_t at, uint32_t size) -> uint32_t {
+        const uint32_t room = (size + 15u) & ~15u;
+        if (copies_used + room > copies_half) {
+            return 0;
+        }
+        const uint32_t to = copies + copies_used;
+        copies_used += room;
+        std::memcpy(rdram + (to - 0x80000000u), rdram + (at - 0x80000000u), size);
+        return to;
+    };
+    std::vector<std::pair<uint32_t, uint32_t>> patches;   // (address of a command's second word, new value)
+    std::vector<std::pair<uint32_t, uint32_t>> keep_ranges;
+    uint32_t relocated = 0, by_segment = 0;
+    // segments set by a new command and used by a called list: the stretch they're used over
+    struct Window { uint32_t lo = 0xFFFFFFFFu, hi = 0; bool change = false; };
+    Window windows[16];
+    for (const auto& r : walker.refs) {
+        if (ours(r.command)) {
+            if (changed(r.at, r.size)) {
+                if (const uint32_t to = copy_out(r.at, r.size)) {
+                    patches.push_back({ r.command + 4, to });
+                    relocated++;
+                } else {
+                    keep_ranges.push_back({ r.at, r.size });
+                }
+            }
+        } else if (r.segment > 0 && ours(walker.seg_set_at[r.segment])) {
+            Window& w = windows[r.segment];
+            w.lo = std::min(w.lo, r.at);
+            w.hi = std::max(w.hi, r.at + r.size);
+            w.change |= changed(r.at, r.size);
+        } else if (changed(r.at, r.size)) {
+            keep_ranges.push_back({ r.at, r.size });
+        }
+    }
+    for (int sgm = 1; sgm < 16; sgm++) {
+        Window& w = windows[sgm];
+        if (!w.change || w.hi <= w.lo) {
+            continue;
+        }
+        const uint32_t base_phys = mem_word(rdram, walker.seg_set_at[sgm] + 4) & 0x00FFFFFFu;
+        const uint32_t lo_off = (w.lo & 0x00FFFFFFu) - base_phys;
+        const uint32_t to = w.hi - w.lo <= 0x40000u ? copy_out(w.lo, w.hi - w.lo) : 0;
+        if (to != 0 && (to & 0x00FFFFFFu) >= lo_off) {
+            patches.push_back({ walker.seg_set_at[sgm] + 4, (to & 0x00FFFFFFu) - lo_off });
+            by_segment++;
+        } else {
+            keep_ranges.push_back({ w.lo, w.hi - w.lo });
+        }
+    }
     std::vector<Kept> keep;
-    for (const auto& r : walker.out) {
+    for (const auto& r : keep_ranges) {
         Kept k{ r.first, r.second, {} };
         k.was.assign(local_copy.begin() + (r.first - 0x80000000u), local_copy.begin() + (r.first - 0x80000000u) + r.second);
-        if (std::memcmp(k.was.data(), rdram + (r.first - 0x80000000u), r.second) != 0) {
-            keep.push_back(std::move(k));
-        }
+        keep.push_back(std::move(k));
     }
     std::vector<std::vector<uint8_t>> now;
     now.reserve(keep.size());
@@ -1160,16 +1230,21 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
     } else {
         std::memcpy(rdram, local_copy.data(), game_size);
         list = list_before;
+        patches.clear();
     }
     MEM_W(0, (gpr)(int32_t)head) = (int32_t)list;
+    for (const auto& pt : patches) {
+        MEM_W(0, (gpr)(int32_t)pt.first) = (int32_t)pt.second;
+    }
     for (size_t i = 0; i < keep.size(); i++) {
         std::memcpy(rdram + (keep[i].at - 0x80000000u), now[i].data(), keep[i].size);
     }
     kept_back = std::move(keep);
     local_views++;
     if (local_views <= 3 || local_views % 600 == 0) {
-        log("f=%u the extra camera's view drawn here (%u times): %u commands (%u walked), %u pieces it draws from kept for the frame",
-            (unsigned)frames, (unsigned)local_views, (unsigned)((list - list_before) / 8), (unsigned)walker.commands, (unsigned)kept_back.size());
+        log("f=%u the extra camera's view drawn here (%u times): %u commands (%u walked), %u pieces copied to ours, %u segments moved, %u kept "
+            "for the frame (%u bytes of copies)", (unsigned)frames, (unsigned)local_views, (unsigned)((list - list_before) / 8),
+            (unsigned)walker.commands, (unsigned)relocated, (unsigned)by_segment, (unsigned)kept_back.size(), (unsigned)copies_used);
     }
 }
 
