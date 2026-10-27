@@ -38,6 +38,7 @@
 #include "recomp.h"
 
 #include "conker.hpp"
+#include "ultramodern/ultramodern.hpp"
 
 namespace {
     constexpr uint32_t characters = 0x800CC2D0;      // the characters, 0x32C apart, 25 of them
@@ -1154,6 +1155,17 @@ namespace {
     }
 }
 
+namespace {
+    // (possess23) The game's other threads run alongside its own (the audio thread above all: it changes the heap too), so while the
+    // game's memory is copied, drawn from and put back they're stopped: what they change then would be undone, and the heap's lists
+    // with it. Each is the host thread of one of the game's (known_threads: its OSThread's context).
+    struct OthersStopped {
+        std::vector<void*> stopped;
+        explicit OthersStopped(uint8_t* rdram);
+        ~OthersStopped();
+    };
+}
+
 // func_1501878C, 0x15018C8C (its frame's display list about to be closed; $s1 the address of the list's end): the view, see above.
 extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
     if (!local_view_wanted(rdram)) {
@@ -1172,6 +1184,7 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
         return;
     }
     start_copied = false;
+    OthersStopped others(rdram);
     local_copy.assign(rdram, rdram + game_size);
     const uint32_t list_before = mem_word(rdram, head);
     const uint32_t frame_list = mem_word(rdram, list_start + 4 * (MEM_BU(0, (gpr)(int32_t)matrix_buffer) & 1u));
@@ -1492,3 +1505,35 @@ extern "C" void conker_possess_note_thread(uint8_t* rdram, uint32_t thread) {
         known_threads.push_back(thread);
     }
 }
+
+#if defined(_WIN32)
+namespace {
+    OthersStopped::OthersStopped(uint8_t* rdram) {
+        const uint32_t self = (uint32_t)ultramodern::this_thread();
+        stopped.reserve(known_threads.size());
+        for (uint32_t t : known_threads) {
+            if (t == self) {
+                continue;
+            }
+            OSThread* thread = reinterpret_cast<OSThread*>(rdram + (t - 0x80000000u));
+            if (thread == nullptr || thread->context == nullptr) {
+                continue;
+            }
+            HANDLE handle = (HANDLE)thread->context->host_thread.native_handle();
+            if (handle != nullptr && SuspendThread(handle) != (DWORD)-1) {
+                stopped.push_back(handle);
+            }
+        }
+    }
+    OthersStopped::~OthersStopped() {
+        for (void* handle : stopped) {
+            ResumeThread((HANDLE)handle);
+        }
+    }
+}
+#else
+namespace {
+    OthersStopped::OthersStopped(uint8_t* rdram) { (void)rdram; }
+    OthersStopped::~OthersStopped() {}
+}
+#endif
