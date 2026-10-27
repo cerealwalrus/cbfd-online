@@ -182,7 +182,7 @@ namespace {
         const bool zoomed = fov > 0.0f && unzoomed > 0.0f && fov < unzoomed - 0.5f;
         // A full-screen camera's view is clipped to 2..290 across (widescreen.cpp): split-screen ones
         // stop in the middle.
-        const bool full_screen = online || read_float(rdram, view, camera_left) <= 4.0f && read_float(rdram, view, camera_right) >= 286.0f &&
+        const bool full_screen = online || conker::possess_test::played_camera() != 0 || read_float(rdram, view, camera_left) <= 4.0f && read_float(rdram, view, camera_right) >= 286.0f &&
             read_float(rdram, view, camera_top) <= 4.0f && read_float(rdram, view, camera_bottom) >= 210.0f;
         last_aim_shown = !zoomed && full_screen;
         last_aim_state = state;
@@ -213,7 +213,8 @@ void conker::reticle::on_ui_ready() {
 void conker::reticle::update() {
     const int64_t since = clock::now().time_since_epoch().count() - last_aim_ticks.load();
     const bool aiming = since >= 0 && clock::duration(since) < linger && last_aim_shown.load();
-    const bool wanted = ui_ready && conker::reticle::enabled() && ultramodern::is_game_started() && aiming;
+    // (possess-test: the 5th player's aiming shows it whatever the setting, as the game's HUD has no crosshair for it)
+    const bool wanted = ui_ready && (conker::reticle::enabled() || conker::possess_test::played_camera() != 0) && ultramodern::is_game_started() && aiming;
     if (!wanted) {
         if (created && recompui::is_context_shown(context)) {
             recompui::hide_context(context);
