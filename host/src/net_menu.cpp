@@ -328,7 +328,8 @@ extern "C" void conker_online_boot_black(uint8_t* rdram, recomp_context* ctx);
 
 extern "C" void conker_online_boot_logos(uint8_t* rdram, recomp_context* ctx) {
     conker_online_boot_black(rdram, ctx);
-    if (!conker::netsession::active() || boot_bar_requested) {
+    // (possess-test: offline too, the intro skipped to the bar)
+    if (boot_bar_requested) {
         return;
     }
     const int32_t logo_frames = MEM_W(0, (gpr)(int32_t)0x800E0A90);
