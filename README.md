@@ -1,22 +1,16 @@
-<img width="1360" height="768" alt="image" src="https://github.com/user-attachments/assets/abb979d7-24a5-44f8-98d3-088ba2054a74" />
-# CBFD-Online is a modified build of Conker's Bad Fur Day: Recompiled
-The goal of CBFD-Online is to provide online multiplayer for Conker's Bad Fur Day: Recompiled.
-All standard multiplayer game modes are now available to be played with up to 4 players online. No more split-screen.
+<p align="center">
+  <img src="docs/banner.png" alt="Conker's Bad Fur Day: Online" width="100%">
+</p>
 
-# Conker's Bad Fur Day: Recompiled
+**CBFD Online** puts Conker's Bad Fur Day's multiplayer online: up to 4 players, each on their own PC with their own full screen. No split-screen.
 
-A native PC port of **Conker's Bad Fur Day** (N64, US version). It's built by
-statically recompiling the game with [N64Recomp](https://github.com/N64Recomp/N64Recomp),
-starting from the [Conker decompilation](https://github.com/mkst/conker). It runs on
-[N64ModernRuntime](https://github.com/N64Recomp/N64ModernRuntime) and is rendered by
-[RT64](https://github.com/rt64/rt64).
+- Every multiplayer mode from the game, played online
+- 4 player co-op through the mansion, everyone as the character they picked
+- Host or join from the launcher, with automatic updates
+- A pause menu just for you, while the game carries on for everyone else
 
-> **This repository contains no game data.** You need your own legally obtained
-> copy of the US ROM. Everything from the game is extracted from that ROM on
-> your machine during the build.
+**[Download the latest release](https://github.com/cerealwalrus/cbfd-online/releases/latest)** (Windows), unzip it anywhere and run `ConkerOnline.exe`. You need your own US ROM of Conker's Bad Fur Day: this project contains no game data.
 
-## Download
+<br>
 
-Ready-to-play Windows, Linux and macOS (Apple Silicon, macOS 15 or later) builds
-are on the [Releases page](https://github.com/sciaschi/CBFD-Recompiled/releases).
-
+<sub>Built on <a href="https://github.com/sciaschi/CBFD-Recompiled">Conker's Bad Fur Day: Recompiled</a>. Includes the HD Icons texture pack from <a href="https://github.com/DahSidiAbdallah/ConkerBFDReloaded">Conker's Bad Fur Day: Reloaded</a>, with textures by <a href="https://github.com/GameBeast92/Conker-s-Bad-Fur-Day-4k-Ultimate-Texture-Pack">GameBeast92</a> (CC BY 4.0), modified.</sub>
