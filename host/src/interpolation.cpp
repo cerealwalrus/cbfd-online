@@ -122,11 +122,17 @@ extern "C" void conker_object_matrix_group_begin(uint8_t* rdram, recomp_context*
         (uint32_t)MEM_W(0, (gpr)(int32_t)0x80082FA4) & 3u;   // D_80082FA4: the camera being drawn
     put_group(rdram, dl, ((0x80u | camera) << 24) | (kind << 16) | object, object_group_params);
     ctx->r4 = dl;
+    if (conker::possess_test::drawing_extra_view()) {
+        conker::possess_test::note_drawn(kind, object, (uint32_t)dl);
+    }
 }
 
 // At its return: $v0 is the end of what it wrote. The group is popped after it.
 extern "C" void conker_object_matrix_group_end(uint8_t* rdram, recomp_context* ctx) {
     gpr dl = ctx->r2;
+    if (conker::possess_test::drawing_extra_view()) {
+        conker::possess_test::note_drawn_end((uint32_t)dl);
+    }
     put_pop(rdram, dl);
     ctx->r2 = dl;
 }

@@ -808,6 +808,27 @@ extern "C" void conker_possess_view_eye(uint8_t* rdram, recomp_context* ctx) {
 }
 
 namespace {
+    // (possess37 diagnostics) the objects drawn in the extra camera's view this frame: their kind, index and commands
+    struct Drawn { uint32_t kind, object, start, end; };
+    std::vector<Drawn> drawn_now;
+}
+
+void conker::possess_test::note_drawn(uint32_t kind, uint32_t object, uint32_t start) {
+    if (drawn_now.size() < 400) {
+        drawn_now.push_back({ kind, object, start, 0 });
+    }
+}
+
+void conker::possess_test::note_drawn_end(uint32_t end) {
+    for (auto it = drawn_now.rbegin(); it != drawn_now.rend(); ++it) {
+        if (it->end == 0) {
+            it->end = end;
+            break;
+        }
+    }
+}
+
+namespace {
     bool extra_view_now = false;   // (possess34) the extra camera's view being drawn
     // (possess35) the characters' fades and hidden bits in the extra camera's view (as view 1), kept from frame to frame
     uint8_t extra_fade[25] = {}, extra_hidden[25] = {};
@@ -1321,6 +1342,18 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
             MEM_B(0xF, c) = (int8_t)((MEM_BU(0xF, c) & ~0x11u) | extra_hidden[k]);
         }
     }
+    // (possess37) and the step each character's fade takes a frame (func_150617BC, from func_150619A8 in func_15018DFC, before the
+    // views: for player 1's view alone), for view 1 as the extra camera's: 50 toward shown, or hidden, by its hidden bit (+0xF) for
+    // view 1. Without it a character's fade in the extra camera's view stayed where it was (at nothing, if it had faded out).
+    for (int k = 0; k < 25; k++) {
+        const gpr c = (gpr)(int32_t)(0x800CC2D0u + (uint32_t)k * 0x32Cu);
+        if (MEM_W(0, c) == 0) {
+            continue;
+        }
+        const uint32_t fade = MEM_BU(0xB, c);
+        const bool hidden = (MEM_BU(0xF, c) & 1u) != 0;
+        MEM_B(0xB, c) = (int8_t)(hidden ? (fade > 50u ? fade - 50u : 0u) : (fade < 205u ? fade + 50u : 255u));
+    }
     // nothing else of the game's runs while the view is drawn: this thread first in line (its priority as high as it goes)
     const uint32_t self = (uint32_t)ultramodern::this_thread();
     int32_t self_priority = 0;
@@ -1370,6 +1403,7 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
     }
 
     // 3. its passes
+    drawn_now.clear();
     extra_view_now = true;
     const recomp_context saved = *ctx;
     const int32_t was_view = MEM_W(0, (gpr)(int32_t)view_now);
@@ -1407,7 +1441,7 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
             *ctx = saved;
         };
         call1(func_15112A80, 0);
-        call2(func_151749F8, MEM_W(0, (gpr)(int32_t)0x800BE9F0), 0);
+        // (possess37: func_151749F8, the level's own update for the frame, left out again; and func_150636F0 below)
         call1(func_15188B74, 0);
         if (one_view_way) {
             call0(func_1516706C);
@@ -1422,9 +1456,6 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
         call1(func_151738C4, MEM_W(0, (gpr)(int32_t)0x800BE9F0));
         call0(func_1502C1A4);
         call0(func_15113C88);
-        if (MEM_BU(0, (gpr)(int32_t)0x800CC2B0) != 0) {
-            call0(func_150636F0);
-        }
         if (MEM_BU(0, (gpr)(int32_t)0x800BEAC0) == 0) {
             call0(func_15183D28);
             call0(func_151670C0);
@@ -1684,6 +1715,102 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
         std::memcpy(rdram + (keep[i].at - 0x80000000u), now[i].data(), keep[i].size);
     }
     kept_back = std::move(keep);
+    // (possess37 diagnostics) the objects the view drew, and the extra character's drawing: its matrices (where each puts its origin)
+    // and vertices (the first of each block), as the commands left to be drawn have them
+    if (local_views < 3 || local_views % 120 == 0) {
+        std::string out;
+        for (const Drawn& d : drawn_now) {
+            char piece[48];
+            std::snprintf(piece, sizeof(piece), " %X:%u(%u)", (unsigned)d.kind, (unsigned)d.object, (unsigned)(d.end > d.start ? (d.end - d.start) / 8 : 0));
+            if (out.size() < 1400) {
+                out += piece;
+            }
+        }
+        log("f=%u [drawn] %u objects in the extra camera's view:%s", (unsigned)frames, (unsigned)drawn_now.size(), out.c_str());
+        for (const Drawn& d : drawn_now) {
+            if (d.object != (uint32_t)extra || d.end <= d.start) {
+                continue;
+            }
+            std::string dump;
+            uint32_t seg[16] = {};
+            for (int sg = 0; sg < 16; sg++) {
+                seg[sg] = walker.seg[sg];
+            }
+            auto resolve = [&](uint32_t a) -> uint32_t {
+                const uint32_t s = (a >> 24) & 0xFFu;
+                if (s < 16) {
+                    return 0x80000000u | ((seg[s] + (a & 0x00FFFFFFu)) & 0x00FFFFFFu);
+                }
+                return 0x80000000u | (a & 0x00FFFFFFu);
+            };
+            int shown = 0;
+            std::vector<std::pair<uint32_t, uint32_t>> stack;   // (where to go back to, where that stretch ends)
+            uint32_t at = d.start, stop = d.end;
+            for (int n = 0; n < 6000 && shown < 48; n++) {
+                if (at >= stop || (at & 7u) != 0 || at < 0x80000000u || at >= 0x81000000u) {
+                    if (stack.empty()) {
+                        break;
+                    }
+                    at = stack.back().first;
+                    stop = stack.back().second;
+                    stack.pop_back();
+                    continue;
+                }
+                const uint32_t w0 = mem_word(rdram, at), w1 = mem_word(rdram, at + 4);
+                const uint32_t op = w0 >> 24;
+                char piece[120];
+                piece[0] = 0;
+                if (op == 0xDA) {
+                    const uint32_t m = resolve(w1);
+                    auto t = [&](int i) {
+                        return (float)(int16_t)MEM_H(24 + 2 * i, (gpr)(int32_t)m) + (float)(uint16_t)MEM_H(56 + 2 * i, (gpr)(int32_t)m) / 65536.0f;
+                    };
+                    std::snprintf(piece, sizeof(piece), " M%02X@%08X(%.0f,%.0f,%.0f)", (unsigned)(w0 & 0xFF), (unsigned)w1, t(0), t(1), t(2));
+                } else if (op == 0x01) {
+                    const uint32_t v = resolve(w1);
+                    std::snprintf(piece, sizeof(piece), " V%u@%08X(%d,%d,%d)", (unsigned)((w0 >> 12) & 0xFFu), (unsigned)w1,
+                        (int)(int16_t)MEM_H(0, (gpr)(int32_t)v), (int)(int16_t)MEM_H(2, (gpr)(int32_t)v), (int)(int16_t)MEM_H(4, (gpr)(int32_t)v));
+                } else if (op == 0xDB && ((w0 >> 16) & 0xFFu) == 0x06 && (w0 & 0xFFFFu) < 64u) {
+                    seg[(w0 & 0xFFFFu) / 4u] = w1 & 0x00FFFFFFu;
+                    std::snprintf(piece, sizeof(piece), " S%u=%08X", (unsigned)((w0 & 0xFFFFu) / 4u), (unsigned)w1);
+                } else if (op == 0xDE) {
+                    std::snprintf(piece, sizeof(piece), " D%s@%08X", ((w0 >> 16) & 0xFFu) != 0 ? "j" : "", (unsigned)w1);
+                    const uint32_t target = resolve(w1);
+                    if (((w0 >> 16) & 0xFFu) == 0) {
+                        if (stack.size() < 12) {
+                            stack.push_back({ at + 8, stop });
+                            at = target;
+                            stop = 0xFFFFFFFFu;
+                            dump += piece;
+                            shown++;
+                            continue;
+                        }
+                    } else {
+                        at = target;
+                        stop = 0xFFFFFFFFu;
+                        dump += piece;
+                        shown++;
+                        continue;
+                    }
+                } else if (op == 0xDF) {
+                    if (stack.empty()) {
+                        break;
+                    }
+                    at = stack.back().first;
+                    stop = stack.back().second;
+                    stack.pop_back();
+                    continue;
+                }
+                if (piece[0] != 0) {
+                    dump += piece;
+                    shown++;
+                }
+                at += 8;
+            }
+            log("f=%u [drawn] the extra character (kind %X, %u commands):%s", (unsigned)frames, (unsigned)d.kind,
+                (unsigned)((d.end - d.start) / 8), dump.c_str());
+        }
+    }
     // (possess32: drawn_marks no longer put in: with the whole of the game's drawing preparation run for the view, they held the render
     // items it made (+0x2D4), which don't exist in the game's memory as put back: the game freed them, and crashed)
     (void)drawn_marks;

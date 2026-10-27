@@ -427,6 +427,9 @@ namespace conker {
         int played_camera();
         // (possess34) the extra camera's view being drawn (as view 1, on this machine alone)
         bool drawing_extra_view();
+        // (possess37 diagnostics) an object's drawing in the extra camera's view: where its commands start, and end
+        void note_drawn(uint32_t kind, uint32_t object, uint32_t start);
+        void note_drawn_end(uint32_t end);
     }
 
     // menu_skin.cpp: optional PNGs for the launcher (assets/menu_skin/), see that file.
