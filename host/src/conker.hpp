@@ -340,7 +340,7 @@ namespace conker {
             std::string address;     // a client's: the host's address, with or without :port
             std::string nickname;    // how this player is called on the screen (empty: Player N)
             int port = 47000;
-            int players = 2;         // the host's: how many play (2 to 4)
+            int players = 2;         // the host's: how many play (2 to 5: the 5th plays a bot's character, possess_test.cpp)
             int delay = 0;           // the host's: frames of input delay (0: Auto, from the round trips, changed during the game)
             int input = 0;           // 0 = keyboard and gamepad, 1 = keyboard only, 2 = gamepad only
         };
@@ -352,13 +352,13 @@ namespace conker {
             int delay = 3;
             bool auto_delay = false; // the delay is worked out from the round trips (delay: what it is now)
             int mask = 0;            // a bit for each player slot that is in
-            std::array<std::string, 4> names;   // their nicknames (empty: none chosen)
+            std::array<std::string, 5> names;   // their nicknames (empty: none chosen)
             std::string log_path;    // the log file the session writes (netplay_host.txt or netplay_join.txt), once open
             bool can_start = false;  // host: everybody is here
             bool dedicated = false;  // the session is a dedicated server (slot 0 is the leader, not a host)
             bool launch = false;     // client: the host pressed Start
             std::string message;
-            std::array<float, 4> ping_ms{ -1.0f, -1.0f, -1.0f, -1.0f };   // round trip to each player (a client: to the host), ms; -1: not known yet
+            std::array<float, 5> ping_ms{ -1.0f, -1.0f, -1.0f, -1.0f, -1.0f };   // round trip to each player (a client: to the host), ms; -1: not known yet
         };
         // Text chat during a game (net_chat.cpp is its screen).
         bool chat_available();
@@ -420,6 +420,11 @@ namespace conker {
         // The game asked for a random number: where the call came from (for finding why two machines drift).
         void note_rng_call(uint32_t caller, uint32_t state);
         void watch_poll(const char* tag, uint32_t info);
+        // (possess-test) a match of 5 players (the lobby's Players: 5): the game is told of 4 (its controllers), and the 5th player plays
+        // the match's 5th character, a bot to the game, through an extra camera (possess_test.cpp), on every machine alike.
+        bool five_players();
+        // that 5th player's input for the frame being played, as every machine has it (false: nobody plays in the 5th slot)
+        bool fifth_input(uint16_t* buttons, float* x, float* y);
     }
 
     // possess_test.cpp (possess-test branch): offline, the camera controller 1 plays (0, or the extra camera's slot).
@@ -430,6 +435,16 @@ namespace conker {
         // (possess37 diagnostics) an object's drawing in the extra camera's view: where its commands start, and end
         void note_drawn(uint32_t kind, uint32_t object, uint32_t start, bool extra_view);
         void note_drawn_end(uint32_t end, bool extra_view);
+        // (online, 5 players) the extra camera is the 5th player's, on every machine: run as the players' cameras are (the free
+        // camera's orbit, mouse_camera.cpp)
+        bool online_extra_camera();
+        // (online, 5 players) this machine shows the extra camera's view: the 5th player's machine, once that camera plays
+        bool online_view_here();
+        // (online resyncs, save_states.cpp) whether a state can be taken now (not between a frame's start and its extra camera's
+        // view), and what of the extra camera is kept outside the game's memory, added to a state and put back with it
+        bool net_state_ready();
+        void net_state_save(uint8_t* rdram, std::vector<uint8_t>& out);
+        bool net_state_load(uint8_t* rdram, const uint8_t* data, size_t size);
     }
 
     // menu_skin.cpp: optional PNGs for the launcher (assets/menu_skin/), see that file.

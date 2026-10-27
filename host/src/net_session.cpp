@@ -16,7 +16,10 @@
 //
 // Environment (until there's a lobby screen):
 //   CONKER_NET_HOST=<port>        host a game on that UDP port
-//   CONKER_NET_PLAYERS=<2..4>     how many players the host waits for before the game starts (default 2)
+//   CONKER_NET_PLAYERS=<2..5>     how many players the host waits for before the game starts (default 2; 5, the possess-test
+//                                 branch: the 5th plays the match's 5th character, a bot's, through an extra camera, possess_test.cpp)
+//   CONKER_NET_SLOT=<1..5>        (a client, a test) the player slot it asks the host for (5: the 5th player's), if it's free
+//   CONKER_NET_FEWER=1            (the host, a test) the lobby's Start works with 2 or more players there, not only with all of them
 //   CONKER_NET_JOIN=<host>:<port> join a game
 //   CONKER_NET_DELAY=<frames>     input delay (default 3; 0 or auto: from the round trips)
 //   CONKER_NET_DIAG=1             when the games differ, the client is sent the host's memory to compare (megabytes: a test only)
@@ -79,9 +82,9 @@ namespace {
     using ConnPtr = std::shared_ptr<conker::transport::Conn>;
     using clock = std::chrono::steady_clock;
 
-    constexpr int max_players = 4;
+    constexpr int max_players = 5;   // (possess-test: the 5th plays a bot's character, see five_players; the game has 4 controllers)
     constexpr uint32_t magic = 0x544E4243;  // "CBNT"
-    constexpr uint32_t protocol_version = 12;
+    constexpr uint32_t protocol_version = 13;   // (13: 5 player slots, and the slot a joiner asks for in its Hello)
     constexpr uint32_t check_every = 30;
     constexpr uint32_t history = 1200;       // frames of inputs kept (for resyncs)
     constexpr uint32_t max_message = 64u << 20;
@@ -421,7 +424,7 @@ namespace {
     int lobby_input = 0;                         // the Controller choice (0 any, 1 keyboard, 2 gamepad)
     // Nicknames: only for showing (the lobby, the chat, the notices), not part of the game. Empty: "Player N".
     std::string my_name;
-    std::array<std::string, 4> names;
+    std::array<std::string, max_players> names;
     std::vector<std::unique_ptr<Peer>> graveyard;
 
     // Text chat: it doesn't touch the lockstep. A line goes to the host, which sends it on to everybody (the sender included,
@@ -486,6 +489,15 @@ namespace {
     std::string get_env(const char* name) {
         const char* value = SDL_getenv(name);
         return std::string(value != nullptr ? value : "");
+    }
+
+    // (CONKER_NET_FEWER=1 on the host, a test) the lobby's Start works with 2 or more of its players there
+    bool fewer_allowed() {
+        static const bool on = [] {
+            const std::string v = get_env("CONKER_NET_FEWER");
+            return !v.empty() && v != "0";
+        }();
+        return on;
     }
 
     uint32_t hash_block(const uint8_t* p, size_t n) {
@@ -1439,6 +1451,14 @@ namespace {
                     joiner_build = heard;
                 }
             }
+            // (protocol 13) the slot the joiner asks for (1 to 5; 0: whichever is free)
+            int asked_slot = 0;
+            if (!r.bad && r.at < r.size) {
+                asked_slot = r.get<uint8_t>();
+                if (r.bad) {
+                    asked_slot = 0;
+                }
+            }
             if (joiner_build != CONKER_ONLINE_VERSION) {
                 log_line("[net] a player on version %s was refused (this is %s)", joiner_build.c_str(), CONKER_ONLINE_VERSION);
                 refuse(s, 4, CONKER_ONLINE_VERSION);
@@ -1456,7 +1476,10 @@ namespace {
                 continue;
             }
             int slot = -1;
-            for (int k = dedicated ? 0 : 1; k < players_expected; k++) {
+            if (asked_slot >= (dedicated ? 1 : 2) && asked_slot <= players_expected && !connected[asked_slot - 1]) {
+                slot = asked_slot - 1;   // (CONKER_NET_SLOT: the 5th player's slot in a test with fewer players)
+            }
+            for (int k = dedicated ? 0 : 1; k < players_expected && slot < 0; k++) {
                 if (!connected[k]) {
                     slot = k;
                     break;
@@ -1586,7 +1609,7 @@ namespace {
                     const uint8_t expected = r.get<uint8_t>();
                     const uint8_t mask = r.get<uint8_t>();
                     const uint32_t d = r.get<uint32_t>();
-                    std::array<std::string, 4> heard;
+                    std::array<std::string, max_players> heard;
                     for (auto& name : heard) {
                         name = clean_name(r.get_string());
                     }
@@ -1874,7 +1897,9 @@ namespace {
             return false;
         }
         Writer hello(Hello);
-        hello.put(magic).put(protocol_version).put_string(my_name).put_string(CONKER_ONLINE_VERSION);
+        // (protocol 13) the slot this player asks for (CONKER_NET_SLOT, 1 to 5; 0: whichever is free): the host gives it if it's free
+        const int asked_slot = std::clamp(std::atoi(get_env("CONKER_NET_SLOT").c_str()), 0, max_players);
+        hello.put(magic).put(protocol_version).put_string(my_name).put_string(CONKER_ONLINE_VERSION).put((uint8_t)asked_slot);
         if (!send_all(s, hello.finish().data(), hello.bytes.size())) {
             s->close();
             return fail("The host closed the connection.");
@@ -2192,7 +2217,7 @@ conker::netsession::LobbyStatus conker::netsession::lobby_status() {
     for (int k = 0; k < max_players; k++) {
         here += (mask >> k) & 1;
     }
-    st.can_start = is_host && lobby_phase == 2 && !started && here >= players_expected;
+    st.can_start = is_host && lobby_phase == 2 && !started && (here >= players_expected || (fewer_allowed() && here >= 2));
     st.launch = !is_host && game_launch;
     st.dedicated = dedicated;
     st.ping_ms.fill(-1.0f);
@@ -2216,7 +2241,7 @@ bool conker::netsession::lobby_start() {
     for (int k = 0; k < max_players; k++) {
         here += connected[k] ? 1 : 0;
     }
-    if (here < players_expected) {
+    if (here < players_expected && !(fewer_allowed() && here >= 2)) {
         return false;
     }
     host_begin_game();
@@ -2364,6 +2389,11 @@ namespace {
 
 int conker::netsession::view_player() {
     const int own = local_player();
+    // (possess-test) the 5th player: its own, the extra camera's view drawn over the game's (possess_test.cpp), once it plays; until
+    // then player 1's
+    if (own >= 4) {
+        return conker::possess_test::online_view_here() ? own : 0;
+    }
     return own >= 0 ? own : spectate_target.load();
 }
 
@@ -3091,7 +3121,8 @@ void conker::netsession::on_port_read(int port) {
         }
         // (not once the match is over: 800E0B94 is 0 all through a match and 6/7/3 on the screens after it, which the game runs with
         // player 1's controller; the pause menu opened over them took that controller away in the 0.9.4 test)
-        if (!open && !allow_pause && plugged && in_match && rd8(0x800E0B94u) == 0 && start && !was_start) {
+        // (possess-test: not for the 5th player, who has none of the game's controllers for its pause screen, nor a view the game draws)
+        if (!open && !allow_pause && plugged && in_match && my_slot < 4 && rd8(0x800E0B94u) == 0 && start && !was_start) {
             // a player slot nobody plays in: the menu reads its input from there
             int slot = -1;
             for (int s = 3; s >= 0; s--) {
@@ -3608,6 +3639,11 @@ void conker::netsession::on_port_read(int port) {
             (int)current.p[2].plugged, (unsigned)current.p[2].buttons, (double)current.p[2].x, (double)current.p[2].y, (int)current.p[2].cam_on, (int)current.p[2].cam_yaw, (int)current.p[2].cam_pitch,
             (int)current.p[3].plugged, (unsigned)current.p[3].buttons, (double)current.p[3].x, (double)current.p[3].y, (int)current.p[3].cam_on, (int)current.p[3].cam_yaw, (int)current.p[3].cam_pitch);
     }
+    if (f % 30 == 0 && players_expected >= 5) {
+        // (possess-test) the 5th player's
+        log_line("[inputs5] f=%u p5=%d:%04X,%g,%g,cam%d:%d,%d", f, (int)current.p[4].plugged, (unsigned)current.p[4].buttons, (double)current.p[4].x,
+            (double)current.p[4].y, (int)current.p[4].cam_on, (int)current.p[4].cam_yaw, (int)current.p[4].cam_pitch);
+    }
     if (f % 10 == 0 && ram != nullptr) {
         // Where the two players are and a pointer-free hash of each object, to compare the logs of both machines.
         uint32_t pos[6];
@@ -3681,6 +3717,22 @@ bool conker::netsession::input(int port, bool* plugged, uint16_t* buttons, float
 
 bool conker::netsession::diag_on() {
     return diag_env_on();
+}
+
+bool conker::netsession::five_players() {
+    std::lock_guard lock{ mtx };
+    return enabled && !failed && players_expected >= 5;
+}
+
+bool conker::netsession::fifth_input(uint16_t* buttons, float* x, float* y) {
+    bool plugged = false;
+    if (!input(4, &plugged, buttons, x, y) || !plugged) {
+        *buttons = 0;
+        *x = 0.0f;
+        *y = 0.0f;
+        return false;
+    }
+    return true;
 }
 
 uint32_t conker::netsession::hook_generation() {
@@ -3784,8 +3836,9 @@ bool conker::netsession::device_present(int controller, bool* present) {
         *present = controller == 0;
         return true;
     }
-    // Who is connected is part of every frame's inputs; before the first frame it's whoever joined.
-    *present = in_frame ? current.p[controller].plugged != 0 : (controller < players_expected);
+    // Who is connected is part of every frame's inputs; before the first frame it's whoever joined (possess-test: those in the lobby, as the
+    // lobby's Start may be with fewer than all of them, CONKER_NET_FEWER)
+    *present = in_frame ? current.p[controller].plugged != 0 : (lobby_mask != 0 ? ((lobby_mask >> controller) & 1u) != 0 : controller < players_expected);
     return true;
 }
 

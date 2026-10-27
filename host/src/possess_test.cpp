@@ -9,6 +9,12 @@
 //   D-pad Right: controller 1 plays character 5 through that camera (made first if need be), as a 5th player would; again: back.
 // The game is told of one player all along: the extra camera is the step towards a 5th player's.
 //
+// (possess44) Online, a match of 5 players (the lobby's Players: 5): the game is told of 4 (its controllers, slots 1 to 4), and the 5th
+// player (slot 5) plays character 5, a bot to the game, through the extra camera, on every machine alike: the camera is made at the same
+// frame everywhere, the character is driven by the 5th player's input as the frame has it (conker_possess_pad), and the extra camera's
+// view is drawn on every machine (what it marks for the next frame's updates is the game's), its commands kept on the 5th player's
+// machine alone (net_view.cpp leaves them be). None of the D-pad's tests online.
+//
 // How the game drives a bot: its AI (the script commands, func_1509DFC4, e.g. func_1508CAD8 "go to") never touches a controller. It
 // writes its "hands" into the character's brain (character + 0x31C):
 //   +0x84 set: driven by the AI;  +0x85 / +0x86 the stick's X / Y;  +0x8A the buttons held;  +0x8C the buttons pressed this frame.
@@ -40,6 +46,9 @@
 
 #include "conker.hpp"
 #include "ultramodern/ultramodern.hpp"
+
+// (possess44) ultramodern's (input.cpp): a controller's stick as the game gets it, from the input's x and y, the same on every machine
+void convert_to_n64_range(float x, float y, int8_t& stick_x, int8_t& stick_y);
 
 namespace {
     constexpr uint32_t characters = 0x800CC2D0;      // the characters, 0x32C apart, 25 of them
@@ -86,6 +95,21 @@ namespace {
     bool use_game_poses = false;   // (possess38 experiment) D-pad Up while playing the extra character
     uint32_t extra_brain_flag = 1;
     uint16_t extra_pressed = 0;
+    // (possess44, online) the 5th player's buttons last frame (for those pressed this frame); what this machine was told; the last frame was
+    // a 5 player match's
+    uint16_t online_prev_buttons = 0;
+    bool online_told_playing = false, online_told_no_bot = false;
+    uint32_t online_match_frames = 0;   // (the frames of this match so far: the notice of no bot to play waits a few seconds for the bots)
+    bool online_was = false;
+
+    // (possess44) online, a match of 5 players: the extra camera and character 5 are the 5th player's, on every machine alike
+    bool online5() {
+        return conker::netsession::active() && conker::netsession::five_players();
+    }
+    // the tests' hooks do nothing online but for a match of 5
+    bool hooks_off() {
+        return conker::netsession::active() && !conker::netsession::five_players();
+    }
 
     uint32_t extra_camera(uint8_t* rdram) {
         return (uint32_t)MEM_W(0, (gpr)(int32_t)camera_base) + (uint32_t)extra * camera_size;
@@ -552,8 +576,121 @@ namespace {
     }
 }
 
+// (possess44) online, a match of 5 players: each character's controller as it's picked. Character 5 gets the 5th player's (from the frame's
+// input, on every machine alike) and no other character is left with it; player 1 plays on as ever. Once a frame (character 0's): the
+// 5th player's input in the extra camera's controller record and pressed buttons, the extra camera made for character 5 the first frame
+// the 5th player is there (and character 5 a bot without a camera), and character 5 the bot's again should the 5th player leave.
+namespace {
+    void online_pad(uint8_t* rdram, recomp_context* ctx) {
+        const int index = (int)(uint32_t)ctx->r17;
+        const uint32_t empty = (uint32_t)ctx->r29 + 0x5C;    // func_1504A730's empty controller for the characters without one
+        if (index != 0) {
+            if (MEM_BU(0, (gpr)(int32_t)multiplayer) != 0) {
+                weapons_watch(rdram);
+            }
+            if (extra_played && extra_ready && index == extra) {
+                const uint32_t record = pad_record(rdram, extra);
+                if (in_rdram(record)) {
+                    MEM_W(0, (gpr)(int32_t)controller_now) = (int32_t)record;
+                }
+                MEM_H(0, (gpr)(int32_t)shadow_of(pressed_shadow_table)) = (int16_t)extra_pressed;
+                const uint32_t brain = brain_of(rdram, extra);
+                if (brain != 0) {
+                    MEM_B(0x84, (gpr)(int32_t)brain) = 0;
+                }
+            } else if (extra_played && word(rdram, controller_now) == pad_record(rdram, extra)) {
+                // a character left with the 5th player's record: an empty one (its AI's copy would write into it)
+                for (uint32_t i = 0; i < 6; i++) {
+                    MEM_B(i, (gpr)(int32_t)empty) = 0;
+                }
+                MEM_W(0, (gpr)(int32_t)controller_now) = (int32_t)empty;
+            }
+            return;
+        }
+        if (MEM_BU(0, (gpr)(int32_t)multiplayer) == 0) {
+            if (extra_ready || extra_played) {
+                log("f=%u (online) the match is over", (unsigned)frames);
+            }
+            extra_wanted = extra_ready = extra_shown = extra_played = false;
+            online_prev_buttons = 0;
+            online_told_playing = online_told_no_bot = false;
+            online_match_frames = 0;
+            weapons_reset();
+            return;
+        }
+        frames++;
+        online_match_frames++;
+        uint16_t buttons = 0;
+        float x = 0.0f, y = 0.0f;
+        const bool here = conker::netsession::fifth_input(&buttons, &x, &y);
+        const bool mine = conker::netsession::local_slot() == extra;
+        if (!here) {
+            if (extra_played) {
+                extra_play_stop(rdram, "(online) the 5th player is gone");
+                extra_shown = false;
+            }
+            online_prev_buttons = 0;
+            return;
+        }
+        if (!extra_played) {
+            if (!(extra_ready || extra_wanted || extra_possible(rdram))) {
+                if (mine && !online_told_no_bot && online_match_frames > 150) {
+                    online_told_no_bot = true;
+                    log("f=%u (online) character %d isn't a bot without a camera: nothing for the 5th player to play", (unsigned)frames, extra);
+                    conker::notices::show("Player 5 plays the match's 5th character: the match needs bots (5 characters in all)", true);
+                }
+                return;
+            }
+            if (!extra_ready && !extra_wanted) {
+                log("f=%u (online) the extra camera is made for character %d, the 5th player's", (unsigned)frames, extra);
+            }
+            extra_wanted = extra_shown = extra_played = true;
+            const uint32_t brain = brain_of(rdram, extra);
+            extra_brain_flag = brain != 0 ? MEM_BU(0x84, (gpr)(int32_t)brain) : 1;
+            if (extra_brain_flag == 0) {
+                extra_brain_flag = 1;
+            }
+            online_prev_buttons = 0;
+            log("f=%u (online) the 5th player plays character %d through the extra camera%s", (unsigned)frames, extra, mine ? " (this machine's player)" : "");
+            if (mine && !online_told_playing) {
+                online_told_playing = true;
+                conker::notices::show("You're player 5: you play the match's 5th character", true);
+            }
+        }
+        // the 5th player's controller as controller 5: its record (the camera reads it too) and the buttons pressed this frame (not Start)
+        const uint16_t held_now = (uint16_t)(buttons & ~button_start);
+        int8_t sx = 0, sy = 0;
+        convert_to_n64_range(x, y, sx, sy);
+        const uint32_t record = pad_record(rdram, extra);
+        if (in_rdram(record)) {
+            MEM_H(0, (gpr)(int32_t)record) = (int16_t)held_now;
+            MEM_B(2, (gpr)(int32_t)record) = sx;
+            MEM_B(3, (gpr)(int32_t)record) = sy;
+            MEM_B(4, (gpr)(int32_t)record) = 0;
+            MEM_B(5, (gpr)(int32_t)record) = 0;
+        }
+        extra_pressed = (uint16_t)(held_now & ~online_prev_buttons);
+        online_prev_buttons = held_now;
+    }
+}
+
 extern "C" void conker_possess_pad(uint8_t* rdram, recomp_context* ctx) {
-    if (conker::netsession::active()) {
+    const bool online = conker::netsession::active();
+    if (online_was && !online) {
+        // (possess44) the session is over (this machine plays on offline): character 5 the bot's again, but on the 5th player's machine,
+        // where controller 1 plays it on (as D-pad Right would)
+        online_was = false;
+        if (conker::netsession::local_slot() != extra) {
+            extra_play_stop(rdram, "(online) the session is over");
+            extra_shown = false;
+        }
+        log("f=%u (online) the session is over: offline from here", (unsigned)frames);
+    }
+    if (online) {
+        online_was = online5();
+        if (online_was) {
+            online_pad(rdram, ctx);
+        }
         return;
     }
     const int index = (int)(uint32_t)ctx->r17;
@@ -829,9 +966,12 @@ extern "C" void func_1512C490(uint8_t* rdram, recomp_context* ctx);
 
 // func_15005290, 0x15005318: $s0 the cameras to make blocks for (players).
 extern "C" void conker_possess_cameras_alloc(uint8_t* rdram, recomp_context* ctx) {
-    if (conker::netsession::active()) {
+    if (hooks_off()) {
         return;
     }
+    online_prev_buttons = 0;
+    online_told_playing = online_told_no_bot = false;
+    online_match_frames = 0;
     if ((int32_t)ctx->r16 < 5) {
         log("cameras made for %d players: blocks with room for 5", (int)(int32_t)ctx->r16);
         ctx->r16 = 5;
@@ -847,14 +987,14 @@ extern "C" void conker_possess_cameras_alloc(uint8_t* rdram, recomp_context* ctx
 
 // func_15005290, 0x15005464: $a0 = D_80082FA0, for the last block (cameras + 1).
 extern "C" void conker_possess_cameras_alloc2(uint8_t* rdram, recomp_context* ctx) {
-    if (!conker::netsession::active() && (int32_t)ctx->r4 < 4) {
+    if (!hooks_off() && (int32_t)ctx->r4 < 4) {
         ctx->r4 = 4;
     }
 }
 
 // func_150054C4, 0x150054C8 (its start, past one instruction): camera ($a0) for character $a1.
 extern "C" void conker_possess_camera_args(uint8_t* rdram, recomp_context* ctx) {
-    if (!conker::netsession::active() && (int32_t)ctx->r5 == 0) {
+    if (!hooks_off() && (int32_t)ctx->r5 == 0) {
         camera_arg2 = (uint32_t)ctx->r6;
         camera_arg3 = (uint32_t)ctx->r7;
         have_args = true;
@@ -863,14 +1003,14 @@ extern "C" void conker_possess_camera_args(uint8_t* rdram, recomp_context* ctx) 
 
 // func_1501A220, 0x1501A258: $s0 the views to make room for.
 extern "C" void conker_possess_views_alloc(uint8_t* rdram, recomp_context* ctx) {
-    if (!conker::netsession::active() && (int32_t)ctx->r16 < 5) {
+    if (!hooks_off() && (int32_t)ctx->r16 < 5) {
         ctx->r16 = 5;
     }
 }
 
 // func_1501A220, 0x1501A360: its views made; the rest of the 5 made full screen.
 extern "C" void conker_possess_views_make(uint8_t* rdram, recomp_context* ctx) {
-    if (conker::netsession::active()) {
+    if (hooks_off()) {
         return;
     }
     const int last = (int)MEM_W(0, (gpr)(int32_t)last_player);
@@ -892,7 +1032,7 @@ extern "C" void conker_possess_views_make(uint8_t* rdram, recomp_context* ctx) {
 
 // func_15122AE0, 0x15122C18: the game's cameras have run this frame.
 extern "C" void conker_possess_camera_frame(uint8_t* rdram, recomp_context* ctx) {
-    if (conker::netsession::active() || MEM_BU(0, (gpr)(int32_t)multiplayer) == 0 || (!extra_wanted && !extra_ready)) {
+    if (hooks_off() || MEM_BU(0, (gpr)(int32_t)multiplayer) == 0 || (!extra_wanted && !extra_ready)) {
         return;
     }
     const uint32_t base = (uint32_t)MEM_W(0, (gpr)(int32_t)camera_base);
@@ -1093,12 +1233,21 @@ namespace {
         return false;
     }
 
-    // This machine draws the extra camera's view (offline: D-pad Left; online: the 5th player's machine).
+    // The extra camera's view is drawn this frame (offline: D-pad Left; online, a match of 5 players: on every machine while the 5th
+    // player plays, what it marks for the next frame's updates being the game's; its commands are kept where view_shown_here).
     bool local_view_wanted(uint8_t* rdram) {
         if (!extra_ready || MEM_BU(0, (gpr)(int32_t)multiplayer) == 0) {
             return false;
         }
-        return !conker::netsession::active() && extra_shown;
+        if (conker::netsession::active()) {
+            return online5() && extra_played;
+        }
+        return extra_shown;
+    }
+
+    // (possess44) the extra camera's view is shown on this machine: offline whenever it's drawn, online on the 5th player's machine alone
+    bool view_shown_here() {
+        return !conker::netsession::active() || conker::netsession::local_slot() == extra;
     }
 
     uint32_t call_list(uint8_t* rdram, recomp_context* ctx, void (*fn)(uint8_t*, recomp_context*), uint32_t list, int view) {
@@ -1220,7 +1369,7 @@ extern "C" void conker_possess_view_pass(uint8_t* rdram, recomp_context* ctx, in
 // func_15000AD0, before its allocations of a 0x80 block a view ($a0, D_80082FA0 * 0x80 + 0x80, kept at D_800DBEB0): room for 5.
 extern "C" void conker_possess_view_alloc(uint8_t* rdram, recomp_context* ctx) {
     (void)rdram;
-    if (!conker::netsession::active() && (int32_t)ctx->r4 < 5 * 0x80) {
+    if (!hooks_off() && (int32_t)ctx->r4 < 5 * 0x80) {
         ctx->r4 = 5 * 0x80;
     }
 }
@@ -1856,6 +2005,11 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
         }
         list = list_before;
     }
+    // (possess44, online) the view's commands are the 5th player's machine's alone: the others let them go (what the view marks for the
+    // next frame's updates, below, every machine keeps alike)
+    if (!view_shown_here()) {
+        list = list_before;
+    }
 
     // 4. what the new commands draw from: what the view's passes changed is copied to ours and the commands pointed at the copies (a
     // command of the new ones, directly; one of a list they call, through the segment a new command set); what can't be is kept
@@ -2049,6 +2203,18 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
     for (const Kept& k : keep) {
         now.emplace_back(rdram + (k.at - 0x80000000u), rdram + (k.at - 0x80000000u) + k.size);
     }
+    // (possess44, online) nothing of the view's kept in the game's memory into the next frame (it would differ from the other machines'):
+    // its commands are let go this frame instead
+    if (conker::netsession::active() && !keep.empty()) {
+        static uint32_t told_kept = 0;
+        if (told_kept++ < 20) {
+            log("f=%u (online) %u pieces the view draws from couldn't be copied: its commands let go this frame", (unsigned)frames, (unsigned)keep.size());
+        }
+        keep.clear();
+        now.clear();
+        list = list_before;
+        patches.clear();
+    }
     // (possess32 diagnostics) each character as the view's passes left it: in sight (+0x6F of its object), its fades (+7, +0xB: view 1's),
     // hidden-views bits (+0xF), its render item (+0x2D4), against the game's (as the frame ended)
     if (local_views < 3 || local_views % 120 == 0) {
@@ -2170,7 +2336,7 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
     kept_back = std::move(keep);
     // (possess37 diagnostics) the objects the view drew, and the extra character's drawing: its matrices (where each puts its origin)
     // and vertices (the first of each block), as the commands left to be drawn have them
-    if (local_views < 3 || local_views % 120 == 0) {
+    if ((local_views < 3 || local_views % 120 == 0) && list > list_before) {
         std::string out;
         for (const Drawn& d : drawn_now) {
             char piece[48];
@@ -2539,7 +2705,7 @@ extern "C" int conker_possess_hide_skip(uint8_t* rdram, recomp_context* ctx) {
 // the game does for a character without a camera: moved at once (func_15172D28), if it's this level.
 extern "C" void func_15172D28(uint8_t* rdram, recomp_context* ctx);
 extern "C" int conker_possess_warp(uint8_t* rdram, recomp_context* ctx) {
-    if (conker::netsession::active() || !extra_ready || (uint32_t)ctx->r4 != character(extra)) {
+    if (hooks_off() || !extra_ready || (uint32_t)ctx->r4 != character(extra)) {
         return 0;
     }
     const uint32_t object = (uint32_t)ctx->r4;
@@ -2561,4 +2727,145 @@ extern "C" int conker_possess_warp(uint8_t* rdram, recomp_context* ctx) {
         *ctx = saved;
     }
     return 1;
+}
+
+// ---- (possess44) online, 5 players ----
+
+bool conker::possess_test::online_extra_camera() {
+    return extra_ready && online5();
+}
+
+bool conker::possess_test::online_view_here() {
+    return extra_ready && extra_played && online5() && conker::netsession::local_slot() == extra;
+}
+
+// A resync's state (save_states.cpp) has the game's 8 MB; what the extra camera keeps outside them (our memory from 0x80FD0000: its
+// buffer, its controller's record, the tables' 5th entries, its view's buffers; and what's kept here between frames) goes with it, so the
+// machine loading it goes on with the host's. Not taken between a frame's start and its extra camera's view (drawn from a copy of the
+// game taken then), nor while pieces the view drew from are kept for the frame.
+namespace {
+    constexpr uint32_t ours_start = 0x80FD0000u, ours_size = 0x10000u;
+    constexpr uint32_t net_state_version = 1;
+
+    template <typename T> void put_value(std::vector<uint8_t>& out, const T& v) {
+        const uint8_t* b = reinterpret_cast<const uint8_t*>(&v);
+        out.insert(out.end(), b, b + sizeof(T));
+    }
+
+    struct ValueReader {
+        const uint8_t* data;
+        size_t size;
+        size_t at = 0;
+        bool bad = false;
+        template <typename T> T get() {
+            T v{};
+            if (at + sizeof(T) > size) {
+                bad = true;
+                return v;
+            }
+            std::memcpy(&v, data + at, sizeof(T));
+            at += sizeof(T);
+            return v;
+        }
+    };
+}
+
+bool conker::possess_test::net_state_ready() {
+    return !start_copied && kept_back.empty();
+}
+
+void conker::possess_test::net_state_save(uint8_t* rdram, std::vector<uint8_t>& out) {
+    put_value(out, net_state_version);
+    const uint8_t flags = (uint8_t)((have_args ? 1 : 0) | (extra_wanted ? 2 : 0) | (extra_ready ? 4 : 0) | (extra_shown ? 8 : 0) | (extra_played ? 16 : 0) |
+        (slot4_on ? 32 : 0) | (extra_fades_kept ? 64 : 0));
+    put_value(out, flags);
+    put_value(out, camera_arg2);
+    put_value(out, camera_arg3);
+    put_value(out, extra_brain_flag);
+    put_value(out, extra_pressed);
+    put_value(out, online_prev_buttons);
+    out.insert(out.end(), extra_fade, extra_fade + 25);
+    out.insert(out.end(), extra_hidden, extra_hidden + 25);
+    put_value(out, kept_areas_root);
+    put_value(out, (uint32_t)kept_areas.size());
+    for (size_t i = 0; i < kept_areas.size(); i++) {
+        put_value(out, kept_areas[i]);
+        put_value(out, kept_area_bits[i]);
+    }
+    put_value(out, kept_objects_list);
+    put_value(out, kept_objects_count);
+    put_value(out, (uint32_t)kept_object_fades.size());
+    out.insert(out.end(), kept_object_fades.begin(), kept_object_fades.end());
+    put_value(out, ours_size);
+    out.insert(out.end(), rdram + (ours_start - 0x80000000u), rdram + (ours_start - 0x80000000u) + ours_size);
+}
+
+bool conker::possess_test::net_state_load(uint8_t* rdram, const uint8_t* data, size_t size) {
+    ValueReader r{ data, size };
+    const uint32_t version = r.get<uint32_t>();
+    if (r.bad || version != net_state_version) {
+        log("(online) a resync's state with the extra camera's of another version (%u): left as it is", (unsigned)version);
+        return false;
+    }
+    const uint8_t flags = r.get<uint8_t>();
+    const uint32_t arg2 = r.get<uint32_t>(), arg3 = r.get<uint32_t>(), brain_flag = r.get<uint32_t>();
+    const uint16_t pressed_now = r.get<uint16_t>(), prev = r.get<uint16_t>();
+    uint8_t fades[25], hidden[25];
+    for (int k = 0; k < 25; k++) {
+        fades[k] = r.get<uint8_t>();
+    }
+    for (int k = 0; k < 25; k++) {
+        hidden[k] = r.get<uint8_t>();
+    }
+    const uint32_t root = r.get<uint32_t>();
+    const uint32_t areas = r.get<uint32_t>();
+    if (r.bad || areas > 65536) {
+        log("(online) a resync's state with the extra camera's cut short: left as it is");
+        return false;
+    }
+    std::vector<uint32_t> nodes(areas);
+    std::vector<uint8_t> bits(areas);
+    for (uint32_t i = 0; i < areas; i++) {
+        nodes[i] = r.get<uint32_t>();
+        bits[i] = r.get<uint8_t>();
+    }
+    const uint32_t objects_list_now = r.get<uint32_t>(), objects_count_now = r.get<uint32_t>(), fades_count = r.get<uint32_t>();
+    if (r.bad || fades_count > 4096 || r.at + fades_count > size) {
+        log("(online) a resync's state with the extra camera's cut short: left as it is");
+        return false;
+    }
+    std::vector<uint8_t> object_fades(data + r.at, data + r.at + fades_count);
+    r.at += fades_count;
+    const uint32_t region = r.get<uint32_t>();
+    if (r.bad || region != ours_size || r.at + region > size) {
+        log("(online) a resync's state with the extra camera's cut short: left as it is");
+        return false;
+    }
+    have_args = (flags & 1) != 0;
+    extra_wanted = (flags & 2) != 0;
+    extra_ready = (flags & 4) != 0;
+    extra_shown = (flags & 8) != 0;
+    extra_played = (flags & 16) != 0;
+    slot4_on = (flags & 32) != 0;
+    extra_fades_kept = (flags & 64) != 0;
+    camera_arg2 = arg2;
+    camera_arg3 = arg3;
+    extra_brain_flag = brain_flag;
+    extra_pressed = pressed_now;
+    online_prev_buttons = prev;
+    std::memcpy(extra_fade, fades, sizeof(fades));
+    std::memcpy(extra_hidden, hidden, sizeof(hidden));
+    kept_areas_root = root;
+    kept_areas = std::move(nodes);
+    kept_area_bits = std::move(bits);
+    kept_objects_list = objects_list_now;
+    kept_objects_count = objects_count_now;
+    kept_object_fades = std::move(object_fades);
+    std::memcpy(rdram + (ours_start - 0x80000000u), data + r.at, region);
+    start_copied = false;
+    kept_back.clear();
+    extra_view_now = false;
+    view_pass_on = false;
+    log("f=%u (online) a resync's state loaded, the extra camera's with it (ready %d, played %d)", (unsigned)frames, (int)extra_ready, (int)extra_played);
+    return true;
 }

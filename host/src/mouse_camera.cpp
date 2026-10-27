@@ -231,7 +231,9 @@ namespace {
             return nullptr;
         }
         // offline: the camera controller 1 plays (player 1's, or the possess test's extra camera)
-        if (conker::netsession::active() ? i >= (uint32_t)max_cameras : i != (uint32_t)conker::possess_test::played_camera()) {
+        // (online, a match of 5 players: the extra camera, slot 4, too: the 5th player's, on every machine alike)
+        if (conker::netsession::active() ? (i > (uint32_t)max_cameras || (i == (uint32_t)max_cameras && !conker::possess_test::online_extra_camera()))
+                                         : i != (uint32_t)conker::possess_test::played_camera()) {
             return nullptr;
         }
         if (index != nullptr) {
@@ -491,7 +493,7 @@ extern "C" void conker_mouse_camera_collide(uint8_t* rdram, recomp_context* ctx)
             orbit.wanted = wanted_distance;
         }
         orbit.engaged = true;
-        static bool logged[max_cameras] = {};
+        static bool logged[max_cameras + 1] = {};
         if (conker::netsession::active() && !logged[camera_index]) {
             logged[camera_index] = true;
             conker::netsession::log(("[camera] the orbit took over camera " + std::to_string(camera_index) + " (online)").c_str());

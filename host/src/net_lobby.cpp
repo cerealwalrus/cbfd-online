@@ -157,7 +157,7 @@ namespace {
     recompui::Button* update_button = nullptr;
     bool update_quit_sent = false;
     std::string version_text_shown;
-    recompui::Label* player_labels[4] = {};
+    recompui::Label* player_labels[5] = {};
     std::string last_signature;
 
     const char* input_name() {
@@ -165,7 +165,7 @@ namespace {
     }
 
     void refresh_settings_buttons() {
-        players_button->set_text("Players: " + std::to_string(players));
+        players_button->set_text("Players: " + std::to_string(players) + (players >= 5 ? " (test)" : ""));
         delay_button->set_text(delay_frames <= 0 ? std::string("Input delay: Auto") : "Input delay: " + std::to_string(delay_frames) + (delay_frames == 1 ? " frame" : " frames"));
         input_button->set_text(input_name());
     }
@@ -283,7 +283,8 @@ namespace {
         delay_button = make_button(settings_row, "", recompui::ButtonStyle::Secondary, Action::Delay);
         input_button = make_button(settings_row, "", recompui::ButtonStyle::Secondary, Action::Input);
         refresh_settings_buttons();
-        make_label(setup_page, "Players and input delay are the host's choice. Controller is for this computer.", recompui::LabelStyle::Annotation);
+        make_label(setup_page, "Players and input delay are the host's choice. Controller is for this computer. With 5 players (a test), the 5th plays the "
+            "match's 5th character, a bot's: the match needs bots.", recompui::LabelStyle::Annotation);
 
         recompui::Container* setup_buttons = make_row(setup_page);
         recompui::Button* host_button = make_button(setup_buttons, "Host", recompui::ButtonStyle::Primary, Action::Host);
@@ -302,7 +303,7 @@ namespace {
 
         message_label = make_label(lobby_page, "", recompui::LabelStyle::Normal);
         info_label = make_label(lobby_page, "", recompui::LabelStyle::Small);
-        for (int i = 0; i < 4; i++) {
+        for (int i = 0; i < 5; i++) {
             player_labels[i] = make_label(lobby_page, "", recompui::LabelStyle::Large);
         }
         recompui::Container* lobby_buttons = make_row(lobby_page);
@@ -333,7 +334,7 @@ namespace {
     // The lobby page, from the session's state.
     void refresh_lobby(const conker::netsession::LobbyStatus& st) {
         std::string signature = std::to_string(st.phase) + "|" + std::to_string(st.mask) + "|" + std::to_string(st.expected) + "|" +
-            std::to_string(st.delay) + "|" + std::to_string(st.auto_delay) + "|" + std::to_string(st.slot) + "|" + std::to_string(st.can_start) + "|" + std::to_string(st.dedicated) + "|" + st.message + "|" + st.names[0] + "|" + st.names[1] + "|" + st.names[2] + "|" + st.names[3] + "|" + st.log_path;
+            std::to_string(st.delay) + "|" + std::to_string(st.auto_delay) + "|" + std::to_string(st.slot) + "|" + std::to_string(st.can_start) + "|" + std::to_string(st.dedicated) + "|" + st.message + "|" + st.names[0] + "|" + st.names[1] + "|" + st.names[2] + "|" + st.names[3] + "|" + st.names[4] + "|" + st.log_path;
         for (float p : st.ping_ms) {
             signature += "|" + std::to_string(p < 0 ? -1 : (int)(p + 0.5f));
         }
@@ -359,12 +360,13 @@ namespace {
         const std::string frames_text = std::to_string(st.delay) + (st.delay == 1 ? " frame" : " frames");
         const std::string delay_text = st.auto_delay ? "Input delay: Auto (" + frames_text + " for these round trips now; it follows them during the game)" : "Input delay: " + frames_text + " (the host chose it)";
         info_label->set_text(st.phase == 2 ? delay_text + (st.log_path.empty() ? std::string() : "\nLog file: " + st.log_path) : std::string());
-        for (int i = 0; i < 4; i++) {
+        for (int i = 0; i < 5; i++) {
             std::string line;
             if (i < st.expected && st.phase == 2) {
                 line = (((st.mask >> i) & 1) && !st.names[i].empty()) ? st.names[i] : "Player " + std::to_string(i + 1);
                 line += i == 0 ? (st.dedicated ? " (leader: picks the match)" : " (host)") : "";
                 line += i == st.slot ? " (you)" : "";
+                line += i == 4 ? " (plays a bot's character)" : "";
                 line += ((st.mask >> i) & 1) ? "  -  here" : "  -  waiting for a player...";
                 if (((st.mask >> i) & 1) && i != st.slot && st.ping_ms[i] >= 0) {
                     line += "  -  ping " + std::to_string((int)(st.ping_ms[i] + 0.5f)) + " ms";
@@ -431,7 +433,7 @@ void conker::netlobby::update(const std::u8string& game_id) {
             context.open();
             switch (a) {
                 case Action::Players:
-                    players = players >= 4 ? 2 : players + 1;
+                    players = players >= 5 ? 2 : players + 1;
                     refresh_settings_buttons();
                     break;
                 case Action::Delay: {

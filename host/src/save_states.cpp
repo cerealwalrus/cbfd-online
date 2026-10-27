@@ -207,6 +207,37 @@ namespace {
         ultramodern::save_states::set_safe_points_wanted(request.load() != Request::None || net_pending.load());
     }
 
+    // (possess-test) what of the extra camera is kept outside the game's memory (possess_test.cpp), at the end of an online state: its
+    // bytes, then their size and this mark. A state without them (an older build's) is the runtime's alone.
+    constexpr uint32_t extras_mark = 0x58533550u;   // "P5SX"
+    void append_extras(uint8_t* rdram, std::vector<uint8_t>& state) {
+        std::vector<uint8_t> extras;
+        conker::possess_test::net_state_save(rdram, extras);
+        const uint32_t size = (uint32_t)extras.size();
+        state.insert(state.end(), extras.begin(), extras.end());
+        const uint8_t* s = reinterpret_cast<const uint8_t*>(&size);
+        state.insert(state.end(), s, s + 4);
+        const uint8_t* m = reinterpret_cast<const uint8_t*>(&extras_mark);
+        state.insert(state.end(), m, m + 4);
+    }
+    // the runtime's part of a state (its size), and the extras after it, if it has them
+    size_t runtime_part(const std::vector<uint8_t>& state, const uint8_t** extras, size_t* extras_size) {
+        *extras = nullptr;
+        *extras_size = 0;
+        if (state.size() < 8) {
+            return state.size();
+        }
+        uint32_t size = 0, mark = 0;
+        std::memcpy(&mark, state.data() + state.size() - 4, 4);
+        std::memcpy(&size, state.data() + state.size() - 8, 4);
+        if (mark != extras_mark || (uint64_t)size + 8 > state.size()) {
+            return state.size();
+        }
+        *extras = state.data() + state.size() - 8 - size;
+        *extras_size = size;
+        return state.size() - 8 - size;
+    }
+
     void run_net_job(uint8_t* rdram) {
         std::unique_ptr<NetJob> job;
         bool ok = false;
@@ -219,17 +250,27 @@ namespace {
             net_job->attempts++;
             const bool timed_out = clock::now() - net_job->at > net_gives_up_after;
             bool done = false;
-            if (ultramodern::save_states::is_quiet() && !conker::netview::busy()) {
+            // (possess-test: nor between a frame's start and its extra camera's view, which is drawn from a copy of the game taken then)
+            if (ultramodern::save_states::is_quiet() && !conker::netview::busy() && conker::possess_test::net_state_ready()) {
                 std::lock_guard<std::mutex> render_lock(conker::netview::render_mutex());   // (0.10.79) not while a list is drawn
                 std::string error;
                 if (net_job->save) {
                     ok = recomp::save_states::capture(rdram, net_job->state, error);
                     done = ok;
+                    if (ok) {
+                        append_extras(rdram, net_job->state);
+                    }
                 }
                 else {
-                    const auto result = recomp::save_states::restore(rdram, net_job->state, error);
+                    const uint8_t* extras = nullptr;
+                    size_t extras_size = 0;
+                    const size_t runtime_size = runtime_part(net_job->state, &extras, &extras_size);
+                    const auto result = recomp::save_states::restore(rdram, std::span<const uint8_t>(net_job->state.data(), runtime_size), error);
                     ok = result == recomp::save_states::LoadResult::Loaded;
                     done = ok || result == recomp::save_states::LoadResult::Invalid;
+                    if (ok && extras != nullptr) {
+                        conker::possess_test::net_state_load(rdram, extras, extras_size);
+                    }
                 }
                 if (!done) {
                     log_line("[net state] try %u: %s", net_job->attempts, error.c_str());

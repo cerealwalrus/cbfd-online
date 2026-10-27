@@ -1978,7 +1978,9 @@ void conker::netview::render_begin(uint8_t* rdram, uint32_t data_ptr) {
 // display list has the setup of a camera's pass. Nothing of the game's is changed here.
 extern "C" void conker_net_view_pass(uint8_t* rdram, int gfx, int camera, int kind) {
     (void)rdram;
-    if (!view_is_full()) {
+    // (possess-test) not the extra camera's view's passes (drawn as view 1 at the frame's end, possess_test.cpp): its commands are the
+    // 5th player's machine's alone, full screen already, and let go on the others
+    if (!view_is_full() || conker::possess_test::drawing_extra_view()) {
         return;
     }
     // (a pass calls func_1501A490 for its setup: the pass is already listed, and the setup comes just after its start)
