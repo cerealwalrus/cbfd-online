@@ -3727,7 +3727,8 @@ bool conker::netsession::five_players() {
 bool conker::netsession::fifth_input(uint16_t* buttons, float* x, float* y) {
     bool plugged = false;
     // (possess46) as the game's own ports' input is (input_for_game): with Swap Sticks the C-buttons held back after R until let go, and
-    // the sticks still while R is held with the look off; the walking while aiming (look_aim.cpp) stays the 4 players'
+    // the sticks still while R is held with the look off; (possess47) and the walking while aiming (look_aim.cpp's no_weapon_walk and
+    // gun_side_walk, for the extra camera)
     if (!input_for_game(4, &plugged, buttons, x, y) || !plugged) {
         *buttons = 0;
         *x = 0.0f;

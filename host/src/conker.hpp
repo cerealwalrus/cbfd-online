@@ -405,7 +405,8 @@ namespace conker {
         void note_rng_call(uint32_t caller, uint32_t state);
         void watch_poll(const char* tag, uint32_t info);
         // (possess-test) a match of 5 players (the lobby's Players: 5): the game is told of 4 (its controllers), and the 5th player plays
-        // the match's 5th character, a bot to the game, through an extra camera (possess_test.cpp), on every machine alike.
+        // the match's 5th character through an extra camera (possess_test.cpp), on every machine alike: its own (possess47), a
+        // computer player to the game's setup, without the AI, the computer players after it (12 characters at most).
         bool five_players();
         // that 5th player's input for the frame being played, as every machine has it (false: nobody plays in the 5th slot)
         bool fifth_input(uint16_t* buttons, float* x, float* y);

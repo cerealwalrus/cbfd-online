@@ -111,6 +111,17 @@ namespace {
     int humans_now(uint8_t* rdram) {
         return (int)(int8_t)MEM_B(0, (gpr)(int32_t)team_humans);
     }
+
+    // (possess47) online, a match of 5 players (the possess test's): one character place less than the mode has, the 5th player's own
+    // character's (possess_test.cpp's conker_possess_list puts it in the list as the match is set up), so the computer players never
+    // take it and the characters never pass the mode's most: the war's 12 are the 4 players, the 5th and 7 computer players. Never under
+    // the players, nor under 2 (the match's setup makes the room there, taking a computer player off).
+    int fifth_place(int most, int humans) {
+        if (most <= 2) {
+            return most;
+        }
+        return std::max(most - 1, humans);
+    }
 }
 
 // func_151E1744 at 0x151E18E4: $a1 the most players on one team.
@@ -119,24 +130,27 @@ extern "C" void conker_team_caps(uint8_t* rdram, recomp_context* ctx) {
         return;
     }
     const int humans = humans_now(rdram);
-    if (humans < 2) {   // (0.10.91: two players as well, with the computer players conker_bots_most lets them have)
+    const bool five = conker::netsession::five_players();   // (possess47: see fifth_place)
+    if (humans < 2 && !five) {   // (0.10.91: two players as well, with the computer players conker_bots_most lets them have)
         return;
     }
     // (0.10.26: all of them on one team, the other then the computer players'; and as many characters as the mode has with fewer
     // players, $s3, the most of the entry's two (+2 under three players, +5 three or more), $v0 the entry)
     const int most_before = (int)(int32_t)ctx->r19;
-    const int most = std::max(most_before, (int)(int8_t)MEM_B(2, ctx->r2));
+    int most = humans >= 2 ? std::max(most_before, (int)(int8_t)MEM_B(2, ctx->r2)) : most_before;
+    if (five) {
+        most = fifth_place(most, humans);
+    }
+    const int team_most = humans >= 2 ? std::max((int)(int32_t)ctx->r5, humans) : (int)(int32_t)ctx->r5;
     static int logged = 0;
-    if (((int32_t)ctx->r5 < humans || most != most_before) && logged < 4) {
-        char line[160];
-        std::snprintf(line, sizeof(line), "[teams] %d players: most on one team %d raised to %d, most characters %d to %d", humans, (int)(int32_t)ctx->r5, humans,
-            most_before, most);
+    if ((team_most != (int)(int32_t)ctx->r5 || most != most_before) && logged < 4) {
+        char line[200];
+        std::snprintf(line, sizeof(line), "[teams] %d players: most on one team %d raised to %d, most characters %d to %d%s", humans, (int)(int32_t)ctx->r5,
+            team_most, most_before, most, five ? " (one for the 5th player's own)" : "");
         conker::netsession::log(line);
         logged++;
     }
-    if ((int32_t)ctx->r5 < humans) {
-        ctx->r5 = (gpr)(int32_t)humans;
-    }
+    ctx->r5 = (gpr)(int32_t)team_most;
     ctx->r19 = (gpr)(int32_t)most;
 }
 
@@ -146,7 +160,8 @@ extern "C" void conker_team_trim(uint8_t* rdram, recomp_context* ctx) {
         return;
     }
     const int humans = humans_now(rdram);
-    if (humans < 2) {   // (0.10.91: two players as well, with the computer players conker_bots_most lets them have)
+    const bool five = conker::netsession::five_players();   // (possess47: see fifth_place)
+    if (humans < 2 && !five) {   // (0.10.91: two players as well, with the computer players conker_bots_most lets them have)
         return;
     }
     const uint32_t state = (uint32_t)MEM_W(0, (gpr)(int32_t)game_state);
@@ -161,9 +176,13 @@ extern "C" void conker_team_trim(uint8_t* rdram, recomp_context* ctx) {
     if (table < 0 || table > 16) {
         return;
     }
-    // (0.10.26: the most characters as conker_team_caps makes it: the larger of the entry's two)
+    // (0.10.26: the most characters as conker_team_caps makes it: the larger of the entry's two; with one player the game's own, +2)
     const uint32_t entry = team_tables + (uint32_t)table * 12u;
-    const int most = std::max((int)(int8_t)MEM_B(5, (gpr)(int32_t)entry), (int)(int8_t)MEM_B(2, (gpr)(int32_t)entry));
+    int most = humans >= 2 ? std::max((int)(int8_t)MEM_B(5, (gpr)(int32_t)entry), (int)(int8_t)MEM_B(2, (gpr)(int32_t)entry))
+                           : (int)(int8_t)MEM_B(2, (gpr)(int32_t)entry);
+    if (five) {
+        most = fifth_place(most, humans);
+    }
     int count = (int)(int16_t)(int32_t)ctx->r16;
     const int before = count;
     while (count > most && count > humans && count <= 16 && (int8_t)MEM_B(0, (gpr)(int32_t)(team_list + (uint32_t)(count - 1))) == -2) {
@@ -224,19 +243,26 @@ extern "C" void conker_bots_most(uint8_t* rdram, recomp_context* ctx) {
         return;
     }
     const int humans = (int)(int32_t)ctx->r5;
+    const bool five = conker::netsession::five_players();   // (possess47: see fifth_place)
     // (0.10.91: with two players too: the war's row gives two players four computer players, three and four players eight)
-    if (humans < 2) {
+    if (humans < 2 && !five) {
         return;
     }
     int most = (int)(int32_t)ctx->r20;
-    for (uint32_t i = 0; i < 4; i++) {
-        most = std::max(most, (int)(int8_t)MEM_B(i, ctx->r2));
+    if (humans >= 2) {
+        for (uint32_t i = 0; i < 4; i++) {
+            most = std::max(most, (int)(int8_t)MEM_B(i, ctx->r2));
+        }
+    }
+    if (five) {
+        most = fifth_place(most, humans);
     }
     if (most != (int)(int32_t)ctx->r20) {
         static int logged = 0;
         if (logged < 4) {
-            char line[120];
-            std::snprintf(line, sizeof(line), "[bots] %d players: most characters %d raised to %d", humans, (int)(int32_t)ctx->r20, most);
+            char line[160];
+            std::snprintf(line, sizeof(line), "[bots] %d players: most characters %d to %d%s", humans, (int)(int32_t)ctx->r20, most,
+                five ? " (one for the 5th player's own)" : "");
             conker::netsession::log(line);
             logged++;
         }

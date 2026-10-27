@@ -110,11 +110,13 @@ namespace {
     // mode, from the game thread (steady clock ticks), for the input thread (swap_sticks_now). It counts as
     // aiming a little over two game frames after, so a frame the game takes longer over doesn't swap
     // the sticks back for a poll. Each player's, so in split screen each controller swaps as its player aims.
-    constexpr int aim_players = 4;
+    // (possess47) the 4 players' and, online, the 5th player's: the possess test's extra camera, its +0x23D 4 (camera_player). What the
+    // game's memory gets from Swap Sticks (the walking while aiming, the view on the aim, a hit's hold...) is worked out for all 5 on every
+    // machine alike, as the game runs the extra camera on all of them.
+    constexpr int aim_players = 5;
     // (possess45) the signals the input thread reads for its own player (when it aims, its look's stage, the shotgun's aim): the 5th
-    // player's too, online (the possess test's extra camera, its +0x23D 4; signal_player), so its machine's right stick aims in R-Look.
-    // The rest of what's here (what the game's memory gets, on every machine) stays the 4 players'.
-    constexpr int signal_players = 5;
+    // player's too (signal_player), so its machine's right stick aims in R-Look.
+    constexpr int signal_players = aim_players;
     std::atomic<int64_t> last_aim_ticks[signal_players] = {};
     // The aim's yaw for each player's view this frame, from the look mode (conker_look_currents), while swapped.
     std::atomic<int> look_stage_seen[signal_players] = {};
@@ -175,15 +177,15 @@ namespace {
     constexpr auto aim_linger = std::chrono::milliseconds(80);
     int camera_player(uint8_t* rdram, gpr camera) {
         const int player = (int)MEM_BU(0x23D, camera);
-        return (player < aim_players) ? player : -1;
-    }
-    // (possess45) a camera's player for the input thread's signals: camera_player's, and online the 5th player's extra camera (4)
-    int signal_player(uint8_t* rdram, gpr camera) {
-        const int player = (int)MEM_BU(0x23D, camera);
-        if (player < aim_players) {
+        if (player < 4) {
             return player;
         }
+        // (possess47) online, the 5th player's extra camera (4), while there is one: made at the same frame on every machine
         return (player == 4 && conker::netsession::active() && conker::possess_test::online_extra_camera()) ? 4 : -1;
+    }
+    // (possess45) a camera's player for the input thread's signals: camera_player's (possess47: the same for the game's memory now)
+    int signal_player(uint8_t* rdram, gpr camera) {
+        return camera_player(rdram, camera);
     }
     // Whether a player's sticks are swapped (they aim with the right stick, move with the left) for what the game does about
     // it: offline the setting and the aiming as it was a moment ago; online the flag in the frame's agreed input, which
@@ -490,10 +492,10 @@ namespace {
         bool have_face = false;
         int32_t turned = 0;
     };
-    HitHold hit_hold_state[4];
+    HitHold hit_hold_state[aim_players];   // (possess47: the 5th player's too)
 
     void note_move_written(int player, uint16_t move) {
-        if (player >= 0 && player < 4) {
+        if (player >= 0 && player < aim_players) {
             HitHold& h = hit_hold_state[player];
             h.have_written = true;
             h.written_move = move;
@@ -504,7 +506,7 @@ namespace {
     // (recheck: looked at again this frame if not holding, where the game's own update runs, conker_look_stage_one and conker_look_targets,
     // in case the hit came in between; conker_look_view only takes what they found)
     bool hit_holding(uint8_t* rdram, gpr camera, int player, bool recheck) {
-        if (!conker::netsession::active() || player < 0 || player >= 4) {
+        if (!conker::netsession::active() || player < 0 || player >= aim_players) {
             return false;
         }
         HitHold& h = hit_hold_state[player];
@@ -780,7 +782,7 @@ extern "C" void conker_shotgun_laser_walk(uint8_t* rdram, recomp_context* ctx) {
 // look-at point is turned about the eye to the aim's direction across the ground: the view's yaw (from the eye
 // toward it, atan2 of z over x) is 270 degrees less the look mode's (+0x37C; measured, within 1.4 degrees
 // standing still). Its distance and height stay, and so does the eye.
-extern std::atomic<int> walk_dx[4], walk_dy[4];
+extern std::atomic<int> walk_dx[aim_players], walk_dy[aim_players];
 
 extern "C" void conker_look_view(uint8_t* rdram, recomp_context* ctx) {
 #if defined(CONKER_RT64)
@@ -788,7 +790,7 @@ extern "C" void conker_look_view(uint8_t* rdram, recomp_context* ctx) {
     const int player = camera_player(rdram, camera);
     int previous_stage = 0;
     {
-        // (possess45: the 5th player's look too, signal_player, for its machine's input; what follows is the 4 players')
+        // (possess45: the 5th player's look too, signal_player, for its machine's input; possess47: and what follows, for the game's memory)
         const int signal = signal_player(rdram, camera);
         if (signal >= 0) {
             previous_stage = look_stage_seen[signal];
@@ -801,18 +803,19 @@ extern "C" void conker_look_view(uint8_t* rdram, recomp_context* ctx) {
     // half a turn; standing still he didn't turn. From the frame the look ends until it is back (or R is let go), his facing is kept
     // as it was and his moving angle is set away from it, so the turn has nowhere to go: as standing still. Each look record on its own
     // (a player can have two), by the game's memory and the frame's agreed buttons, on every machine.
-    if (conker::netsession::active() && player >= 0 && player < 4) {
+    // (possess47: the 5th player's too, its look record the extra camera's, the 5th)
+    if (conker::netsession::active() && player >= 0 && player < aim_players) {
         const uint32_t looks = (uint32_t)MEM_W(0, (gpr)(int32_t)0x800DBFF0);
         const uint32_t at = (uint32_t)camera;
-        if ((looks >> 24) == 0x80 && at >= looks && (at - looks) % 0x9A0u == 0 && (at - looks) / 0x9A0u < 4) {
+        if ((looks >> 24) == 0x80 && at >= looks && (at - looks) % 0x9A0u == 0 && (at - looks) / 0x9A0u < (uint32_t)aim_players) {
             const uint32_t record = (at - looks) / 0x9A0u;
-            static bool armed[4] = {};
-            static bool holding[4] = {};
-            static uint16_t kept_face[4] = {};
+            static bool armed[aim_players] = {};
+            static bool holding[aim_players] = {};
+            static uint16_t kept_face[aim_players] = {};
             static uint32_t knock_generation = 0;
             if (knock_generation != conker::netsession::hook_generation()) {
                 knock_generation = conker::netsession::hook_generation();
-                for (int k = 0; k < 4; k++) {
+                for (int k = 0; k < aim_players; k++) {
                     armed[k] = false;
                     holding[k] = false;
                     kept_face[k] = 0;
@@ -852,7 +855,7 @@ extern "C" void conker_look_view(uint8_t* rdram, recomp_context* ctx) {
     // [look] lines: the moving angle turned 0xB00 a frame to the strafe's, a quarter turn left, and he strafed left all through the
     // stage). Set here, after the game's turn of it, as conker_look_targets is in the second stage. Every player's camera on every
     // machine, from the game's memory and the frame's agreed buttons.
-    if (conker::netsession::active() && player >= 0 && player < 4 && swap_state(player) && MEM_BU(0x23E, camera) == 0x00 && MEM_H(0x73C, camera) == 1
+    if (conker::netsession::active() && player >= 0 && player < aim_players && swap_state(player) && MEM_BU(0x23E, camera) == 0x00 && MEM_H(0x73C, camera) == 1
         && !hit_holding(rdram, camera, player, false)) {
         const int wdx = walk_dx[player].load();
         const int wdy = walk_dy[player].load();
@@ -1039,16 +1042,26 @@ bool conker::look_aim::online_swap_enabled() {
 // pressed, the game gets C-Left (or C-Right when pressed right) and his facing is the view's, so he is drawn and animated as the
 // game's own strafe; the way pressed is kept (walk_dx, walk_dy) and conker_look_targets sets his moving angle to it from the view,
 // as with a gun. Everything it goes by is in the game's memory and the frame's agreed buttons.
-std::atomic<int> walk_dx[4], walk_dy[4];
+std::atomic<int> walk_dx[aim_players], walk_dy[aim_players];
 // A player holding a grenade that Z started in the no weapon R-look (C-Down held for it, below), from the frame's agreed buttons.
-std::atomic<bool> grenade_held[4];
+std::atomic<bool> grenade_held[aim_players];
+
+namespace {
+    // (possess47) the 5th player's input (slot 4, net_session.cpp's fifth_input) while its extra camera is there: its look record is
+    // the extra camera's, the 5th of the block (the game's 4 players' are the first 4)
+    bool fifth_walks(int player) {
+        return player == 4 && conker::netsession::active() && conker::possess_test::online_extra_camera();
+    }
+}
 
 void conker::look_aim::no_weapon_walk(uint8_t* rdram, int port, uint16_t* buttons) {
 #if defined(CONKER_RT64)
     constexpr uint16_t c_buttons = 0x000F;
     // (0.10.92: the controller's player in the game, whose camera (+0x23D) and walking this is; port is that player from here on)
     port = conker::netsession::player_of_port(port);
-    if (port < 0 || port >= 4) {
+    // (possess47: the 5th player's too)
+    const bool fifth = fifth_walks(port);
+    if (port < 0 || (port >= 4 && !fifth)) {
         return;
     }
     const int dx = ((*buttons & 0x0001) ? 1 : 0) - ((*buttons & 0x0002) ? 1 : 0);
@@ -1059,12 +1072,12 @@ void conker::look_aim::no_weapon_walk(uint8_t* rdram, int port, uint16_t* button
     // (logged: R and C-Down together start the grenade in the look, with its zoomed view) for as long as Z is, so the grenade is held to blow
     // up in the hand, or thrown on Z's release.
     // Z itself is not passed on.
-    static bool grenade_on[4] = {};
-    static bool prev_z[4] = {};
+    static bool grenade_on[aim_players] = {};
+    static bool prev_z[aim_players] = {};
     static uint32_t grenade_generation = 0;
     if (grenade_generation != conker::netsession::hook_generation()) {
         grenade_generation = conker::netsession::hook_generation();
-        for (int k = 0; k < 4; k++) {
+        for (int k = 0; k < aim_players; k++) {
             grenade_on[k] = false;
             prev_z[k] = false;
         }
@@ -1086,7 +1099,8 @@ void conker::look_aim::no_weapon_walk(uint8_t* rdram, int port, uint16_t* button
     if ((base & 0xFF000000u) != 0x80000000u) {
         return;
     }
-    for (uint32_t i = 0; i < 4; i++) {
+    // (possess47: the 5th player's look record is the extra camera's alone)
+    for (uint32_t i = fifth ? 4u : 0u; i < (fifth ? 5u : 4u); i++) {
         const gpr camera = (gpr)(int32_t)(base + i * 0x9A0);
         if ((int)MEM_BU(0x23D, camera) != port) {
             continue;
@@ -1158,13 +1172,14 @@ void conker::look_aim::no_weapon_walk(uint8_t* rdram, int port, uint16_t* button
 // gets C-Up instead (with C-Down when pressed back as well), so he walks, and the way pressed is kept (gun_walk_dx, gun_walk_dy) for
 // conker_look_targets, which sets his moving angle to it from the view: he strafes, as with the other guns. From the frame's agreed
 // buttons and the game's memory, the same on every machine.
-std::atomic<int> gun_walk_dx[4], gun_walk_dy[4];
-std::atomic<bool> gun_walk_set[4];
+std::atomic<int> gun_walk_dx[aim_players], gun_walk_dy[aim_players];
+std::atomic<bool> gun_walk_set[aim_players];
 
 void conker::look_aim::gun_side_walk(uint8_t* rdram, int port, uint16_t* buttons) {
 #if defined(CONKER_RT64)
     port = conker::netsession::player_of_port(port);   // (0.10.92, as in no_weapon_walk)
-    if (port < 0 || port >= 4) {
+    const bool fifth = fifth_walks(port);              // (possess47, as in no_weapon_walk)
+    if (port < 0 || (port >= 4 && !fifth)) {
         return;
     }
     gun_walk_set[port] = false;
@@ -1177,7 +1192,7 @@ void conker::look_aim::gun_side_walk(uint8_t* rdram, int port, uint16_t* buttons
     if ((base & 0xFF000000u) != 0x80000000u) {
         return;
     }
-    for (uint32_t i = 0; i < 4; i++) {
+    for (uint32_t i = fifth ? 4u : 0u; i < (fifth ? 5u : 4u); i++) {
         const gpr camera = (gpr)(int32_t)(base + i * 0x9A0);
         if ((int)MEM_BU(0x23D, camera) != port) {
             continue;
@@ -1574,7 +1589,7 @@ extern "C" void conker_look_targets(uint8_t* rdram, recomp_context* ctx) {
     // The grenade's look is 0x26 in War and 0x14 in The Vault: there, with no weapon, R and Z had Conker spin on the spot. Whatever its
     // kind, not while a grenade Z started is held.
     const int look_player = camera_player(rdram, ctx->r16);
-    const bool holding_grenade = look_player >= 0 && look_player < 4 && grenade_held[look_player].load();
+    const bool holding_grenade = look_player >= 0 && look_player < aim_players && grenade_held[look_player].load();
     const uint8_t look_kind = MEM_BU(0x23E, ctx->r16);
     // (0.10.8: not while a hit in the look plays, hit_holding)
     const bool hit_hold_now = hit_holding(rdram, ctx->r16, look_player, true);
@@ -1585,7 +1600,7 @@ extern "C" void conker_look_targets(uint8_t* rdram, recomp_context* ctx) {
         int dx = ((held & c_right) ? 1 : 0) - ((held & c_left) ? 1 : 0);
         int dy = ((held & c_up) ? 1 : 0) - ((held & c_down) ? 1 : 0);
         // (the tommy gun's: the way pressed, not the C-Up it was turned into, gun_side_walk)
-        if (conker::netsession::active() && look_player >= 0 && look_player < 4 && gun_walk_set[look_player].load()) {
+        if (conker::netsession::active() && look_player >= 0 && look_player < aim_players && gun_walk_set[look_player].load()) {
             dx = gun_walk_dx[look_player].load();
             dy = gun_walk_dy[look_player].load();
         }
@@ -1623,8 +1638,8 @@ extern "C" void conker_look_targets(uint8_t* rdram, recomp_context* ctx) {
     if (conker::netsession::active() && swap_state(camera_player(rdram, ctx->r16)) && MEM_BU(0x23E, ctx->r16) == 0x00
         && (MEM_H(0x73C, ctx->r16) == 1 || MEM_H(0x73C, ctx->r16) == 2) && !hit_hold_now) {
         const int player = camera_player(rdram, ctx->r16);
-        const int dx = player >= 0 && player < 4 ? walk_dx[player].load() : 0;
-        const int dy = player >= 0 && player < 4 ? walk_dy[player].load() : 0;
+        const int dx = player >= 0 && player < aim_players ? walk_dx[player].load() : 0;
+        const int dy = player >= 0 && player < aim_players ? walk_dy[player].load() : 0;
         const gpr conker = (gpr)(int32_t)MEM_W(0x3D0, ctx->r16);
         if ((dx != 0 || dy != 0) && ((uint32_t)conker & 0xFF000000u) == 0x80000000u) {
             const int32_t offset = (int32_t)std::lround(conker::det::atan2_d(-(double)dx, (double)dy) * 32768.0 / 3.14159265358979);
@@ -1781,7 +1796,7 @@ void conker::look_aim::reset_online_state() {
         swap_view_yaw[p] = 0.0f;
         swap_view_yaw_set[p] = false;
     }
-    for (int p = 0; p < 4; p++) {
+    for (int p = 0; p < aim_players; p++) {
         hit_hold_state[p] = HitHold{};
         walk_dx[p] = 0;
         walk_dy[p] = 0;

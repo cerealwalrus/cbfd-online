@@ -14,6 +14,9 @@
 // frame everywhere, the character is driven by the 5th player's input as the frame has it (conker_possess_pad), and the extra camera's
 // view is drawn on every machine (what it marks for the next frame's updates is the game's), its commands kept on the 5th player's
 // machine alone (net_view.cpp leaves them be). None of the D-pad's tests online.
+// (possess47) Character 5 is the 5th player's own, no computer player's: the match's list gets an entry for it, the 5th (-3), as the
+// match is set up (conker_possess_list), the computer players after it, so the 5th player plays with or without them, and the menus
+// leave room for it (mp_characters.cpp): 12 characters at most, the 5 players and 7 computer players in the war.
 //
 // How the game drives a bot: its AI (the script commands, func_1509DFC4, e.g. func_1508CAD8 "go to") never touches a controller. It
 // writes its "hands" into the character's brain (character + 0x31C):
@@ -113,6 +116,16 @@ namespace {
     // the tests' hooks do nothing online but for a match of 5
     bool hooks_off() {
         return conker::netsession::active() && !conker::netsession::five_players();
+    }
+
+    // (possess47) the match's list of characters (D_8008FE44, 16 entries: a player's controller 0 to 3, -2 a computer player, -1 none;
+    // the players first) and each one's team (D_800E0C00), as the menus leave them; the 5th player's own entry (conker_possess_list)
+    constexpr uint32_t match_list = 0x8008FE44;
+    constexpr uint32_t match_teams = 0x800E0C00;
+    constexpr int8_t fifth_entry = -3;
+    constexpr int most_characters = 12;   // the match's most, the 5th player's with them (the war's)
+    bool list_has_fifth(uint8_t* rdram) {
+        return (int8_t)MEM_B(0, (gpr)(int32_t)(match_list + (uint32_t)extra)) == fifth_entry;
     }
 
     uint32_t extra_camera(uint8_t* rdram) {
@@ -433,6 +446,11 @@ namespace {
         if (!have_args || !in_match(rdram, extra) || brain_of(rdram, extra) == 0 || word(rdram, character(extra) + 0x318) != 0) {
             return false;
         }
+        // (possess47) online, a match of 5 players: the 5th player's own character alone (the list's entry 4, conker_possess_list), never
+        // a computer player
+        if (online5()) {
+            return list_has_fifth(rdram);
+        }
         return MEM_BU(0x84, (gpr)(int32_t)brain_of(rdram, extra)) != 0 || extra_played;
     }
 }
@@ -689,8 +707,20 @@ namespace {
             if (!(extra_ready || extra_wanted || extra_possible(rdram))) {
                 if (mine && !online_told_no_bot && online_match_frames > 150) {
                     online_told_no_bot = true;
-                    log("f=%u (online) character %d isn't a bot without a camera: nothing for the 5th player to play", (unsigned)frames, extra);
-                    conker::notices::show("Player 5 plays the match's 5th character: the match needs bots (5 characters in all)", true);
+                    // (possess47) the 5th player plays its own character, the list's entry 4 (conker_possess_list), made as the match was set up
+                    const int count = (int)(int8_t)MEM_B(0, (gpr)(int32_t)0x8008FD8C);
+                    if (list_has_fifth(rdram)) {
+                        log("f=%u (online) the 5th player's character %d isn't there to play (in the match %d, its camera %08X)", (unsigned)frames, extra,
+                            (int)in_match(rdram, extra), (unsigned)word(rdram, character(extra) + 0x318));
+                        conker::notices::show("Player 5's character couldn't be set up in this match: it plays from the next", true);
+                    } else if (count < extra) {
+                        log("f=%u (online) %d characters in the match: none for the 5th player (its own comes after 4 others)", (unsigned)frames, count);
+                        conker::notices::show("Player 5 needs 4 other characters in the match (players or computer players)", true);
+                    } else {
+                        log("f=%u (online) no character of the 5th player's in this match (entry 4 is %d): it plays from the next", (unsigned)frames,
+                            (int)(int8_t)MEM_B(0, (gpr)(int32_t)(match_list + (uint32_t)extra)));
+                        conker::notices::show("Player 5 plays from the next match", true);
+                    }
                 }
                 return;
             }
@@ -702,6 +732,10 @@ namespace {
             extra_brain_flag = brain != 0 ? MEM_BU(0x84, (gpr)(int32_t)brain) : 1;
             if (extra_brain_flag == 0) {
                 extra_brain_flag = 1;
+            }
+            // (possess47) the 5th player's own character has no AI to go back to (the game gave it none): should the 5th player leave, it stands
+            if (list_has_fifth(rdram)) {
+                extra_brain_flag = 0;
             }
             online_prev_buttons = 0;
             log("f=%u (online) the 5th player plays character %d through the extra camera%s", (unsigned)frames, extra, mine ? " (this machine's player)" : "");
@@ -2830,6 +2864,180 @@ bool conker::possess_test::online_extra_camera() {
 
 bool conker::possess_test::online_view_here() {
     return extra_ready && extra_played && online5() && conker::netsession::local_slot() == extra;
+}
+
+// (possess47) The 5th player's own character. func_151E2834 sets a multiplayer match up from its list of characters (the menus' Start, a
+// restart, playing again): it counts them (D_8008FD8C) and the arena makes character k from entry k (func_15082A44, which gives a computer
+// player's, -2, its AI). Before the list is counted (0x151E2914), entry 4 is made the 5th player's: -3, the computer players moved up after
+// it. The game's setup and its menus take it as a computer player (they go by a player's controller, 0 to 3, or not), but func_15082A44
+// gives it no AI: nothing but the 5th player's input drives it (conker_possess_pad), so the 5th player never takes one of the computer
+// players, and plays with none. Its team: the one with the fewest characters (then players); without teams the game gives every character
+// one of its own afterwards. The menus leave room for it (mp_characters.cpp: the most characters less one); should the list be full, its
+// last computer players are taken off (the mode's most characters, 12 at most: the war's 4 players, the 5th and 7 computer players). Once
+// there it stays (a restart, playing again; the menus make the list over), taken out when the 5th player isn't in the frame's input. Not
+// with fewer than 4 characters before it: it has to be character 5 (the extra camera's slot, its controller, the HUD's 5th entries).
+// The same on every machine at the same frame: the game's own setup and the frame's input.
+namespace {
+    constexpr uint32_t game_state = 0x8008FDD4;      // gGameState (the mode at +0x42)
+    constexpr uint32_t modes = 0x800AB68C;           // 10 bytes a mode: +5 its team table (or, under 0, its row of most characters)
+    constexpr uint32_t team_tables = 0x800AB710;     // 12 bytes: +0 the teams, +2 / +5 the most characters (under 3 players / 3 or more)
+    constexpr uint32_t mode_rows = 0x8008FEE4;       // without teams: the row of each, by -(+5) - 1
+    constexpr uint32_t most_rows = 0x800AB74C;       // 4 a row: the most characters for 1 to 4 players
+
+    // The mode's team table (under 0: none, the row of most characters by it instead); false without a mode.
+    bool mode_tables(uint8_t* rdram, int* table) {
+        const uint32_t state = word(rdram, game_state);
+        if ((state >> 24) != 0x80) {
+            return false;
+        }
+        const int mode = (int)(int8_t)MEM_B(0x42, (gpr)(int32_t)state);
+        if (mode < 0 || mode > 32) {
+            return false;
+        }
+        *table = (int)(int8_t)MEM_B(0, (gpr)(int32_t)(modes + (uint32_t)(mode * 10) + 5u));
+        return true;
+    }
+
+    // The most characters the menus let the players have (online, mp_characters.cpp: for 2 players or more the largest of the mode's), 12 at
+    // most; 12 without a mode.
+    int mode_most(uint8_t* rdram, int players) {
+        int table = 0;
+        if (!mode_tables(rdram, &table) || players < 1 || players > 4) {
+            return most_characters;
+        }
+        int most = 0;
+        if (table >= 0 && table <= 16) {
+            const uint32_t entry = team_tables + (uint32_t)table * 12u;
+            const int under_three = (int)(int8_t)MEM_B(2, (gpr)(int32_t)entry), three_more = (int)(int8_t)MEM_B(5, (gpr)(int32_t)entry);
+            most = players >= 2 ? std::max(under_three, three_more) : under_three;
+        } else if (table < 0 && table >= -16) {
+            const int row = (int)(int8_t)MEM_B(0, (gpr)(int32_t)(mode_rows + (uint32_t)(-table - 1)));
+            if (row >= 0 && row < 32) {
+                const uint32_t at = most_rows + (uint32_t)row * 4u;
+                most = (int)(int8_t)MEM_B((int32_t)(players - 1), (gpr)(int32_t)at);
+                if (players >= 2) {
+                    for (int32_t i = 0; i < 4; i++) {
+                        most = std::max(most, (int)(int8_t)MEM_B(i, (gpr)(int32_t)at));
+                    }
+                }
+            }
+        }
+        return (most >= 2 && most <= most_characters) ? most : most_characters;
+    }
+
+    // The 5th player's team: of the mode's teams, the one with the fewest characters, then the fewest players, then the first.
+    int8_t fifth_team(uint8_t* rdram, const int8_t* list, const int8_t* team, int count) {
+        int table = 0;
+        if (!mode_tables(rdram, &table) || table < 0 || table > 16) {
+            return 0;   // (no teams: func_151E2834 gives each character its own, after this)
+        }
+        const int teams = (int)(int8_t)MEM_B(0, (gpr)(int32_t)(team_tables + (uint32_t)table * 12u));
+        if (teams < 2 || teams > 8) {
+            return 0;
+        }
+        int characters_on[8] = {}, players_on[8] = {};
+        for (int i = 0; i < count; i++) {
+            if (team[i] >= 0 && team[i] < teams) {
+                characters_on[team[i]]++;
+                if (list[i] >= 0) {
+                    players_on[team[i]]++;
+                }
+            }
+        }
+        int best = 0;
+        for (int t = 1; t < teams; t++) {
+            if (characters_on[t] < characters_on[best] || (characters_on[t] == characters_on[best] && players_on[t] < players_on[best])) {
+                best = t;
+            }
+        }
+        return (int8_t)best;
+    }
+}
+
+// func_151E2834, before 0x151E2914 (conker.toml).
+extern "C" void conker_possess_list(uint8_t* rdram, recomp_context* ctx) {
+    (void)ctx;
+    if (!online5()) {
+        return;
+    }
+    int8_t list[16], team[16], list_was[16], team_was[16];
+    for (uint32_t i = 0; i < 16; i++) {
+        list[i] = list_was[i] = (int8_t)MEM_B(0, (gpr)(int32_t)(match_list + i));
+        team[i] = team_was[i] = (int8_t)MEM_B(0, (gpr)(int32_t)(match_teams + i));
+    }
+    bool plugged = false;
+    uint16_t buttons = 0;
+    float x = 0.0f, y = 0.0f;
+    const bool here = conker::netsession::input(extra, &plugged, &buttons, &x, &y) && plugged;
+    // the 5th player's entry (a restart's, playing again's, or one the menus left where they made the list over) taken out first, the
+    // entries after it moved down, and put back below: so it's always entry 4, after 4 characters, whatever the menus did
+    for (int i = 15; i >= 0; i--) {
+        if (list[i] == fifth_entry) {
+            for (int j = i; j < 15; j++) {
+                list[j] = list[j + 1];
+                team[j] = team[j + 1];
+            }
+            list[15] = -1;
+            team[15] = 0;
+        }
+    }
+    int count = 0, players = 0;
+    while (count < 16 && list[count] != -1) {
+        players += list[count] >= 0 ? 1 : 0;
+        count++;
+    }
+    const int most = mode_most(rdram, players);
+    const char* what = "the 5th player not in the frame's input: no character for it";
+    int taken = 0;
+    if (here) {
+        if (count < extra) {
+            what = "fewer than 4 characters: none for the 5th player, whose own comes after 4 others";
+        } else {
+            // room for it: the last computer players taken off, past the mode's most less one
+            while (count >= most && count > extra && list[count - 1] == -2) {
+                list[count - 1] = -1;
+                team[count - 1] = 0;
+                count--;
+                taken++;
+            }
+            if (count >= most) {
+                what = "no room for the 5th player's character (the mode's most characters, and no computer player to take off)";
+            } else {
+                const int8_t chosen = fifth_team(rdram, list, team, count);
+                for (int j = 15; j > extra; j--) {
+                    list[j] = list[j - 1];
+                    team[j] = team[j - 1];
+                }
+                list[extra] = fifth_entry;
+                team[extra] = chosen;
+                count++;
+                what = "entry 4 the 5th player's own character";
+            }
+        }
+    }
+    const bool changed = std::memcmp(list, list_was, sizeof(list)) != 0 || std::memcmp(team, team_was, sizeof(team)) != 0;
+    if (changed) {
+        for (uint32_t i = 0; i < 16; i++) {
+            MEM_B(0, (gpr)(int32_t)(match_list + i)) = list[i];
+            MEM_B(0, (gpr)(int32_t)(match_teams + i)) = team[i];
+        }
+    }
+    // (logged each time a match is set up: the list as it was and as it is)
+    char was_text[100] = {}, now_text[100] = {};
+    int at_was = 0, at_now = 0;
+    for (int i = 0; i < 16; i++) {
+        if (list_was[i] != -1 && at_was < (int)sizeof(was_text) - 12) {
+            at_was += std::snprintf(was_text + at_was, sizeof(was_text) - (size_t)at_was, " %d/%d", (int)list_was[i], (int)team_was[i]);
+        }
+        if (list[i] != -1 && at_now < (int)sizeof(now_text) - 12) {
+            at_now += std::snprintf(now_text + at_now, sizeof(now_text) - (size_t)at_now, " %d/%d", (int)list[i], (int)team[i]);
+        }
+    }
+    log("f=%u (online) the match is set up: %s (the 5th player %s; %d characters, the mode's most %d%s); entries (controller/team):%s ->%s",
+        (unsigned)conker::netsession::frame(), what, here ? "in" : "not in", count, most,
+        taken > 0 ? (taken == 1 ? ", a computer player taken off" : ", computer players taken off") : "", was_text, now_text);
+    const std::string line = std::string("[possess] the match is set up: ") + what;
+    conker::netsession::log(line.c_str());
 }
 
 // A resync's state (save_states.cpp) has the game's 8 MB; what the extra camera keeps outside them (our memory from 0x80FD0000: its

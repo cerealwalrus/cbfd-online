@@ -920,7 +920,7 @@ namespace {
         bool held_this_frame = false;
         float held_eye[3] = {};
     };
-    SnapGuard snap_guards[max_cameras];
+    SnapGuard snap_guards[max_cameras + 1];   // (possess47: + the extra camera, slot 4, the 5th player's: pick)
     int snap_guard_logs = 0;
 }
 
@@ -946,7 +946,7 @@ extern "C" void conker_view_snap_guard(uint8_t* rdram, recomp_context* ctx) {
     }
     const gpr camera = ctx->r16;
     int index = -1;
-    if (pick(rdram, camera, &index) == nullptr || index < 0 || index >= max_cameras) {
+    if (pick(rdram, camera, &index) == nullptr || index < 0 || index > max_cameras) {
         return;
     }
     SnapGuard& g = snap_guards[index];
