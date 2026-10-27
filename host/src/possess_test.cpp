@@ -1596,10 +1596,11 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
             const uint32_t li = c - 0x80000000u;
             auto was_b = [&](uint32_t off) { return (unsigned)local_copy[(li + off) ^ 3]; };
             auto was_w = [&](uint32_t off) { uint32_t v; std::memcpy(&v, local_copy.data() + li + off, 4); return v; };
-            char piece[200];
-            std::snprintf(piece, sizeof(piece), " | c%d: fade %u/%u (was %u/%u) hide %02X (was %02X) item %08X (was %08X)", k,
-                (unsigned)MEM_BU(7, (gpr)(int32_t)c), (unsigned)MEM_BU(0xB, (gpr)(int32_t)c), was_b(7), was_b(0xB),
-                (unsigned)MEM_BU(0xF, (gpr)(int32_t)c), was_b(0xF), (unsigned)word(rdram, c + 0x2D4), (unsigned)was_w(0x2D4));
+            char piece[260];
+            std::snprintf(piece, sizeof(piece), " | c%d: state %u fade %u/%u (was %u/%u) hide %02X (was %02X) views %02X (was %02X) pose %08X (was %08X)",
+                k, (unsigned)MEM_BU(5, (gpr)(int32_t)c), (unsigned)MEM_BU(7, (gpr)(int32_t)c), (unsigned)MEM_BU(0xB, (gpr)(int32_t)c), was_b(7),
+                was_b(0xB), (unsigned)MEM_BU(0xF, (gpr)(int32_t)c), was_b(0xF), (unsigned)MEM_BU(0x74, (gpr)(int32_t)c), was_b(0x74),
+                (unsigned)word(rdram, c + 0x1D4), (unsigned)was_w(0x1D4));
             out += piece;
         }
         log("f=%u [chars] after the view's passes%s", (unsigned)frames, out.c_str());
