@@ -2141,3 +2141,31 @@ extern "C" int conker_possess_hide_skip(uint8_t* rdram, recomp_context* ctx) {
     }
     return 1;
 }
+
+// (possess40) func_15172E7C's entry ($a0 the character, $a1 the level it goes to, $a2 the spot there): for the extra character, as
+// the game does for a character without a camera: moved at once (func_15172D28), if it's this level.
+extern "C" void func_15172D28(uint8_t* rdram, recomp_context* ctx);
+extern "C" int conker_possess_warp(uint8_t* rdram, recomp_context* ctx) {
+    if (conker::netsession::active() || !extra_ready || (uint32_t)ctx->r4 != character(extra)) {
+        return 0;
+    }
+    const uint32_t object = (uint32_t)ctx->r4;
+    if (MEM_BU(0x1CA, (gpr)(int32_t)object) == 0) {
+        return 1;
+    }
+    const uint32_t brain = word(rdram, object + 0x31C);
+    if (brain != 0 && MEM_B(0x23, (gpr)(int32_t)brain) > 0) {
+        return 1;
+    }
+    const int32_t level = (int32_t)ctx->r5, spot = (int32_t)ctx->r6;
+    log("f=%u the extra character through a door: to level %d (this one %d), spot %d", (unsigned)frames, (int)level,
+        (int)MEM_W(0, (gpr)(int32_t)0x800BE9F0), (int)spot);
+    if (level == MEM_W(0, (gpr)(int32_t)0x800BE9F0)) {
+        const recomp_context saved = *ctx;
+        ctx->r4 = (gpr)(int32_t)object;
+        ctx->r5 = (gpr)spot;
+        func_15172D28(rdram, ctx);
+        *ctx = saved;
+    }
+    return 1;
+}

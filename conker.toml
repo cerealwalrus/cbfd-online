@@ -3036,3 +3036,13 @@ text = "{ extern void conker_possess_note_queue(uint8_t*, uint32_t); conker_poss
 func = "func_1506160C"
 before_vram = 0x1506160C
 text = "{ extern int conker_possess_hide_skip(uint8_t*, recomp_context*); if (conker_possess_hide_skip(rdram, ctx)) return; }"
+
+# possess-test (possess40): func_15172E7C (a character sent through a door to another spot: a player's view fades out, the character
+# held (+0x2F8 |= 0x10) until func_15172D80 of its view sees the fade done and moves it there; a character without a camera is moved
+# at once). The extra character's view is 4, and the game has views 0 to 3: its fade and where it goes were written past the ends of
+# the views' tables (over view 1's fade among them), and nothing ever ran its view's part, so it was held there for good. The extra
+# character is moved at once, as a character without a camera is (conker_possess_warp).
+[[patches.hook]]
+func = "func_15172E7C"
+before_vram = 0x15172E7C
+text = "{ extern int conker_possess_warp(uint8_t*, recomp_context*); if (conker_possess_warp(rdram, ctx)) return; }"
