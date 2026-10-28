@@ -321,8 +321,32 @@ namespace {
 #endif
     }
 
+    // (possess67) the launcher and the game each have their own window mode: the launcher's (General tab) until the game starts,
+    // then the game's (the Graphics tab's Window Mode), handed to RT64 when the one in use isn't it. (In the launcher, F11 or the
+    // Graphics tab's Window Mode change the game's setting only.)
+    void apply_window_mode() {
+        if (!conker::graphics_config_ready()) {
+            return;
+        }
+        using WindowMode = ultramodern::renderer::WindowMode;
+        WindowMode want = WindowMode::Windowed;
+        if (ultramodern::is_game_started()) {
+            want = static_cast<WindowMode>(std::get<uint32_t>(recompui::config::get_graphics_config().get_option_value(
+                recompui::config::graphics::options::wm_option)));
+        }
+        else {
+            want = conker::windowed_size::launcher_fullscreen() ? WindowMode::Fullscreen : WindowMode::Windowed;
+        }
+        ultramodern::renderer::GraphicsConfig config = ultramodern::renderer::get_graphics_config();
+        if (config.wm_option != want) {
+            config.wm_option = want;
+            ultramodern::renderer::set_graphics_config(config);
+        }
+    }
+
     void update_gfx(void*) {
         recompinput::handle_events();
+        apply_window_mode();
         conker::window_chrome::update(ultramodern::is_game_started(),
             ultramodern::renderer::get_graphics_config().wm_option == ultramodern::renderer::WindowMode::Fullscreen);
         conker::texture_packs::update_unpacking();

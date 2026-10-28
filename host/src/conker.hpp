@@ -597,6 +597,8 @@ namespace conker {
     namespace windowed_size {
         // conker_config.cpp (0.10.49): the Windowed Size setting (Graphics tab): Fill Screen (true) or 1600 x 900.
         bool fill_screen();
+        // (possess67) the launcher's own Window Mode (General tab) is Fullscreen
+        bool launcher_fullscreen();
     }
 
     namespace vsync {

@@ -9,6 +9,7 @@
 #include "json/json.hpp"
 #include "librecomp/game.hpp"
 #include "ultramodern/config.hpp"
+#include "ultramodern/ultramodern.hpp"
 #include "recompui/config.h"
 #include "recompinput/recompinput.h"
 #include "util/file.h"
@@ -46,6 +47,33 @@ namespace {
     // (0.10.49) Windowed Size (window_chrome.cpp, frontend.cpp's create_window), on the Graphics tab.
     const std::string windowed_size_id = "windowed_size";
     enum class WindowedSize : uint32_t { FillScreen, Size1600x900 };
+    // (possess67) the launcher's own window mode and size, on the General tab: the Graphics tab's Window Mode and Windowed Size are the
+    // game's, taken as it starts (frontend.cpp's apply_window_mode, window_chrome.cpp)
+    const std::string launcher_window_mode_id = "launcher_window_mode";
+    const std::string launcher_windowed_size_id = "launcher_windowed_size";
+    enum class LauncherWindowMode : uint32_t { Windowed, Fullscreen };
+
+    void add_launcher_window_options(recomp::config::Config& config) {
+        static const std::vector<recomp::config::ConfigOptionEnumOption> mode_choices = {
+            {LauncherWindowMode::Windowed, "Windowed", "Windowed"},
+            {LauncherWindowMode::Fullscreen, "Fullscreen", "Fullscreen"},
+        };
+        config.add_enum_option(launcher_window_mode_id, "Launcher: Window Mode",
+            "Whether the launcher (the menus before the game starts) shows in a window or full screen. The game itself takes "
+            "the Graphics tab's <recomp-color primary>Window Mode</recomp-color> as it starts.",
+            mode_choices, LauncherWindowMode::Windowed);
+        static const std::vector<recomp::config::ConfigOptionEnumOption> size_choices = {
+            {WindowedSize::FillScreen, "FillScreen", "Fill Screen"},
+            {WindowedSize::Size1600x900, "1600x900", "1600 x 900"},
+        };
+        config.add_enum_option(launcher_windowed_size_id, "Launcher: Windowed Size",
+            "The size of the launcher's window when <recomp-color primary>Launcher: Window Mode</recomp-color> is Windowed. "
+            "<recomp-color primary>Fill Screen</recomp-color> fills the screen above the taskbar. "
+            "<recomp-color primary>1600 x 900</recomp-color> opens a 1600 x 900 window in the middle of the screen. "
+            "The game itself takes the Graphics tab's <recomp-color primary>Windowed Size</recomp-color> as it starts.",
+            size_choices, WindowedSize::FillScreen);
+        config.add_option_disable_dependency(launcher_windowed_size_id, launcher_window_mode_id, LauncherWindowMode::Fullscreen);
+    }
 
     void add_graphics_options(recomp::config::Config& config) {
         static const std::vector<recomp::config::ConfigOptionEnumOption> choices = {
@@ -114,11 +142,10 @@ namespace {
             {WindowedSize::Size1600x900, "1600x900", "1600 x 900"},
         };
         config.add_enum_option(windowed_size_id, "Windowed Size",
-            "The size of the window when <recomp-color primary>Window Mode</recomp-color> is Windowed, as the program starts "
-            "and when this is changed. "
-            "<recomp-color primary>Fill Screen</recomp-color> fills the screen above the taskbar (maximized, once the game starts). "
-            "<recomp-color primary>1600 x 900</recomp-color> opens a 1600 x 900 window in the middle of the screen. "
-            "Double-clicking the launcher's title bar, or its middle button, switches between the two at any time.",
+            "The size of the game's window when <recomp-color primary>Window Mode</recomp-color> is Windowed, taken as the game "
+            "starts and when this is changed while it plays (the launcher has its own, on the General tab). "
+            "<recomp-color primary>Fill Screen</recomp-color> fills the screen above the taskbar (maximized). "
+            "<recomp-color primary>1600 x 900</recomp-color> makes it a 1600 x 900 window in the middle of the screen.",
             size_choices, WindowedSize::FillScreen);
         config.add_option_disable_dependency(windowed_size_id,
             recompui::config::graphics::options::wm_option, ultramodern::renderer::WindowMode::Fullscreen);
@@ -163,6 +190,31 @@ namespace {
             "look_mouse_invert", recompui::config::general::options::gyro_sensitivity, "look_gyro_response",
             "look_gyro_invert" });
         carry_over("texture_packs", recompui::config::graphics::id, { "texture_pack" });
+        // (possess67) Chat: Key moved from the Online tab (gone for now) to General
+        carry_over("online", recompui::config::general::id, { "online_chat_key" });
+        // (possess67) the launcher's window mode and size start as the window settings were (the Graphics tab's, the game's now)
+        {
+            const std::filesystem::path folder = recomp::get_config_path();
+            const auto read = [](const std::filesystem::path& path) {
+                std::ifstream file(path);
+                nlohmann::json json = file ? nlohmann::json::parse(file, nullptr, false) : nlohmann::json();
+                return json.is_object() ? json : nlohmann::json::object();
+            };
+            const nlohmann::json graphics = read(folder / (recompui::config::graphics::id + ".json"));
+            nlohmann::json general = read(folder / (recompui::config::general::id + ".json"));
+            bool changed = false;
+            const std::pair<const char*, const char*> pairs[] = { { "wm_option", "launcher_window_mode" }, { "windowed_size", "launcher_windowed_size" } };
+            for (const auto& pair : pairs) {
+                if (graphics.contains(pair.first) && !general.contains(pair.second)) {
+                    general[pair.second] = graphics[pair.first];
+                    changed = true;
+                }
+            }
+            if (changed) {
+                std::ofstream file(folder / (recompui::config::general::id + ".json"), std::ios::trunc);
+                file << general.dump(4);
+            }
+        }
     }
 
     void set_control_descriptions() {
@@ -267,11 +319,13 @@ void conker::init_config() {
     general_options.has_gyro_sensitivity = false;
     general_options.has_mouse_sensitivity = false;
     // (0.10.4: rumble is off for good, and its settings are gone: no rumble options on the General tab)
-    recompui::config::create_general_tab(general_options);
+    recomp::config::Config& general_config = recompui::config::create_general_tab(general_options);
+    // (possess67) Chat: Key on the General tab; the Online tab taken out for now
+    conker::netchat::add_options(general_config);
+    add_launcher_window_options(general_config);
     conker::look_aim::add_camera_options(recompui::config::create_config_tab("Camera", camera_tab_id, false));
     // (possess66) the Gyro tab taken out, and gyro with it (look_aim.cpp's on_input_poll): no gyro setting anywhere, so its
     // sensitivity reads as zero (RecompFrontend's get_gyro_sensitivity), as the mouse's has since possess58
-    conker::netchat::add_options(recompui::config::create_config_tab("Online", "online", false));
 
     recomp::config::Config& graphics_config = recompui::config::create_graphics_tab();
     add_graphics_options(graphics_config);
@@ -349,6 +403,19 @@ bool conker::windowed_size::fill_screen() {
     if (!conker::graphics_config_ready()) {
         return true;
     }
-    const auto value = recompui::config::get_graphics_config().get_option_value(windowed_size_id);
-    return static_cast<WindowedSize>(std::get<uint32_t>(value)) == WindowedSize::FillScreen;
+    // (possess67) the launcher's own size until the game starts, then the game's (the Graphics tab's)
+    const std::string& id = ultramodern::is_game_started() ? windowed_size_id : launcher_windowed_size_id;
+    recomp::config::Config* config = recompui::config::find_option_config(id);
+    if (config == nullptr) {
+        return true;
+    }
+    return static_cast<WindowedSize>(std::get<uint32_t>(config->get_option_value(id))) == WindowedSize::FillScreen;
+}
+
+bool conker::windowed_size::launcher_fullscreen() {
+    recomp::config::Config* config = recompui::config::find_option_config(launcher_window_mode_id);
+    if (config == nullptr) {
+        return false;
+    }
+    return static_cast<LauncherWindowMode>(std::get<uint32_t>(config->get_option_value(launcher_window_mode_id))) == LauncherWindowMode::Fullscreen;
 }

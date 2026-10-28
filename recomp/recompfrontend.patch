@@ -491,3 +491,41 @@ diff --git a/recompui/src/renderer/ui_renderer.cpp b/recompui/src/renderer/ui_re
          }
      }
  };
+diff --git a/recompui/src/config/ui_config_page_options_menu.cpp b/recompui/src/config/ui_config_page_options_menu.cpp
+--- a/recompui/src/config/ui_config_page_options_menu.cpp
++++ b/recompui/src/config/ui_config_page_options_menu.cpp
+@@ -1,5 +1,10 @@
+ #include "ui_config_page_options_menu.h"
+ 
++#include <algorithm>
++#include <cctype>
++#include <string>
++#include <vector>
++
+ 
+ namespace recompui {
+ 
+@@ -181,7 +186,22 @@
+             this->on_set_option_value(option_id, value);
+         };
+         auto schema = config->get_config_schema();
+-        for (size_t i = 0; i < schema.options.size(); i++) {
++        // The options listed in alphabetical order of their names (each keeps its own index in the schema)
++        std::vector<size_t> order(schema.options.size());
++        for (size_t i = 0; i < order.size(); i++) {
++            order[i] = i;
++        }
++        const auto lower = [](const std::string &text) {
++            std::string out = text;
++            for (char &c : out) {
++                c = (char)std::tolower((unsigned char)c);
++            }
++            return out;
++        };
++        std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) {
++            return lower(schema.options[a].name) < lower(schema.options[b].name);
++        });
++        for (size_t i : order) {
+             auto &config_option = schema.options[i];
+             ConfigOptionElement *element = nullptr;
+             switch (config_option.type) {

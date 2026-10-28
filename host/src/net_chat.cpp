@@ -56,7 +56,7 @@ namespace {
     bool y_was_down = false, enter_was_down = false;
     std::string shown_signature;
 
-    // The Online tab's Chat Key setting (the settings are made by add_options; without them, Y).
+    // The General tab's Chat Key setting (the Online tab's before possess67) (the settings are made by add_options; without them, Y).
     enum class ChatKey : uint32_t { Y, T, V, B, N, M, Tab, Backtick, Backslash, Off };
     const std::string chat_key_option = "online_chat_key";
 

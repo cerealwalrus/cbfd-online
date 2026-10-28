@@ -10,7 +10,10 @@ namespace conker {
 {
  "background_input_mode": "On",
  "debug_mode": false,
- "joystick_deadzone": 4
+ "joystick_deadzone": 4,
+ "launcher_window_mode": "Windowed",
+ "launcher_windowed_size": "FillScreen",
+ "online_chat_key": "Y"
 }
 )CONKERJSON";
 
