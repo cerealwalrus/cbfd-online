@@ -2070,6 +2070,65 @@ extern "C" void func_15019BB8(uint8_t* rdram, recomp_context* ctx);
 extern "C" void func_15019E60(uint8_t* rdram, recomp_context* ctx);
 extern "C" void func_151E84B0(uint8_t* rdram, recomp_context* ctx);
 extern "C" void conker_net_view_pass(uint8_t* rdram, int gfx, int camera, int kind);   // (possess60, net_view.cpp)
+extern "C" void func_1501A490(uint8_t* rdram, recomp_context* ctx);
+extern "C" void func_1517F4D8(uint8_t* rdram, recomp_context* ctx);
+extern "C" void func_1517F3A0(uint8_t* rdram, recomp_context* ctx);
+extern "C" void func_15180580(uint8_t* rdram, recomp_context* ctx);
+extern "C" void func_1507DB6C(uint8_t* rdram, recomp_context* ctx);
+extern "C" void func_151674F8(uint8_t* rdram, recomp_context* ctx);
+
+namespace {
+    // (possess72) func_15019BB8 (a view's HUD pass) for view 1, as the game's own does it, but for its objects of layer 4 (what's drawn
+    // over a view for that view alone: R-Look's reticle, a 32 x 32 picture at the view's middle) the view given as the 5th player's, 4:
+    // each object's drawing (func_151674F8's calls) is handed the view, and draws its reticle for its own player's view only, so with
+    // view 1 the 5th player had none (possess70's log: the reticle's picture in the HUD pass of its player's view, after func_151674F8's
+    // DE 8008AC70). Its place is the full-screen view's middle then (view 4's record, the full screen's with a split screen), which
+    // net_view.cpp leaves where it is.
+    uint32_t fifth_hud_pass(uint8_t* rdram, recomp_context* ctx, uint32_t list) {
+        const recomp_context saved = *ctx;
+        conker_net_view_pass(rdram, (int32_t)list, 0, 2);
+        const uint32_t view_records_now = (uint32_t)MEM_W(0, (gpr)(int32_t)0x800BE628);
+        const uint32_t buffer = MEM_BU(0, (gpr)(int32_t)0x800BE9C0);
+        MEM_W(0, (gpr)(int32_t)list) = (int32_t)0xDC080008u;
+        MEM_W(4, (gpr)(int32_t)list) = (int32_t)(view_records_now + buffer * 16u + 0x40u);
+        list += 8;
+        // func_1501A490(list, view 0, 0, 0, 0, 0): its two stack arguments below the caller's room
+        ctx->r29 = ADD32(saved.r29, -0x40);
+        MEM_W(0x10, ctx->r29) = 0;
+        MEM_W(0x14, ctx->r29) = 0;
+        ctx->r4 = (gpr)(int32_t)list;
+        ctx->r5 = 0;
+        ctx->r6 = 0;
+        ctx->r7 = 0;
+        func_1501A490(rdram, ctx);
+        list = (uint32_t)ctx->r2;
+        *ctx = saved;
+        for (auto fn : { func_1517F4D8, func_1517F3A0, func_15180580 }) {
+            ctx->r4 = (gpr)(int32_t)list;
+            ctx->r5 = 0;
+            fn(rdram, ctx);
+            list = (uint32_t)ctx->r2;
+            *ctx = saved;
+        }
+        if ((MEM_HU(0, (gpr)(int32_t)0x800D18A0) & 1u) != 0 || (MEM_HU(0, (gpr)(int32_t)0x800D18A2) & 1u) != 0) {
+            ctx->r4 = (gpr)(int32_t)list;
+            ctx->r5 = 0;
+            func_1507DB6C(rdram, ctx);
+            list = (uint32_t)ctx->r2;
+            *ctx = saved;
+        }
+        for (int part = 0; part < 2; part++) {
+            ctx->r4 = (gpr)(int32_t)list;
+            ctx->r5 = 4;
+            ctx->r6 = 4;
+            ctx->r7 = (gpr)part;
+            func_151674F8(rdram, ctx);
+            list = (uint32_t)ctx->r2;
+            *ctx = saved;
+        }
+        return list;
+    }
+}
 extern "C" void func_15043384(uint8_t* rdram, recomp_context* ctx);
 
 namespace {
@@ -2178,7 +2237,13 @@ namespace {
             // (net_view.cpp), as in the game's frame, so the online view places them as on player 1's machine (possess59 drew the
             // overlay before the HUD pass, where the online view took it for the 3D's: the team scores stayed in the middle of the
             // screen, the pause screen came out cut and moved, its table's icons hidden).
-            list = call_list(rdram, ctx, func_15019BB8, list, 0);
+            // (possess72: the HUD pass as func_15019BB8's, its layer 4 objects drawn for the 5th player's view: fifth_hud_pass)
+            static const bool own_layer4 = []() { const char* t = std::getenv("CONKER_POSSESS_RETICLE"); return t == nullptr || std::string(t) != "0"; }();
+            if (own_layer4) {
+                list = fifth_hud_pass(rdram, ctx, list);
+            } else {
+                list = call_list(rdram, ctx, func_15019BB8, list, 0);
+            }
             *ctx = saved;
             conker_net_view_pass(rdram, (int32_t)list, std::max(0, (int)was_last), 2);
             const bool pause_here = conker::netsession::active() && conker::netmenu::is_open();

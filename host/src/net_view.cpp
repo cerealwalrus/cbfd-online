@@ -1373,6 +1373,19 @@ namespace {
                         conker::netsession::log(line);
                         race_menu_logged++;
                     }
+                } else if (!bar && op != 0xF6 && width <= 33.0f && height <= 33.0f && std::fabs(cx - 0.5f * (left + right)) < 12.0f &&
+                        std::fabs(cy - 0.5f * (top + bottom)) < 12.0f && inside(hud_segments, address) && conker::possess_test::fifth_split_view(rdram)) {
+                    // (possess72) the 5th player's R-Look reticle, drawn for its own view (possess_test.cpp's fifth_hud_pass) at the full
+                    // view's middle already: left there (the middle row's rule took it for the shared row's and moved it to the bottom)
+                    kind_name = "the 5th player's reticle";
+                    static int reticle_logged = 0;
+                    if (reticle_logged < 10) {
+                        reticle_logged++;
+                        char line[160];
+                        std::snprintf(line, sizeof(line), "[net view] f=%u the 5th player's reticle %08X: %08X %08X (centre %g,%g, %gx%g) left at the view's middle",
+                            (unsigned)conker::netsession::frame(), address, w0, w1, cx, cy, width, height);
+                        conker::netsession::log(line);
+                    }
                 } else if (screen_camera >= 0) {
                     // 0.10.94: a piece the size of a camera's whole rectangle (the fade to black as a match ends, drawn over each camera):
                     // this machine's camera's is stretched over the full view, another camera's hidden. Moved as a corner piece, this
