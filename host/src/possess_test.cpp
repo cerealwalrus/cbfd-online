@@ -1431,6 +1431,19 @@ uint32_t conker::possess_test::fifth_second_pass() {
     return second_pass_at;
 }
 
+// (possess80) where this frame's extra view's commands begin in the frame's list, on the machine that shows it (0: not drawn this frame)
+namespace {
+    uint32_t fifth_view_at = 0;
+    // (possess80 diagnostics) the extra view's eye, the last two frames', to find a frame drawn from somewhere else
+    float eye_was[2][3] = {};
+    uint32_t eye_frames = 0;
+    uint32_t skipped_logged = 0;
+}
+
+uint32_t conker::possess_test::fifth_view_start() {
+    return fifth_view_at;
+}
+
 namespace {
     bool extra_view_now = false;   // (possess34) the extra camera's view being drawn
     // (possess35) the characters' fades and hidden bits in the extra camera's view (as view 1), kept from frame to frame
@@ -2378,6 +2391,7 @@ extern "C" void conker_possess_overlay(uint8_t* rdram, recomp_context* ctx, int 
 
 extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
     second_pass_at = 0;   // (possess61: this frame's, once the view's second pass begins)
+    fifth_view_at = 0;    // (possess80)
     if (!local_view_wanted(rdram)) {
         return;
     }
@@ -2391,6 +2405,11 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
     }
     put_kept_back(rdram);   // (none should be left; to be safe)
     if (!start_copied) {
+        // (possess80 diagnostics) a frame without the extra view: the 5th player's machine showed player 1's camera's then
+        if (skipped_logged < 40 && view_shown_here()) {
+            skipped_logged++;
+            log("f=%u (possess80) the extra view not drawn this frame: no copy of the frame's start", (unsigned)frames);
+        }
         return;
     }
     start_copied = false;
@@ -2451,6 +2470,30 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
     // 2. view 1 the extra camera's
     std::memcpy(rdram + (base - 0x80000000u), rdram + (base + (uint32_t)extra * camera_size - 0x80000000u), camera_size);
     MEM_B(0x23D, (gpr)(int32_t)base) = 0;
+    // (possess80 diagnostics) a frame whose eye is far from both frames around it (logged a frame late)
+    if (view_shown_here()) {
+        float eye[3];
+        for (int i = 0; i < 3; i++) {
+            const uint32_t w = (uint32_t)MEM_W(0x2EC + 4 * i, (gpr)(int32_t)base);
+            std::memcpy(&eye[i], &w, 4);
+        }
+        auto far_from = [](const float* a, const float* b) {
+            const float dx = a[0] - b[0], dy = a[1] - b[1], dz = a[2] - b[2];
+            return std::sqrt(dx * dx + dy * dy + dz * dz);
+        };
+        static uint32_t jumps_logged = 0;
+        if (eye_frames >= 2 && jumps_logged < 60) {
+            const float out = far_from(eye_was[1], eye_was[0]), back = far_from(eye, eye_was[0]);
+            if (out > 60.0f && back < out * 0.25f) {
+                jumps_logged++;
+                log("f=%u (possess80) the extra view's eye a frame ago was %.0f away from the frames around it (%.0f %.0f %.0f, then %.0f %.0f %.0f)",
+                    (unsigned)frames, out, eye_was[1][0], eye_was[1][1], eye_was[1][2], eye[0], eye[1], eye[2]);
+            }
+        }
+        std::memcpy(eye_was[0], eye_was[1], sizeof(eye_was[0]));
+        std::memcpy(eye_was[1], eye, sizeof(eye));
+        eye_frames++;
+    }
     if (!fifth_split(rdram)) {   // (possess59: with a split screen, view 1's own record: see fifth_split)
         std::memcpy(rdram + (views - 0x80000000u), rdram + (views + (uint32_t)extra * 0x180u - 0x80000000u), 0x180);
     }
@@ -2970,6 +3013,20 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
         MEM_W(4, (gpr)(int32_t)self) = self_priority;
     }
     MEM_W(0, (gpr)(int32_t)head) = (int32_t)list;
+    fifth_view_at = (view_shown_here() && list > list_before) ? list_before : 0;   // (possess80)
+    if (view_shown_here() && list <= list_before && skipped_logged < 40) {
+        skipped_logged++;
+        log("f=%u (possess80) the extra view's commands let go this frame", (unsigned)frames);
+    }
+    {
+        // (possess80 diagnostics) what the view draws from the RDP's own buffers (the framebuffers, the blur's copy), as the renderer
+        // finds them when it draws: on this machine they had player 1's camera's picture in them, drawn first
+        static uint32_t rdp_logged = 0;
+        if (rdp_left > 0 && rdp_logged < 80 && view_shown_here()) {
+            rdp_logged++;
+            log("f=%u (possess80) the extra view draws %u pieces from the RDP's buffers", (unsigned)frames, (unsigned)rdp_left);
+        }
+    }
     for (const auto& pt : patches) {
         MEM_W(0, (gpr)(int32_t)pt.first) = (int32_t)pt.second;
     }

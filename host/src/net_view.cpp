@@ -462,6 +462,13 @@ namespace {
         static const unsigned mask = []() { const char* text = SDL_getenv("CONKER_NET_VIEWMASK"); return text != nullptr ? (unsigned)std::strtoul(text, nullptr, 0) : 31u; }();
         static const bool hud_layout = [&]() { const char* text = SDL_getenv("CONKER_NET_HUD"); return (text == nullptr || std::string(text) != "old") && (mask & 16u) != 0; }();
         std::string projection_notes;
+        // (possess80) on the 5th player's machine, player 1's camera's passes (the game's own view 1, drawn before the extra camera's, which
+        // is drawn over it as view 1 too) are hidden as the other cameras' are: player 1's picture was in the frame's buffer under the 5th
+        // player's, and what the 5th player's view draws from that buffer (the game's screen effects) showed player 1's camera's picture
+        // for a frame at a time. CONKER_POSSESS_MAINVIEW=1 leaves them shown.
+        static const bool main_view_shown = []() { const char* t = SDL_getenv("CONKER_POSSESS_MAINVIEW"); return t != nullptr && std::string(t) == "1"; }();
+        const uint32_t fifth_from = (!main_view_shown && conker::possess_test::fifth_split_view(rdram)) ? conker::possess_test::fifth_view_start() : 0u;
+        int main_view_hidden = 0;
         int redirected = 0, shown = 0, hidden = 0, matrices = 0, fills = 0, logged = 0, rects_logged = 0, rects_moved = 0, rects_hidden = 0;
         // where this machine's camera's 3D passes and its HUD passes are (each ends where the next pass starts)
         std::vector<std::pair<uint32_t, uint32_t>> segments, hud_segments;
@@ -1109,7 +1116,12 @@ namespace {
             } else if ((mask & 2u) != 0 && chain_op == 0xED) {
                 for (int k = 0; k < players; k++) {
                     if (w0 == scissor0[k] && w1 == scissor1[k]) {
-                        if (k == local) {
+                        if (k == local && fifth_from != 0 && address >= start && address < fifth_from) {
+                            MEM_W(0, (gpr)(int32_t)address) = (int32_t)0xED000000u;
+                            MEM_W(4, (gpr)(int32_t)address) = 0;
+                            hidden++;
+                            main_view_hidden++;
+                        } else if (k == local) {
                             MEM_W(0, (gpr)(int32_t)address) = (int32_t)scissor_word0(left, top);
                             MEM_W(4, (gpr)(int32_t)address) = (int32_t)scissor_word1(right, bottom);
                             shown++;
@@ -1873,6 +1885,20 @@ namespace {
                 conker::netsession::log(line);
             }
             std::memcpy(last_sig, sig, sizeof(sig));
+        }
+        {
+            // (possess80) player 1's camera's passes hidden on the 5th player's machine: logged now and then, and when none were found
+            static uint32_t main_logged = 0, main_frames = 0;
+            if (fifth_from != 0) {
+                main_frames++;
+                if ((main_logged < 5 || main_frames % 1800 == 0 || main_view_hidden == 0) && main_logged < 60) {
+                    main_logged++;
+                    char line[200];
+                    std::snprintf(line, sizeof(line), "[net view] f=%u player 1's camera's passes under the 5th player's view: %d scissors hidden (its view from %08X)",
+                        (unsigned)conker::netsession::frame(), main_view_hidden, (unsigned)fifth_from);
+                    conker::netsession::log(line);
+                }
+            }
         }
         if (log_it) {
             char line[320];

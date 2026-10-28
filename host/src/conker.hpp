@@ -445,6 +445,7 @@ namespace conker {
         bool fifth_split_view(uint8_t* rdram);
         // (possess61) where this frame's extra view's second pass (func_15019CC8's) began in the list, 0 if none yet
         uint32_t fifth_second_pass();
+        uint32_t fifth_view_start();   // (possess80) this frame's extra view's commands' start (0: none)
         // (possess51) the 5th player is on the teams screen as a player (it has joined, in a mode whose screen can have it): the screen's
         // limits count it (mp_characters.cpp)
         bool fifth_on_teams(uint8_t* rdram);
