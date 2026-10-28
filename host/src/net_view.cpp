@@ -550,6 +550,50 @@ namespace {
                 }
             }
         }
+        // (possess60) every command of this machine's camera's passes (and the passes for no camera: the overlay, the match's HUD) in the
+        // 40th frame of a look (R-Look with a gun, the sniper's scope, the magnum's, the rocket launcher's: the first 6 kinds seen), with one
+        // level of the lists they call, to find what draws the look's reticle and overlay: on a 4 players' machine they're drawn, on the 5th
+        // player's they weren't (its own passes are camera 0's there, after the game's)
+        {
+            static int look_run_kind = 0, look_run = 0, look_dumps = 0;
+            static std::set<int> look_kinds_dumped;
+            look_run = (local_kind != 0 && local_kind == look_run_kind) ? look_run + 1 : 0;
+            look_run_kind = local_kind;
+            if (look_run == 40 && look_dumps < 6 && look_kinds_dumped.insert(local_kind).second) {
+                look_dumps++;
+                int lines = 0;
+                char line[160];
+                std::snprintf(line, sizeof(line), "[net view] look %02X dump begins (f=%u): camera %d of %d, the 5th player's view %d, list %08X..%08X",
+                    local_kind, (unsigned)conker::netsession::frame(), local, players, conker::possess_test::fifth_split_view(rdram) ? 1 : 0, start, end);
+                conker::netsession::log(line);
+                for (size_t i = 0; i < frame.size(); i++) {
+                    const uint32_t from = frame[i].gfx, to = i + 1 < frame.size() ? frame[i + 1].gfx : end;
+                    std::snprintf(line, sizeof(line), "[net view] look %02X: pass %zu at %08X..%08X camera %d kind %d", local_kind, i, from, to, frame[i].camera, frame[i].kind);
+                    conker::netsession::log(line);
+                    if (frame[i].camera != local && frame[i].camera != 255) {
+                        continue;
+                    }
+                    for (uint32_t a = from; a < to && a - from < 0x4000u && lines < 4000; a += 8) {
+                        const uint32_t w0 = (uint32_t)MEM_W(0, (gpr)(int32_t)a), w1 = (uint32_t)MEM_W(4, (gpr)(int32_t)a);
+                        std::snprintf(line, sizeof(line), "[net view] lk %08X: %08X %08X", a, w0, w1);
+                        conker::netsession::log(line);
+                        lines++;
+                        if ((w0 >> 24) == 0xDE && (w1 >> 24) == 0x80 && (w1 & 7u) == 0 && (w1 & 0x7FFFFFu) < 0x7FF000u) {
+                            for (uint32_t b = w1, n = 0; n < 64 && lines < 4000; b += 8, n++) {
+                                const uint32_t v0 = (uint32_t)MEM_W(0, (gpr)(int32_t)b), v1 = (uint32_t)MEM_W(4, (gpr)(int32_t)b);
+                                std::snprintf(line, sizeof(line), "[net view] lk   > %08X: %08X %08X", b, v0, v1);
+                                conker::netsession::log(line);
+                                lines++;
+                                if ((v0 >> 24) == 0xDF) {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                conker::netsession::log("[net view] look dump ends");
+            }
+        }
         int scope_lines = 0;
         // (0.9.66: every rectangle and screen sprite of three frames of the sniper's look, the 40th to the 42nd, with where it is, the texture
         // it was loaded from and its steps, to find the scope's pieces: the dumps above had none near the middle)

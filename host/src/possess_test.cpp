@@ -2061,6 +2061,7 @@ extern "C" void func_150198FC(uint8_t* rdram, recomp_context* ctx);
 extern "C" void func_15019BB8(uint8_t* rdram, recomp_context* ctx);
 extern "C" void func_15019E60(uint8_t* rdram, recomp_context* ctx);
 extern "C" void func_151E84B0(uint8_t* rdram, recomp_context* ctx);
+extern "C" void conker_net_view_pass(uint8_t* rdram, int gfx, int camera, int kind);   // (possess60, net_view.cpp)
 extern "C" void func_15043384(uint8_t* rdram, recomp_context* ctx);
 
 namespace {
@@ -2161,37 +2162,66 @@ namespace {
         MEM_W(0, (gpr)(int32_t)view_now) = 0;
         list = call_list(rdram, ctx, func_150198FC, list, 0);
         *ctx = saved;
-        // (possess49) the 5th player's pause menu open: the pause screen as the game drew it this frame, under this view (its overlay's
-        // commands, func_15019E60 up to its text's flush: conker_possess_overlay), copied here; its text (the menu's, queued as the game's
-        // update ran it, and the score table's, queued as the overlay drew it: both drawn by the game's flush under this view) queued
-        // again (net_menu.cpp) and drawn over it by the flush; and, as the game's pause has it, no view's own HUD over the pause screen
-        const bool pause_open = conker::netsession::active() && conker::netmenu::is_open() && overlay_frame == frames && overlay_mid > overlay_start &&
-            overlay_mid - overlay_start <= 0x10000u && in_rdram(overlay_start);
-        if (pause_open) {
-            for (uint32_t at = overlay_start; at < overlay_mid; at += 4) {
-                MEM_W(0, (gpr)(int32_t)list) = MEM_W(0, (gpr)(int32_t)at);
-                list += 4;
+        if (fifth_split(rdram)) {
+            // (possess60) with a split screen, the game's own order (func_1501878C's with more than one view): the view's HUD pass
+            // (func_15019BB8), then the overlay (func_15019E60, which makes the full-screen view the one drawn) and the match's HUD
+            // (func_151E84B0: the team scores, and with the pause menu open the pause screen and its score table, drawn here as the
+            // game draws its own: net_menu.cpp's pause_screen_here), then the text. Those are noted as a HUD pass of the last view's
+            // (net_view.cpp), as in the game's frame, so the online view places them as on player 1's machine (possess59 drew the
+            // overlay before the HUD pass, where the online view took it for the 3D's: the team scores stayed in the middle of the
+            // screen, the pause screen came out cut and moved, its table's icons hidden).
+            list = call_list(rdram, ctx, func_15019BB8, list, 0);
+            *ctx = saved;
+            conker_net_view_pass(rdram, (int32_t)list, std::max(0, (int)was_last), 2);
+            if (conker::netsession::active() && conker::netmenu::is_open()) {
+                // the menu's text (its run queued it for the game's flush), queued again for this one
+                conker::netmenu::fifth_pause_text(rdram, ctx);
+                *ctx = saved;
+                static uint32_t told = 0;
+                if (told++ < 3) {
+                    log("f=%u the 5th player's pause screen drawn over its view as the game draws its own (a split screen)", (unsigned)frames);
+                }
             }
-            static uint32_t told = 0;
-            if (told++ < 3) {
-                log("f=%u the 5th player's pause screen: the game's (%u commands at %08X) copied over its view", (unsigned)frames,
-                    (unsigned)((overlay_mid - overlay_start) / 8), (unsigned)overlay_start);
-            }
-            conker::netmenu::fifth_pause_text(rdram, ctx);
+            list = call_list(rdram, ctx, func_15019E60, list, 0);
+            *ctx = saved;
+            list = call_list(rdram, ctx, func_151E84B0, list, 0);
             *ctx = saved;
             list = call_list(rdram, ctx, func_15043384, list, 0);
             *ctx = saved;
+            MEM_W(0, (gpr)(int32_t)view_now) = was_view;
         } else {
-            list = call_list(rdram, ctx, func_15019E60, list, 0);
+            // (possess49) the 5th player's pause menu open: the pause screen as the game drew it this frame, under this view (its overlay's
+            // commands, func_15019E60 up to its text's flush: conker_possess_overlay), copied here; its text (the menu's, queued as the game's
+            // update ran it, and the score table's, queued as the overlay drew it: both drawn by the game's flush under this view) queued
+            // again (net_menu.cpp) and drawn over it by the flush; and, as the game's pause has it, no view's own HUD over the pause screen
+            const bool pause_open = conker::netsession::active() && conker::netmenu::is_open() && overlay_frame == frames && overlay_mid > overlay_start &&
+                overlay_mid - overlay_start <= 0x10000u && in_rdram(overlay_start);
+            if (pause_open) {
+                for (uint32_t at = overlay_start; at < overlay_mid; at += 4) {
+                    MEM_W(0, (gpr)(int32_t)list) = MEM_W(0, (gpr)(int32_t)at);
+                    list += 4;
+                }
+                static uint32_t told = 0;
+                if (told++ < 3) {
+                    log("f=%u the 5th player's pause screen: the game's (%u commands at %08X) copied over its view", (unsigned)frames,
+                        (unsigned)((overlay_mid - overlay_start) / 8), (unsigned)overlay_start);
+                }
+                conker::netmenu::fifth_pause_text(rdram, ctx);
+                *ctx = saved;
+                list = call_list(rdram, ctx, func_15043384, list, 0);
+                *ctx = saved;
+            } else {
+                list = call_list(rdram, ctx, func_15019E60, list, 0);
+                *ctx = saved;
+                list = call_list(rdram, ctx, func_15019BB8, list, 0);
+                *ctx = saved;
+            }
+            list = call_list(rdram, ctx, func_151E84B0, list, 0);
             *ctx = saved;
-            list = call_list(rdram, ctx, func_15019BB8, list, 0);
+            list = call_list(rdram, ctx, func_15043384, list, 0);
             *ctx = saved;
+            MEM_W(0, (gpr)(int32_t)view_now) = was_view;
         }
-        list = call_list(rdram, ctx, func_151E84B0, list, 0);
-        *ctx = saved;
-        list = call_list(rdram, ctx, func_15043384, list, 0);
-        *ctx = saved;
-        MEM_W(0, (gpr)(int32_t)view_now) = was_view;
         MEM_B(0, (gpr)(int32_t)blur_where) = was_blur;
         MEM_B(0, (gpr)(int32_t)humans_now) = was_humans;
         MEM_W(0, (gpr)(int32_t)last_player) = was_last;

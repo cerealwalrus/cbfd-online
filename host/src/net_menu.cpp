@@ -167,15 +167,17 @@ namespace {
     bool fifth_machine() {
         return conker::netsession::active() && conker::possess_test::online_view_here();
     }
-    bool pause_screen_here() {
-        return !fifth_machine() || !conker::possess_test::drawing_extra_view();
+    // (possess60) with a split screen (4 players and the 5th), the 5th player's HUD draws the pause screen as the game draws its own
+    // (possess_test.cpp's fifth_hud, in the game's order); what it changes in the game's memory is put back as the frame ends
+    bool pause_screen_here(uint8_t* rdram) {
+        return !fifth_machine() || !conker::possess_test::drawing_extra_view() || conker::possess_test::fifth_split_view(rdram);
     }
 }
 
 // (0.10.75) the pause screen's two functions begin (where 0: func_151EB06C, 1: func_151DDC20) and end (2, 3)
 extern "C" void conker_pause_bounds(uint8_t* rdram, recomp_context* ctx, int where) {
     (void)ctx;
-    const bool on = conker::netsession::active() && menu_open.load() && (where != 0 || pause_screen_here());
+    const bool on = conker::netsession::active() && menu_open.load() && (where != 0 || pause_screen_here(rdram));
     const bool before = in_pause_screen.load() || in_pause_menu.load();
     switch (where) {
         case 0: in_pause_screen = on; break;
@@ -387,7 +389,7 @@ extern "C" void conker_net_pause_hook(uint8_t* rdram, recomp_context* ctx, int w
     }
     // (possess49) on the 5th player's machine the pause screen is the game's own drawing's (copied over the 5th player's view from
     // there), not drawn again in the 5th player's HUD
-    if ((which == 1 || which == 2) && !pause_screen_here()) {
+    if ((which == 1 || which == 2) && !pause_screen_here(rdram)) {
         return;
     }
     if (which == 1) {
