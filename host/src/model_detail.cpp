@@ -149,6 +149,29 @@ extern "C" void conker_model_detail(uint8_t* rdram, recomp_context* ctx) {
             measure(rdram, ctx->r7, picked, highest ? 0 : picked);
         }
     }
+    // (possess79) multiplayer (the arenas, and online): every character on its most detailed model, for every view, Conker too (the
+    // original keeps him at level 1 there). The squirrels, the Tediz and the rest picked a model by their distance from the view's
+    // camera; the 5th player's view (possess_test.cpp) borrows player 1's camera's slot, and its characters came out on their far,
+    // blocky models, its own character among them. A character whose first model is 0x5A the game never puts on level 0 (its own rule,
+    // kept). An object whose level the game sets itself (+0x1C9) doesn't get here.
+    if (MEM_BU(0, (gpr)(int32_t)multiplayer_detail_flag) != 0 || conker::netsession::active()) {
+        const gpr models = (gpr)MEM_W(0x2C4, ctx->r7);
+        const int picked = (int)(int32_t)ctx->r3;
+        const int best = MEM_BU(0, models) == 0x5A ? 1 : 0;
+        const int count = (int)MEM_BU(0x2C8, ctx->r7);
+        const int level = std::min(best, std::max(count - 1, 0));
+        static int told = 0;
+        if (told < 12 && picked != level && conker::netsession::active()) {
+            told++;
+            char line[200];
+            std::snprintf(line, sizeof(line), "[detail] object %u: model level %d picked (of %d, first model %02X, now %d), made %d%s",
+                (unsigned)MEM_W(0x50, ctx->r29), picked, count, (unsigned)MEM_BU(0, models), (int)(int8_t)MEM_B(0x1C8, ctx->r7), level,
+                conker::possess_test::drawing_extra_view() ? " (the 5th player's view)" : "");
+            conker::netsession::log(line);
+        }
+        ctx->r3 = (gpr)level;
+        return;
+    }
     if (!conker::model_detail::always_highest() || MEM_BU(0, (gpr)(int32_t)multiplayer_detail_flag) != 0) {
         return;
     }
