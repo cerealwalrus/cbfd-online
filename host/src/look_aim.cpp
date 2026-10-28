@@ -241,7 +241,6 @@ namespace {
         const std::string stick_camera = "stick_free_camera";
         const std::string camera_fov = "camera_field_of_view_degrees";
         const std::string aim_swap_sticks = "aim_swap_sticks";
-        const std::string aim_level_slopes = "aim_level_slopes";   // (possess98)
         const std::string aim_lock_on = "aim_lock_on";
     }
 
@@ -312,14 +311,6 @@ namespace {
 // The Camera tab, its settings in alphabetical order (possess65).
 void conker::look_aim::add_camera_options(recomp::config::Config& config) {
     // (possess65) in alphabetical order
-    // (possess98, possess99)
-    config.add_enum_option(options::aim_level_slopes, "Aiming: Level on Slopes",
-        "Turns off the camera's height easing while you hold R. In the original game the camera's eye and the point it looks at "
-        "follow Conker's height a little behind him, the eye more than the point, so walking up a ramp tilts the view and the "
-        "crosshair up (about 4 degrees) and walking down tilts them down, until you stop. "
-        "<recomp-color primary>On</recomp-color>: both follow Conker's height at once, so the aim stays where you put it. "
-        "<recomp-color primary>Off</recomp-color> matches the original game. Online it is each player's own setting.",
-        toggle, Toggle::Off);
     config.add_enum_option(options::aim_swap_sticks, "Aiming: Swap Sticks",
         "Controls aiming like a third-person shooter: while you aim, the right stick aims and the left stick moves, as "
         "the C-buttons do (e.g. the shotgun, the slingshot, the sniper scope, R-Look), in single player, and online with a gamepad (the SMG, the M4...). "
@@ -788,57 +779,6 @@ extern "C" void conker_shotgun_laser_walk(uint8_t* rdram, recomp_context* ctx) {
 // standing still). Its distance and height stay, and so does the eye.
 extern std::atomic<int> walk_dx[aim_players], walk_dy[aim_players];
 
-#if defined(CONKER_RT64)
-// (possess99) Aiming: Level on Slopes, for a camera: R-Look's second stage, Conker's, and the setting on for its player (online the
-// frame's input, a bit of that player's look flags, so every machine goes by the same; offline this machine's setting).
-static bool level_on_slopes(uint8_t* rdram, gpr camera) {
-    const gpr walker = (gpr)(int32_t)MEM_W(0x3D0, camera);
-    if (MEM_H(0x73C, camera) != 2 || ((uint32_t)walker & 0xFF000000u) != 0x80000000u) {
-        return false;
-    }
-    if (conker::netsession::active()) {
-        return (conker::netsession::look_flags((int)MEM_BU(0x23D, camera)) & 8u) != 0;
-    }
-    return option<Toggle>(options::aim_level_slopes) == Toggle::On;
-}
-
-// (possess99) func_150495B0, at its start: the game's easing of one value toward a target ($a0 the value, $a1 the target, $a2 its
-// speed), which the cameras ease their heights by: the eye's (+0x2FC of the camera) and the point the look-at point is worked out
-// from (+0x2C0). With Aiming: Level on Slopes, in R-Look's second stage, those two take their target at once (as the function does
-// itself when it would pass it: the value the target, its speed 0), so the view keeps up with Conker's height and the aim stays where
-// it is walking up or down a ramp (possess97's [look-slope] lines: the eye 16 behind his height on a ramp, the look-at point 9, the aim
-// tilted 4.4 degrees). Every camera of the look records (D_800DBFF0, 0x9A0 each), from the game's memory on every machine.
-extern "C" int conker_level_ease(uint8_t* rdram, recomp_context* ctx) {
-    const uint32_t value = (uint32_t)ctx->r4;
-    const uint32_t looks = (uint32_t)MEM_W(0, (gpr)(int32_t)0x800DBFF0);
-    if ((looks >> 24) != 0x80 || value < looks) {
-        return 0;
-    }
-    uint32_t field = 0;
-    uint32_t record = 0;
-    for (uint32_t f : { 0x2FCu, 0x2C0u }) {
-        if (value >= looks + f && (value - looks - f) % 0x9A0u == 0 && (value - looks - f) / 0x9A0u < (uint32_t)aim_players) {
-            field = f;
-            record = (value - looks - f) / 0x9A0u;
-        }
-    }
-    if (field == 0) {
-        return 0;
-    }
-    const gpr camera = (gpr)(int32_t)(looks + record * 0x9A0u);
-    if (!level_on_slopes(rdram, camera)) {
-        return 0;
-    }
-    MEM_W(0, ctx->r4) = (int32_t)(uint32_t)ctx->r5;
-    MEM_W(0, ctx->r6) = 0;
-    return 1;
-}
-#else
-extern "C" int conker_level_ease(uint8_t*, recomp_context*) {
-    return 0;
-}
-#endif
-
 extern "C" void conker_look_view(uint8_t* rdram, recomp_context* ctx) {
 #if defined(CONKER_RT64)
     const gpr camera = ctx->r16;
@@ -948,7 +888,7 @@ extern "C" void conker_look_view(uint8_t* rdram, recomp_context* ctx) {
             lift.step = -1;
         } else {
             lift.stage_two_frames++;
-            if (lift.step < 0 && lift.stage_two_frames <= 3 && lift.have_last && !level_on_slopes(rdram, camera)) {   // (possess99: not with Level on Slopes)
+            if (lift.step < 0 && lift.stage_two_frames <= 3 && lift.have_last) {
                 const float jump = raw_height - lift.last_height;
                 if (jump > 6.5f && jump < 10.0f) {
                     lift.step = 0;
@@ -1421,7 +1361,7 @@ namespace {
     // look_flag): online they were this machine's for every player, so a player whose settings differed from the other
     // machine's (Stick: Aiming Response Direct here, Smooth there) aimed differently on each machine: aiming the tommy gun
     // (whose look the SMG's and the M4's fix-ups don't cover) the games drifted apart every second (0.9.46 test).
-    constexpr uint8_t look_turn_x = 1, look_turn_y = 2, look_direct = 4, look_level = 8;   // (look_level: possess98, Aiming: Level on Slopes)
+    constexpr uint8_t look_turn_x = 1, look_turn_y = 2, look_direct = 4;
 
     // Whether the look mode's camera's player has the bit: online from the frame's agreed input (that player's own settings),
     // offline this machine's.
@@ -1444,8 +1384,7 @@ namespace {
 uint8_t conker::look_aim::sampled_look_flags() {
 #if defined(CONKER_RT64)
     return (uint8_t)((own_turn_stick_x() ? look_turn_x : 0) | (own_turn_stick_y() ? look_turn_y : 0) |
-        (option<Response>(options::stick_response) == Response::Direct ? look_direct : 0) |
-        (option<Toggle>(options::aim_level_slopes) == Toggle::On ? look_level : 0));
+        (option<Response>(options::stick_response) == Response::Direct ? look_direct : 0));
 #else
     return 0;
 #endif
