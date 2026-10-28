@@ -3661,6 +3661,43 @@ extern "C" void conker_possess_icon_texture(uint8_t* rdram, recomp_context* ctx)
     ctx->r9 = (gpr)(int32_t)(texture < 0x00800000u ? p5_texture & 0x7FFFFFFFu : p5_texture);
 }
 
+// (possess57) func_1510D0EC (an asset's address, loaded first if it isn't: a sprite's texture) at its start (where 0: $a0 the asset)
+// and as it returns (1: $v0 the address): while the 5th player plays as the game's own player, that controller's P icon wherever it's
+// drawn from (the pause screen's score table builds its own commands from the address), our P5 one instead. Ours is put in our memory
+// each time; made from the P4 icon (conker_possess_icon_texture, the character select's label), so only once that's been drawn here.
+namespace {
+    uint32_t asset_asked = 0xFFFFFFFFu;
+}
+
+extern "C" void conker_possess_asset(uint8_t* rdram, recomp_context* ctx, int where) {
+    if (where == 0) {
+        asset_asked = (uint32_t)ctx->r4;
+        return;
+    }
+    const uint32_t asked = asset_asked;
+    asset_asked = 0xFFFFFFFFu;
+    if (!p5_have || !fifth_mapped(rdram) || asked != 0x894u + (MEM_BU(0, (gpr)(int32_t)fifth_map) & 3u)) {
+        return;
+    }
+    const uint32_t texture = (uint32_t)ctx->r2;
+    if (texture == 0x80000000u || texture == 0) {
+        return;
+    }
+    constexpr int n = conker::p5icon::size;
+    for (int y = 0; y < n; y++) {
+        for (int x = 0; x < n; x++) {
+            const int sx = x ^ ((y & 1) ? 2 : 0);
+            MEM_W(4 * (y * n + sx), (gpr)(int32_t)p5_texture) = (int32_t)p5_made[y * n + x];
+        }
+    }
+    static uint32_t told = 0;
+    if (told++ < 3) {
+        log("f=%u the P%d icon's texture (asset %X, at %08X) given as the P5 one: the 5th player plays with that controller", (unsigned)frames,
+            (int)(MEM_BU(0, (gpr)(int32_t)fifth_map) & 3u) + 1, (unsigned)asked, (unsigned)texture);
+    }
+    ctx->r2 = (gpr)(int32_t)(texture < 0x00800000u ? p5_texture & 0x7FFFFFFFu : p5_texture);
+}
+
 // (possess51) The 5th player on the teams screen (func_151E1744, the screen after the character select: each team's characters, a
 // player's "P1" to "P4" icon, a computer player's figure, icon #5). Each frame the screen counts the players' teams (D_800E0C00) for the
 // list's first D_8008FE40 entries (D_8008FE44, the players' controllers), moves a player's team with its stick (left and right; up and

@@ -3368,3 +3368,16 @@ text = "{ extern void conker_team_bots(uint8_t*, recomp_context*); conker_team_b
 func = "func_151E1744"
 before_vram = 0x151E1744
 text = "{ extern void conker_possess_teams_start(uint8_t*, recomp_context*); conker_possess_teams_start(rdram, ctx); }"
+
+# possess57: online, the 5th player playing with a free controller: that controller's P icon drawn as its P5 one from wherever it's
+# drawn (host/src/possess_test.cpp, conker_possess_asset): func_1510D0EC, an asset's address (a sprite's texture), at its start ($a0 the
+# asset) and before its return ($v0 the address).
+[[patches.hook]]
+func = "func_1510D0EC"
+before_vram = 0x1510D0EC
+text = "{ extern void conker_possess_asset(uint8_t*, recomp_context*, int); conker_possess_asset(rdram, ctx, 0); }"
+
+[[patches.hook]]
+func = "func_1510D0EC"
+before_vram = 0x1510D36C
+text = "{ extern void conker_possess_asset(uint8_t*, recomp_context*, int); conker_possess_asset(rdram, ctx, 1); }"
