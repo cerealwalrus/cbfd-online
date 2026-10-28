@@ -2578,8 +2578,9 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
     // one player's own view alone, as the gun's reticle in R-Look (a 32 x 32 picture over the view's middle, drawn with the gun in the
     // second pass of its player's view only), is the 5th player's then, not player 1's. The views' tables (their 5th entry ours while
     // view_pass_on) are given view 1's entries, as the view's first pass left them, for whatever reads them by that index.
-    // CONKER_POSSESS_VIEW4=0 leaves it out.
-    static const bool view4_on = []() { const char* t = std::getenv("CONKER_POSSESS_VIEW4"); return t == nullptr || std::string(t) != "0"; }();
+    // (possess77: off unless CONKER_POSSESS_VIEW4=1. The reticle is the HUD pass's, fifth_hud_pass, and with this on the 5th player's
+    // own character showed in its R-Look, dark and blocky, over its view.)
+    static const bool view4_on = []() { const char* t = std::getenv("CONKER_POSSESS_VIEW4"); return t != nullptr && std::string(t) == "1"; }();
     const bool second_as_view4 = view4_on && fifth_split(rdram);
     if (second_as_view4) {
         for (int i = 0; i < slot4_count; i++) {
