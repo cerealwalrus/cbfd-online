@@ -1109,47 +1109,8 @@ namespace {
     }
 
     // Mutex held. The first `delay` frames have nobody's input yet, so they are neutral for all.
-    // (possess53) The 5th player's slot moved to a free one of the game's 4 as the game starts, when one is free (a player slot nobody
-    // joined, the 5th player there all the same): it then plays as that slot's player, the game's own way (its controller, camera, HUD,
-    // pause menu), and the match has 4 player places (the 5th player's own character, the extra camera, none: five_players false).
-    // The Start message tells every machine (its last byte: 0x80 and the slot); CONKER_NET_KEEP5=1 on the host keeps the 5th slot
-    // (to try the extra camera with fewer players). Returns the byte.
-    uint8_t host_move_fifth() {
-        static const bool keep = get_env("CONKER_NET_KEEP5") == "1";
-        if (keep || players_expected < 5 || !connected[4]) {
-            return 0;
-        }
-        int free_slot = -1;
-        for (int k = 0; k < 4 && free_slot < 0; k++) {
-            if (!connected[k]) {
-                free_slot = k;
-            }
-        }
-        if (free_slot < 0) {
-            return 0;
-        }
-        for (auto& peer : peers) {
-            if (peer->slot == 4) {
-                peer->slot = free_slot;
-            }
-        }
-        connected[free_slot] = true;
-        connected[4] = false;
-        names[free_slot] = names[4];
-        names[4].clear();
-        joining[free_slot] = joining[4];
-        joining[4] = false;
-        players_expected = 4;
-        log_line("[net] the 5th player takes player slot %d (nobody joined there): it plays as player %d, the game's own way", free_slot + 1, free_slot + 1);
-        return (uint8_t)(0x80 | free_slot);
-    }
-
     void host_begin_game() {
         lobby_locked = true;
-        const uint8_t fifth_moved = host_move_fifth();
-        if (fifth_moved != 0) {
-            send_lobby_info();
-        }
         if (auto_delay) {
             const int want = wanted_delay_locked();
             delay = (uint32_t)(want > 0 ? want : 4);
@@ -1161,7 +1122,6 @@ namespace {
         Writer s(Start);
         const std::vector<char> save = host_save_image();
         s.put(delay).put((uint8_t)(dedicated ? 1 : 0)).put((uint8_t)0).put((uint32_t)save.size()).put_bytes(save.data(), save.size());
-        s.put(fifth_moved);   // (possess53: the 5th player's slot moved, see host_move_fifth)
         log_line("[net] this machine's save data (%zu bytes) goes to every player: the same setup options for all", save.size());
         for (auto& peer : peers) {
             peer->send_message(s.finish());
@@ -1623,20 +1583,6 @@ namespace {
                             r.at += n;
                             recomp::set_session_save(image);
                             log_line("[net] the host's save data came (%u bytes): this game plays with it, so the setup options are the host's", (unsigned)n);
-                        }
-                    }
-                    if (r.at < r.size) {
-                        // (possess53) the 5th player's slot moved to a free one (host_move_fifth): 4 player places, and on the 5th player's
-                        // machine its slot that one
-                        const uint8_t moved = r.get<uint8_t>();
-                        if (!r.bad && (moved & 0x80) != 0 && (moved & 0x7F) < 4) {
-                            players_expected = 4;
-                            if (my_slot == 4) {
-                                my_slot = moved & 0x7F;
-                                log_line("[net] this machine's player, the 5th, takes player slot %d (nobody joined there): it plays as player %d", my_slot + 1, my_slot + 1);
-                            } else {
-                                log_line("[net] the 5th player takes player slot %d (nobody joined there)", (moved & 0x7F) + 1);
-                            }
                         }
                     }
                     // the first `delay` frames are the host's (nobody's input): this machine's go in from frame `delay` on; one

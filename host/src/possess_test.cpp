@@ -96,7 +96,11 @@ namespace {
     constexpr uint32_t matrix_buffer = 0x800BE9C0;   //   D_800BE9C0
     constexpr uint32_t last_player = 0x80082FA0;     // D_80082FA0: players - 1
     constexpr uint32_t extra_buffer = 0x80FD0000;    // ours, past the game's 8 MB: the extra camera's buffer
-    constexpr int extra = 4;                         // the extra camera's slot and character: a 5th player's
+    constexpr int extra = 4;                         // the extra camera's slot (and player): a 5th player's
+    // (possess54) the character the extra camera plays: offline character 5 (D-pad Left / Right); online the 5th player's own, wherever the
+    // match's list has it (conker_possess_list: right after the players, so with 4 players character 5 as ever; with fewer, earlier, no
+    // computer players needed before it). Kept by fifth_character_now from the list, the same on every machine.
+    int ch5 = extra;
     constexpr uint32_t extra_record = 0x80FD0800;    // ours: the extra player's controller record (the game has 4)
     bool have_args = false;
     uint32_t camera_arg2 = 0, camera_arg3 = 0;       // func_150054C4's last two, as the game made camera 0
@@ -126,8 +130,22 @@ namespace {
     constexpr uint32_t match_teams = 0x800E0C00;
     constexpr int8_t fifth_entry = -3;
     constexpr int most_characters = 12;   // the match's most, the 5th player's with them (the war's)
+    // (possess54) where the match's list has the 5th player's own character (-1: nowhere)
+    int fifth_at(uint8_t* rdram) {
+        for (uint32_t i = 0; i < 16; i++) {
+            if ((int8_t)MEM_B(0, (gpr)(int32_t)(match_list + i)) == fifth_entry) {
+                return (int)i;
+            }
+        }
+        return -1;
+    }
     bool list_has_fifth(uint8_t* rdram) {
-        return (int8_t)MEM_B(0, (gpr)(int32_t)(match_list + (uint32_t)extra)) == fifth_entry;
+        return fifth_at(rdram) >= 0;
+    }
+    // the character the extra camera plays, from the list (online, a match of 5 players), else character 5
+    void fifth_character_now(uint8_t* rdram) {
+        const int at = online5() ? fifth_at(rdram) : -1;
+        ch5 = at >= 1 ? at : extra;
     }
 
     uint32_t extra_camera(uint8_t* rdram) {
@@ -431,7 +449,7 @@ namespace {
             return;
         }
         extra_played = false;
-        const uint32_t brain = brain_of(rdram, extra);
+        const uint32_t brain = brain_of(rdram, ch5);
         if (brain != 0) {
             MEM_B(0x84, (gpr)(int32_t)brain) = (int8_t)extra_brain_flag;
         }
@@ -442,13 +460,13 @@ namespace {
             }
         }
         MEM_H(0, (gpr)(int32_t)shadow_of(pressed_shadow_table)) = 0;
-        log("f=%u %s: controller 1 back to player 1 (from character %d on the extra camera)", (unsigned)frames, why, extra);
+        log("f=%u %s: controller 1 back to player 1 (from character %d on the extra camera)", (unsigned)frames, why, ch5);
     }
 
     // The extra character is in the match with no camera of its own (a bot; or one D-pad Right has taken from its AI this
     // frame, its camera not made yet): the extra camera may be made for it.
     bool extra_possible(uint8_t* rdram) {
-        if (!have_args || !in_match(rdram, extra) || brain_of(rdram, extra) == 0 || word(rdram, character(extra) + 0x318) != 0) {
+        if (!have_args || !in_match(rdram, ch5) || brain_of(rdram, ch5) == 0 || word(rdram, character(ch5) + 0x318) != 0) {
             return false;
         }
         // (possess47) online, a match of 5 players: the 5th player's own character alone (the list's entry 4, conker_possess_list), never
@@ -456,7 +474,7 @@ namespace {
         if (online5()) {
             return list_has_fifth(rdram);
         }
-        return MEM_BU(0x84, (gpr)(int32_t)brain_of(rdram, extra)) != 0 || extra_played;
+        return MEM_BU(0x84, (gpr)(int32_t)brain_of(rdram, ch5)) != 0 || extra_played;
     }
 }
 
@@ -559,7 +577,7 @@ namespace {
             reach_logs = 0;
             log("f=%u [weapons] player 1's weapon: wanted %02X, out %02X, has %02X; the extra character's: wanted %02X, out %02X, has %02X",
                 (unsigned)frames, (unsigned)(weapon_was[0] & 0xFF), (unsigned)(weapon_was[0] >> 8 & 0xFF), (unsigned)(weapon_was[0] >> 16),
-                (unsigned)(weapon_was[extra] & 0xFF), (unsigned)(weapon_was[extra] >> 8 & 0xFF), (unsigned)(weapon_was[extra] >> 16));
+                (unsigned)(weapon_was[ch5] & 0xFF), (unsigned)(weapon_was[ch5] >> 8 & 0xFF), (unsigned)(weapon_was[ch5] >> 16));
             return;
         }
         for (int32_t i = 0; i < pickups; i++) {
@@ -585,10 +603,10 @@ namespace {
             const int32_t reach = brain != 0 ? (int32_t)MEM_BU(0x1AF, at(brain)) : -1;
             if (reach != reach_was[k]) {
                 // (possess46: not the played extra character's, which its AI sets to 0 every other frame and camera_frame back to 0x40)
-                if (reach_logs < 150 && !(k == extra && extra_played)) {
+                if (reach_logs < 150 && !(k == ch5 && extra_played)) {
                     reach_logs++;
                     log("f=%u [weapons] character %d's reach byte (brain +0x1AF) %d -> %d%s (AI %d)", (unsigned)frames, k, (int)reach_was[k], (int)reach,
-                        k == extra && extra_played ? " (played)" : "", brain != 0 ? (int)MEM_BU(0x84, at(brain)) : -1);
+                        k == ch5 && extra_played ? " (played)" : "", brain != 0 ? (int)MEM_BU(0x84, at(brain)) : -1);
                 }
                 reach_was[k] = reach;
             }
@@ -596,10 +614,10 @@ namespace {
         for (int k = 0; k < 25; k++) {
             const uint32_t now = weapon_of(k);
             if (now != weapon_was[k]) {
-                if (k == 0 || k == extra) {
+                if (k == 0 || k == ch5) {
                     log("f=%u [weapons] character %d's weapon: wanted %02X, out %02X, has %02X (it was %02X, %02X, %02X)%s", (unsigned)frames, k,
                         (unsigned)(now & 0xFF), (unsigned)(now >> 8 & 0xFF), (unsigned)(now >> 16), (unsigned)(weapon_was[k] & 0xFF),
-                        (unsigned)(weapon_was[k] >> 8 & 0xFF), (unsigned)(weapon_was[k] >> 16), k == extra && extra_played ? " (played)" : "");
+                        (unsigned)(weapon_was[k] >> 8 & 0xFF), (unsigned)(weapon_was[k] >> 16), k == ch5 && extra_played ? " (played)" : "");
                 }
                 weapon_was[k] = now;
             }
@@ -618,7 +636,7 @@ namespace {
             }
         }
         for (int which = 0; which < 2; which++) {
-            const int k = which == 0 ? 0 : extra;
+            const int k = which == 0 ? 0 : ch5;
             const uint32_t c = character(k);
             const uint32_t brain = brain_of(rdram, k);
             if (word(rdram, c) == 0 || brain == 0 || (which == 1 && !extra_ready)) {
@@ -664,13 +682,13 @@ namespace {
             if (MEM_BU(0, (gpr)(int32_t)multiplayer) != 0) {
                 weapons_watch(rdram);
             }
-            if (extra_played && extra_ready && index == extra) {
+            if (extra_played && extra_ready && index == ch5) {
                 const uint32_t record = pad_record(rdram, extra);
                 if (in_rdram(record)) {
                     MEM_W(0, (gpr)(int32_t)controller_now) = (int32_t)record;
                 }
                 MEM_H(0, (gpr)(int32_t)shadow_of(pressed_shadow_table)) = (int16_t)extra_pressed;
-                const uint32_t brain = brain_of(rdram, extra);
+                const uint32_t brain = brain_of(rdram, ch5);
                 if (brain != 0) {
                     MEM_B(0x84, (gpr)(int32_t)brain) = 0;
                 }
@@ -696,6 +714,7 @@ namespace {
         }
         frames++;
         online_match_frames++;
+        fifth_character_now(rdram);   // (possess54)
         uint16_t buttons = 0;
         float x = 0.0f, y = 0.0f;
         const bool here = conker::netsession::fifth_input(&buttons, &x, &y);
@@ -720,25 +739,22 @@ namespace {
                             (unsigned)frames);
                         conker::notices::show("Player 5: press Start on the character select (the P5 column) to play the next match", true);
                     } else if (list_has_fifth(rdram)) {
-                        log("f=%u (online) the 5th player's character %d isn't there to play (in the match %d, its camera %08X)", (unsigned)frames, extra,
-                            (int)in_match(rdram, extra), (unsigned)word(rdram, character(extra) + 0x318));
+                        log("f=%u (online) the 5th player's character %d isn't there to play (in the match %d, its camera %08X)", (unsigned)frames, ch5,
+                            (int)in_match(rdram, ch5), (unsigned)word(rdram, character(ch5) + 0x318));
                         conker::notices::show("Player 5's character couldn't be set up in this match: it plays from the next", true);
-                    } else if (count < extra) {
-                        log("f=%u (online) %d characters in the match: none for the 5th player (its own comes after 4 others)", (unsigned)frames, count);
-                        conker::notices::show("Player 5 needs 4 other characters in the match (players or computer players)", true);
                     } else {
-                        log("f=%u (online) no character of the 5th player's in this match (entry 4 is %d): it plays from the next", (unsigned)frames,
-                            (int)(int8_t)MEM_B(0, (gpr)(int32_t)(match_list + (uint32_t)extra)));
+                        log("f=%u (online) no character of the 5th player's in this match (%d characters): it plays from the next", (unsigned)frames,
+                            count);
                         conker::notices::show("Player 5 plays from the next match", true);
                     }
                 }
                 return;
             }
             if (!extra_ready && !extra_wanted) {
-                log("f=%u (online) the extra camera is made for character %d, the 5th player's", (unsigned)frames, extra);
+                log("f=%u (online) the extra camera is made for character %d, the 5th player's", (unsigned)frames, ch5);
             }
             extra_wanted = extra_shown = extra_played = true;
-            const uint32_t brain = brain_of(rdram, extra);
+            const uint32_t brain = brain_of(rdram, ch5);
             extra_brain_flag = brain != 0 ? MEM_BU(0x84, (gpr)(int32_t)brain) : 1;
             if (extra_brain_flag == 0) {
                 extra_brain_flag = 1;
@@ -748,7 +764,7 @@ namespace {
                 extra_brain_flag = 0;
             }
             online_prev_buttons = 0;
-            log("f=%u (online) the 5th player plays character %d through the extra camera%s", (unsigned)frames, extra, mine ? " (this machine's player)" : "");
+            log("f=%u (online) the 5th player plays character %d through the extra camera%s", (unsigned)frames, ch5, mine ? " (this machine's player)" : "");
             if (mine && !online_told_playing) {
                 online_told_playing = true;
                 conker::notices::show("You're player 5: you play the match's 5th character", true);
@@ -826,14 +842,14 @@ extern "C" void conker_possess_pad(uint8_t* rdram, recomp_context* ctx) {
             if (brain != 0) {
                 MEM_B(0x84, (gpr)(int32_t)brain) = 0;
             }
-        } else if (extra_played && extra_ready && index == extra) {
+        } else if (extra_played && extra_ready && index == ch5) {
             // a second player: controller 2's record (filled from controller 1) and its slot of pressed buttons
             const uint32_t record = pad_record(rdram, extra);
             if (in_rdram(record)) {
                 MEM_W(0, (gpr)(int32_t)controller_now) = (int32_t)record;
             }
             MEM_H(0, (gpr)(int32_t)shadow_of(pressed_shadow_table)) = (int16_t)extra_pressed;
-            const uint32_t brain = brain_of(rdram, extra);
+            const uint32_t brain = brain_of(rdram, ch5);
             if (brain != 0) {
                 MEM_B(0x84, (gpr)(int32_t)brain) = 0;
             }
@@ -927,11 +943,11 @@ extern "C" void conker_possess_pad(uint8_t* rdram, recomp_context* ctx) {
                 conker::notices::show(extra_shown ? "Test: showing the extra camera" : "Test: showing your camera", true);
             } else if (extra_possible(rdram)) {
                 extra_wanted = extra_shown = true;
-                log("f=%u D-pad Left: the extra camera is made for character %d, and shown", (unsigned)frames, extra);
+                log("f=%u D-pad Left: the extra camera is made for character %d, and shown", (unsigned)frames, ch5);
                 conker::notices::show("Test: an extra camera on the 5th character (D-pad Left to switch view)", true);
             } else {
                 log("f=%u D-pad Left: character %d isn't a bot without a camera (or camera 0 not seen made): no extra camera",
-                    (unsigned)frames, extra);
+                    (unsigned)frames, ch5);
                 conker::notices::show("Test: the 5th character isn't a bot: no extra camera", true);
             }
         } else {
@@ -940,18 +956,18 @@ extern "C" void conker_possess_pad(uint8_t* rdram, recomp_context* ctx) {
                 conker::notices::show("Test: back to you (still showing the extra camera)", true);
             } else if (extra_ready || extra_wanted || extra_possible(rdram)) {
                 if (!extra_ready && !extra_wanted) {
-                    log("f=%u D-pad Right: the extra camera is made for character %d", (unsigned)frames, extra);
+                    log("f=%u D-pad Right: the extra camera is made for character %d", (unsigned)frames, ch5);
                 }
                 extra_wanted = extra_shown = extra_played = true;
-                const uint32_t brain = brain_of(rdram, extra);
+                const uint32_t brain = brain_of(rdram, ch5);
                 extra_brain_flag = brain != 0 ? MEM_BU(0x84, (gpr)(int32_t)brain) : 1;
                 if (extra_brain_flag == 0) {
                     extra_brain_flag = 1;
                 }
-                log("f=%u D-pad Right: controller 1 plays character %d through the extra camera", (unsigned)frames, extra);
+                log("f=%u D-pad Right: controller 1 plays character %d through the extra camera", (unsigned)frames, ch5);
                 conker::notices::show("Test: you're playing the 5th character on the extra camera (D-pad Right to stop)", true);
             } else {
-                log("f=%u D-pad Right: character %d isn't a bot without a camera: nothing to play", (unsigned)frames, extra);
+                log("f=%u D-pad Right: character %d isn't a bot without a camera: nothing to play", (unsigned)frames, ch5);
                 conker::notices::show("Test: the 5th character isn't a bot: nothing to play", true);
             }
         }
@@ -1015,7 +1031,7 @@ extern "C" void conker_possess_brain(uint8_t* rdram, recomp_context* ctx) {
 }
 
 extern "C" void conker_possess_move(uint8_t* rdram, recomp_context* ctx) {
-    if (extra_played && !conker::netsession::active() && (uint32_t)ctx->r16 == character(extra)) {
+    if (extra_played && !conker::netsession::active() && (uint32_t)ctx->r16 == character(ch5)) {
         static uint32_t last = 0;
         if (frames - last >= 30) {
             last = frames;
@@ -1023,7 +1039,7 @@ extern "C" void conker_possess_move(uint8_t* rdram, recomp_context* ctx) {
             const uint32_t sb = (uint32_t)MEM_W(0x1B4, ctx->r29);
             std::memcpy(&speed, &sb, 4);
             (void)way_bits;
-            log("f=%u [walk] character %d walks: brain+0x84 %d, stick's speed %.2f way %04X, state %02X", (unsigned)frames, extra,
+            log("f=%u [walk] character %d walks: brain+0x84 %d, stick's speed %.2f way %04X, state %02X", (unsigned)frames, ch5,
                 (int)(uint32_t)ctx->r13, speed, (unsigned)MEM_HU(0x1BC, ctx->r29), (unsigned)MEM_BU(0x4, ctx->r16));
         }
     }
@@ -1035,7 +1051,7 @@ extern "C" void conker_possess_move(uint8_t* rdram, recomp_context* ctx) {
 
 // func_1504CB98, 0x1504CC54: the moving character's controller is set (D_800CC284), its brain's AI flag about to be read.
 extern "C" void conker_possess_probe(uint8_t* rdram, recomp_context* ctx) {
-    if (!extra_played || conker::netsession::active() || (uint32_t)ctx->r16 != character(extra)) {
+    if (!extra_played || conker::netsession::active() || (uint32_t)ctx->r16 != character(ch5)) {
         return;
     }
     static uint32_t last = 0;
@@ -1044,13 +1060,13 @@ extern "C" void conker_possess_probe(uint8_t* rdram, recomp_context* ctx) {
     }
     last = frames;
     const uint32_t pad = word(rdram, controller_now);
-    const uint32_t brain = brain_of(rdram, extra);
+    const uint32_t brain = brain_of(rdram, ch5);
     log("f=%u [probe] character %d: controller %08X (ours %08X) buttons %04X stick %d,%d; brain+0x84 %d; state %02X; +0x104 %d; "
         "players %d, last player %d; camera %08X",
-        (unsigned)frames, extra, (unsigned)pad, (unsigned)extra_record, in_rdram(pad) ? (unsigned)MEM_HU(0, (gpr)(int32_t)pad) : 0u,
+        (unsigned)frames, ch5, (unsigned)pad, (unsigned)extra_record, in_rdram(pad) ? (unsigned)MEM_HU(0, (gpr)(int32_t)pad) : 0u,
         in_rdram(pad) ? (int)MEM_B(2, (gpr)(int32_t)pad) : 0, in_rdram(pad) ? (int)MEM_B(3, (gpr)(int32_t)pad) : 0,
         brain != 0 ? (int)MEM_BU(0x84, (gpr)(int32_t)brain) : -1, (unsigned)MEM_BU(0x4, ctx->r16), (int)MEM_BU(0x104, ctx->r16),
-        (int)MEM_B(0, (gpr)(int32_t)0x8008FD8C), (int)MEM_W(0, (gpr)(int32_t)last_player), (unsigned)word(rdram, character(extra) + 0x318));
+        (int)MEM_B(0, (gpr)(int32_t)0x8008FD8C), (int)MEM_W(0, (gpr)(int32_t)last_player), (unsigned)word(rdram, character(ch5) + 0x318));
 }
 
 // ---- The extra camera (D-pad Left / Right) ----
@@ -1195,7 +1211,7 @@ extern "C" void conker_possess_camera_frame(uint8_t* rdram, recomp_context* ctx)
     const recomp_context saved = *ctx;
     if (!extra_ready) {
         if (!extra_possible(rdram)) {
-            log("f=%u character %d isn't a bot without a camera any more: no extra camera", (unsigned)frames, extra);
+            log("f=%u character %d isn't a bot without a camera any more: no extra camera", (unsigned)frames, ch5);
             extra_play_stop(rdram, "no extra camera");
             extra_wanted = extra_shown = false;
             return;
@@ -1218,18 +1234,18 @@ extern "C" void conker_possess_camera_frame(uint8_t* rdram, recomp_context* ctx)
         // its buffer (func_150054C4 read it from D_800BE2B0[4], past that table's 4)
         MEM_W(0x8BC, (gpr)(int32_t)camera) = (int32_t)extra_buffer;
         extra_ready = true;
-        log("f=%u the extra camera %08X made for character %d (now its camera: %08X)", (unsigned)frames, (unsigned)camera, extra,
-            (unsigned)word(rdram, character(extra) + 0x318));
+        log("f=%u the extra camera %08X made for character %d (now its camera: %08X)", (unsigned)frames, (unsigned)camera, ch5,
+            (unsigned)word(rdram, character(ch5) + 0x318));
     }
     // still the extra character's (something in the match took it off: put back)
-    if (word(rdram, character(extra) + 0x318) != camera || word(rdram, camera + 0x3D0) != character(extra)) {
+    if (word(rdram, character(ch5) + 0x318) != camera || word(rdram, camera + 0x3D0) != character(ch5)) {
         static uint32_t told = 0;
         if (told++ < 10) {
-            log("f=%u the extra camera was off character %d (its camera %08X, the camera's character %08X): put back", (unsigned)frames, extra,
-                (unsigned)word(rdram, character(extra) + 0x318), (unsigned)word(rdram, camera + 0x3D0));
+            log("f=%u the extra camera was off character %d (its camera %08X, the camera's character %08X): put back", (unsigned)frames, ch5,
+                (unsigned)word(rdram, character(ch5) + 0x318), (unsigned)word(rdram, camera + 0x3D0));
         }
-        set_word(rdram, character(extra) + 0x318, camera);
-        camera_follow(rdram, camera, extra);
+        set_word(rdram, character(ch5) + 0x318, camera);
+        camera_follow(rdram, camera, ch5);
     }
     // (possess49) its view's projected view matrix, as the game's views have theirs made before their cameras run
     extra_view_projection(rdram, ctx);
@@ -1284,7 +1300,7 @@ extern "C" void conker_possess_camera_frame(uint8_t* rdram, recomp_context* ctx)
     // 0x40 = 100 across, func_1511DF6C) as a player's is (func_15082A44, func_1508E89C set 0x40); a bot's AI changes its own (the
     // possess44 test: 0 for most of the match, and the M4 wasn't taken)
     if (extra_played) {
-        const uint32_t brain = brain_of(rdram, extra);
+        const uint32_t brain = brain_of(rdram, ch5);
         if (brain != 0 && MEM_BU(0x1AF, (gpr)(int32_t)brain) != 0x40) {
             static uint32_t told = 0;
             if (told++ < 20) {
@@ -1310,7 +1326,7 @@ extern "C" void conker_possess_camera_frame(uint8_t* rdram, recomp_context* ctx)
                 (unsigned)frames, extra_played ? "played" : "shown", ex, ey, ez,
                 position(rdram, camera, 0x2F8), position(rdram, camera, 0x2FC), position(rdram, camera, 0x300), lx, ly, lz, d, px, py, pz,
                 position(rdram, camera, 0x374), position(rdram, camera, 0x344), (unsigned)MEM_BU(0x23D, (gpr)(int32_t)camera),
-                (unsigned)MEM_BU(0x197, (gpr)(int32_t)brain_of(rdram, extra)), (unsigned)word(rdram, character(extra) + 0x318),
+                (unsigned)MEM_BU(0x197, (gpr)(int32_t)brain_of(rdram, ch5)), (unsigned)word(rdram, character(ch5) + 0x318),
                 position(rdram, camera, 0x3EC), (int)MEM_H(0x5FC, (gpr)(int32_t)camera), position(rdram, 0x800DC1F0u, 0),
                 position(rdram, 0x800DC1F4u, 0), position(rdram, 0x800DC1F8u, 0));
         }
@@ -2079,7 +2095,7 @@ namespace {
         const int8_t was_humans = MEM_B(0, (gpr)(int32_t)humans_now);
         const int8_t was_blur = MEM_B(0, (gpr)(int32_t)blur_where);
         const int32_t was_view = MEM_W(0, (gpr)(int32_t)view_now);
-        swap_character_state(rdram, extra);
+        swap_character_state(rdram, ch5);
         MEM_W(0, (gpr)(int32_t)last_player) = 0;
         MEM_B(0, (gpr)(int32_t)humans_now) = 1;
         MEM_B(0, (gpr)(int32_t)blur_where) = 0;
@@ -2120,7 +2136,7 @@ namespace {
         MEM_B(0, (gpr)(int32_t)blur_where) = was_blur;
         MEM_B(0, (gpr)(int32_t)humans_now) = was_humans;
         MEM_W(0, (gpr)(int32_t)last_player) = was_last;
-        swap_character_state(rdram, extra);
+        swap_character_state(rdram, ch5);
         fifth_huds++;
         if (fifth_huds <= 3 || fifth_huds % 600 == 0) {
             log("f=%u the 5th player's HUD drawn over its view (%u times): %u commands", (unsigned)frames, (unsigned)fifth_huds,
@@ -2227,7 +2243,7 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
     // (possess33) played or not, the extra character drawn as the bot it is while only shown (its brain's AI flag, +0x84; the game's memory
     // is put back after): shown, it's drawn; played (+0x84 0, a player's), it wasn't, with its fade, hidden bits and render item the same
     if (extra_played) {
-        const uint32_t brain = brain_of(rdram, extra);
+        const uint32_t brain = brain_of(rdram, ch5);
         if (brain != 0) {
             MEM_B(0x84, (gpr)(int32_t)brain) = (int8_t)extra_brain_flag;
         }
@@ -2538,7 +2554,7 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
             return out;
         };
         for (const Drawn& d : drawn_now) {
-            if (d.object != (uint32_t)extra || d.end <= d.start) {
+            if (d.object != (uint32_t)ch5 || d.end <= d.start) {
                 continue;
             }
             std::vector<uint8_t> inside(walker.bodies.size(), 0);
@@ -2564,7 +2580,7 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
                 shown++;
             }
             // and its pose (+0x1D4), the same two ways
-            const uint32_t pose = mem_word(rdram, 0x800CC2D0u + (uint32_t)extra * 0x32Cu + 0x1D4u);
+            const uint32_t pose = mem_word(rdram, 0x800CC2D0u + (uint32_t)ch5 * 0x32Cu + 0x1D4u);
             if ((pose >> 24) == 0x80 && pose + 64 <= 0x80000000u + game_size) {
                 log("f=%u [mtx] its pose %08X as the view left it: %s", (unsigned)frames, (unsigned)pose, halves(rdram, pose).c_str());
                 log("f=%u [mtx] its pose %08X as the game has it:  %s", (unsigned)frames, (unsigned)pose, halves(local_copy.data(), pose).c_str());
@@ -2807,12 +2823,12 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
                 (unsigned)((d.end - d.start) / 8), dump.c_str());
         };
         for (const Drawn& d : drawn_now) {
-            if (d.object == (uint32_t)extra && d.end > d.start) {
+            if (d.object == (uint32_t)ch5 && d.end > d.start) {
                 dump_one(d, "in the extra camera's view");
             }
         }
         for (const Drawn& d : game_drawn) {
-            if (d.object == (uint32_t)extra && d.end > d.start) {
+            if (d.object == (uint32_t)ch5 && d.end > d.start) {
                 dump_one(d, "in player 1's view");
             }
         }
@@ -2837,7 +2853,7 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
     // (possess41) and the weapons lying near the extra character (within 400 across), in its camera's sight or not: func_1511DF6C, which
     // gives a weapon to whoever walks into it, is run only for the props some view saw
     if (!seen.empty() && extra_ready && mem_word(rdram, objects_count) == seen_count && mem_word(rdram, objects_list) == seen_list) {
-        const uint32_t c = character(extra);
+        const uint32_t c = character(ch5);
         const float cx = float_word(rdram, c + 0x14), cz = float_word(rdram, c + 0x1C);
         uint32_t added = 0;
         for (uint32_t i = 0; i < seen_count; i++) {
@@ -2885,7 +2901,7 @@ extern "C" void conker_possess_view_local_after(uint8_t* rdram, recomp_context* 
 // (possess19) func_15019130 before its views' func_1510FC34 loop: a copy of the game's memory, to draw the extra camera's view from.
 extern "C" void conker_possess_frame_start(uint8_t* rdram) {
     game_drawn.clear();
-    extra_object = extra_ready ? extra : -1;
+    extra_object = extra_ready ? ch5 : -1;
     if (!local_view_wanted(rdram)) {
         start_copied = false;
         extra_fades_kept = false;
@@ -3085,7 +3101,7 @@ extern "C" int conker_possess_hide_skip(uint8_t* rdram, recomp_context* ctx) {
 // the game does for a character without a camera: moved at once (func_15172D28), if it's this level.
 extern "C" void func_15172D28(uint8_t* rdram, recomp_context* ctx);
 extern "C" int conker_possess_warp(uint8_t* rdram, recomp_context* ctx) {
-    if (hooks_off() || !extra_ready || (uint32_t)ctx->r4 != character(extra)) {
+    if (hooks_off() || !extra_ready || (uint32_t)ctx->r4 != character(ch5)) {
         return 0;
     }
     const uint32_t object = (uint32_t)ctx->r4;
@@ -3737,7 +3753,8 @@ extern "C" void conker_possess_teams(uint8_t* rdram, recomp_context* ctx, int wh
 // pick (a mode without teams: its row of characters), as the players' are made from theirs.
 extern "C" void conker_possess_join_kind(uint8_t* rdram, recomp_context* ctx) {
     (void)ctx;
-    if (!online5() || !fifth_is_joined(rdram) || (int8_t)MEM_B(0, (gpr)(int32_t)(match_list + (uint32_t)extra)) != fifth_entry) {
+    const int at = fifth_at(rdram);   // (possess54: wherever the list has it)
+    if (!online5() || !fifth_is_joined(rdram) || at < 1) {
         return;
     }
     int row = -1;
@@ -3747,8 +3764,8 @@ extern "C" void conker_possess_join_kind(uint8_t* rdram, recomp_context* ctx) {
         return;
     }
     const uint8_t kind = MEM_BU(6, (gpr)(int32_t)(character_kinds + 8u * (uint32_t)c));
-    const uint8_t was = MEM_BU(0, (gpr)(int32_t)(0x80087270u + (uint32_t)extra));
-    MEM_B(0, (gpr)(int32_t)(0x80087270u + (uint32_t)extra)) = (int8_t)kind;
+    const uint8_t was = MEM_BU(0, (gpr)(int32_t)(0x80087270u + (uint32_t)at));
+    MEM_B(0, (gpr)(int32_t)(0x80087270u + (uint32_t)at)) = (int8_t)kind;
     log("f=%u [join] the 5th player's character %d: kind %u (the setup's %u)", (unsigned)conker::netsession::frame(), c, (unsigned)kind,
         (unsigned)was);
 }
@@ -3791,51 +3808,22 @@ extern "C" void conker_possess_list(uint8_t* rdram, recomp_context* ctx) {
     const int most = mode_most(rdram, players);
     const char* what = !in_input ? "the 5th player not in the frame's input: no character for it" :
         "the 5th player hasn't joined on the character select: no character for it";
-    int taken = 0, added = 0;
-    // (possess52) fewer than 4 characters before it (the teams screen left with too few: it keeps 5 with the 5th player on it, but a
-    // mode without it may not): computer players added up to 4, each on the team with the fewest characters (the 5th player's counted
-    // on the team it chose), so the 5th player still has its own
-    if (here && count >= 1 && count < extra && most > extra) {
-        const int teams = mode_teams(rdram);
-        int8_t fifth_on = fifth_team(rdram, list, team, count);
-        const int8_t on_screen = MEM_B(0x14, (gpr)(int32_t)join_state);
-        if (MEM_BU(0x15, (gpr)(int32_t)join_state) != 0 && on_screen >= 0 && on_screen < teams) {
-            fifth_on = on_screen;
-        }
-        while (count < extra) {
-            int8_t t = 0;
-            if (teams >= 2 && teams <= 8) {
-                int on[8] = {};
-                for (int i = 0; i < count; i++) {
-                    if (team[i] >= 0 && team[i] < teams) {
-                        on[team[i]]++;
-                    }
-                }
-                on[fifth_on]++;
-                for (int k = 1; k < teams; k++) {
-                    if (on[k] < on[t]) {
-                        t = (int8_t)k;
-                    }
-                }
-            }
-            list[count] = -2;
-            team[count] = t;
-            count++;
-            added++;
-        }
-    }
+    int taken = 0;
+    // (possess54) its place: right after the players (with 4 players entry 4, character 5, as ever; with fewer, earlier: no computer players
+    // needed before it), the computer players after it
+    const int place = players;
     if (here) {
-        if (count < extra) {
-            what = "fewer than 4 characters: none for the 5th player, whose own comes after 4 others";
+        if (count < 1 || place < 1) {
+            what = "no players in the list: no character for the 5th player";
         } else {
             // room for it: the last computer players taken off, past the mode's most less one
-            while (count >= most && count > extra && list[count - 1] == -2) {
+            while (count >= most && count > place && list[count - 1] == -2) {
                 list[count - 1] = -1;
                 team[count - 1] = 0;
                 count--;
                 taken++;
             }
-            if (count >= most) {
+            if (count >= most || count >= 16) {
                 what = "no room for the 5th player's character (the mode's most characters, and no computer player to take off)";
             } else {
                 int8_t chosen = fifth_team(rdram, list, team, count);
@@ -3844,14 +3832,14 @@ extern "C" void conker_possess_list(uint8_t* rdram, recomp_context* ctx) {
                 if (MEM_BU(0x15, (gpr)(int32_t)join_state) != 0 && on_screen >= 0 && on_screen < mode_teams(rdram)) {
                     chosen = on_screen;
                 }
-                for (int j = 15; j > extra; j--) {
+                for (int j = 15; j > place; j--) {
                     list[j] = list[j - 1];
                     team[j] = team[j - 1];
                 }
-                list[extra] = fifth_entry;
-                team[extra] = chosen;
+                list[place] = fifth_entry;
+                team[place] = chosen;
                 count++;
-                what = "entry 4 the 5th player's own character";
+                what = "the 5th player's own character right after the players";
             }
         }
     }
@@ -3875,8 +3863,7 @@ extern "C" void conker_possess_list(uint8_t* rdram, recomp_context* ctx) {
     }
     log("f=%u (online) the match is set up: %s (the 5th player %s; %d characters, the mode's most %d%s); entries (controller/team):%s ->%s",
         (unsigned)conker::netsession::frame(), what, here ? "in" : (in_input ? "in the input, not joined" : "not in"), count, most,
-        taken > 0 ? (taken == 1 ? ", a computer player taken off" : ", computer players taken off") :
-                    (added > 0 ? ", computer players added to make 4 before it" : ""), was_text, now_text);
+        taken > 0 ? (taken == 1 ? ", a computer player taken off" : ", computer players taken off") : "", was_text, now_text);
     const std::string line = std::string("[possess] the match is set up: ") + what;
     conker::netsession::log(line.c_str());
 }

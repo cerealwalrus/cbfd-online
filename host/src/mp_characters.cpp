@@ -346,9 +346,7 @@ extern "C" void conker_team_sound(uint8_t* rdram, recomp_context* ctx) {
 // player's), then C-left and C-right moving places from one team to the other (D_8008FDC4). Online, the host's C-left (player 1's
 // presses, gGameState + 0x20: 0x40) adds a computer player to the left team and C-right (0x80) one to the right team, and past the most
 // the team can have (its most characters, the players on it counted, and the match's most characters, the other team's counted) the
-// team's start again from none (from one for a team with no player: a team never has no one; and with the 5th player on the screen,
-// from as many as make the 5 characters a match with it needs, its own the 5th: should a player's move leave fewer, computer players
-// are added to the team with fewer characters). The stick does nothing to them. The counts
+// team's start again from none (from one for a team with no player: a team never has no one). The stick does nothing to them. The counts
 // are kept in ours (0x80FD0A20, with the 5th player's state: they go with a resync's state, the same on every machine), started from the
 // teams as the game had them when the screen begins (the frame before it not one of the screen's).
 namespace {
@@ -398,8 +396,9 @@ extern "C" void conker_team_bots(uint8_t* rdram, recomp_context* ctx) {
     MEM_W(4, ours) = (int32_t)now;
     const uint16_t presses = MEM_HU(0x20, (gpr)(int32_t)MEM_W(0, (gpr)(int32_t)game_state));
     const bool add[2] = { (presses & 0x40) != 0, (presses & 0x80) != 0 };
-    // (possess52: with the 5th player on the screen, possess_test.cpp, at least 5 characters, as its own is the match's 5th, after 4 others)
-    const int need = conker::possess_test::fifth_on_teams(rdram) ? std::min(5, most) : 0;
+    // (possess52 kept at least 5 characters with the 5th player on the screen, its own then the match's 5th after 4 others; possess54: its
+    // own comes right after the players, so none are needed)
+    const int need = 0;
     const int was[2] = { bots[0], bots[1] };
     for (int t = 0; t < 2; t++) {
         const int other = 1 - t;
