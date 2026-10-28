@@ -366,7 +366,6 @@ namespace {
                 line = (((st.mask >> i) & 1) && !st.names[i].empty()) ? st.names[i] : "Player " + std::to_string(i + 1);
                 line += i == 0 ? (st.dedicated ? " (leader: picks the match)" : " (host)") : "";
                 line += i == st.slot ? " (you)" : "";
-                line += i == 4 ? " (plays a bot's character)" : "";
                 line += ((st.mask >> i) & 1) ? "  -  here" : "  -  waiting for a player...";
                 if (((st.mask >> i) & 1) && i != st.slot && st.ping_ms[i] >= 0) {
                     line += "  -  ping " + std::to_string((int)(st.ping_ms[i] + 0.5f)) + " ms";
