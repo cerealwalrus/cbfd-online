@@ -3330,3 +3330,34 @@ text = "{ extern int conker_possess_hide_skip(uint8_t*, recomp_context*); if (co
 func = "func_15172E7C"
 before_vram = 0x15172E7C
 text = "{ extern int conker_possess_warp(uint8_t*, recomp_context*); if (conker_possess_warp(rdram, ctx)) return; }"
+
+# possess51: online, the 5th player on the teams screen as a player (host/src/possess_test.cpp, conker_possess_teams): put in the list
+# after the players as the screen's frame starts ($a2 the players, about to be kept), its presses from ours (the list's entry $v0, $a1
+# its presses' place), its icon's text entry noted (the P5 icon) and, as the frame ends, taken out of the list again.
+[[patches.hook]]
+func = "func_151E1744"
+before_vram = 0x151E1944
+text = "{ extern void conker_possess_teams(uint8_t*, recomp_context*, int); conker_possess_teams(rdram, ctx, 0); }"
+
+[[patches.hook]]
+func = "func_151E1744"
+before_vram = 0x151E19FC
+text = "{ extern void conker_possess_teams(uint8_t*, recomp_context*, int); conker_possess_teams(rdram, ctx, 1); }"
+
+[[patches.hook]]
+func = "func_151E1744"
+before_vram = 0x151E2164
+text = "{ extern void conker_possess_teams(uint8_t*, recomp_context*, int); conker_possess_teams(rdram, ctx, 2); }"
+
+[[patches.hook]]
+func = "func_151E1744"
+before_vram = 0x151E2264
+text = "{ extern void conker_possess_teams(uint8_t*, recomp_context*, int); conker_possess_teams(rdram, ctx, 3); }"
+
+# possess51: online, the teams screen's computer players a team at a time with two teams (host/src/mp_characters.cpp, conker_team_bots):
+# the host's C-left adds one to the left team, C-right to the right team, back to none past the most; the stick no longer changes them.
+# Where both ways of working out the teams' sizes meet ($sp + 0x78 and 0x79), before the screen fills the teams with computer players.
+[[patches.hook]]
+func = "func_151E1744"
+before_vram = 0x151E1D74
+text = "{ extern void conker_team_bots(uint8_t*, recomp_context*); conker_team_bots(rdram, ctx); }"

@@ -3182,6 +3182,15 @@ namespace {
         return (most >= 2 && most <= most_characters) ? most : most_characters;
     }
 
+    // (possess51) The mode's teams (0 without a team table).
+    int mode_teams(uint8_t* rdram) {
+        int table = 0;
+        if (!mode_tables(rdram, &table) || table < 0 || table > 16) {
+            return 0;
+        }
+        return (int)(int8_t)MEM_B(0, (gpr)(int32_t)(team_tables + (uint32_t)table * 12u));
+    }
+
     // The 5th player's team: of the mode's teams, the one with the fewest characters, then the fewest players, then the first.
     int8_t fifth_team(uint8_t* rdram, const int8_t* list, const int8_t* team, int count) {
         int table = 0;
@@ -3380,6 +3389,7 @@ extern "C" void conker_possess_join(uint8_t* rdram, recomp_context* ctx) {
     if (up && (pressed & button_start) != 0) {
         if (fifth_is_joined(rdram)) {
             MEM_B(0, state) = 0;
+            MEM_B(0x15, state) = 0;   // (possess51: its team on the teams screen chosen again)
             log("f=%u [join] the 5th player leaves", (unsigned)conker::netsession::frame());
         } else {
             // its first character: as a controller's (the mode's row, the 4th's and on), or its number with teams
@@ -3389,6 +3399,7 @@ extern "C" void conker_possess_join(uint8_t* rdram, recomp_context* ctx) {
             }
             MEM_B(0, state) = 1;
             MEM_B(1, state) = (int8_t)c;
+            MEM_B(0x15, state) = 0;   // (possess51: its team on the teams screen chosen as it gets there)
             log("f=%u [join] the 5th player joins (character %d)", (unsigned)conker::netsession::frame(), c);
         }
     }
@@ -3477,36 +3488,61 @@ namespace {
     constexpr uint32_t icon_sprite = 0x80090060;    // D_80090060: the sprite func_15043384 draws an icon as (its id first)
     constexpr uint32_t p4_sprite = 0x897;
     constexpr uint32_t p5_texture = 0x80FDE000;     // ours: the P5 icon's texture (32 x 32 RGBA32, 0x1000)
-    uint32_t p5_label = 0;                          // the P5 label's text entry, queued this frame
-    bool p5_drawing = false;                        // its icon being drawn
+    // (possess51) the P5 icons' text entries queued (the character select's label, the teams screen's 5th player), each with the frame
+    // it was queued in (an entry is drawn and freed the frame it's queued, or the next: an older one's place may be another's by then)
+    struct P5Label {
+        uint32_t entry = 0;
+        uint32_t frame = 0;
+    };
+    P5Label p5_labels[4];
+    bool p5_drawing = false;                        // a P5 icon being drawn
     uint32_t p5_made[conker::p5icon::size * conker::p5icon::size];
     bool p5_have = false;
+
+    // The text just queued (func_15042ECC's last entry) as a P5 icon, if it's an icon #5 ("#" and 5).
+    void note_p5_label(uint8_t* rdram) {
+        const uint32_t entry = (uint32_t)MEM_W(0, (gpr)(int32_t)text_tail);
+        if ((entry >> 24) != 0x80 || (entry & 0x7FFFFFu) >= 0x800000u - 0x5Cu || MEM_BU(0xD, (gpr)(int32_t)entry) != (uint8_t)(extra + 1)) {
+            return;
+        }
+        const uint32_t now = conker::netsession::frame();
+        P5Label* slot = &p5_labels[0];
+        for (P5Label& l : p5_labels) {
+            if (l.entry == entry || l.entry == 0 || now - l.frame > 1) {
+                slot = &l;
+                break;
+            }
+        }
+        slot->entry = entry;
+        slot->frame = now;
+    }
 }
 
 extern "C" void conker_possess_join_label(uint8_t* rdram, recomp_context* ctx) {
-    p5_label = 0;
     if (!five_columns() || (int32_t)ctx->r16 != extra + 1) {
         return;
     }
-    const uint32_t entry = (uint32_t)MEM_W(0, (gpr)(int32_t)text_tail);
-    if ((entry >> 24) == 0x80 && (entry & 0x7FFFFFu) < 0x800000u - 0x5Cu && MEM_BU(0xD, (gpr)(int32_t)entry) == (uint8_t)(extra + 1)) {
-        p5_label = entry;
-    }
+    note_p5_label(rdram);
 }
 
 extern "C" void conker_possess_icon(uint8_t* rdram, recomp_context* ctx, int where) {
-    if (where != 0) {
-        p5_drawing = false;
-        return;
-    }
     p5_drawing = false;
-    if (p5_label == 0 || (uint32_t)ctx->r16 != p5_label || (uint32_t)ctx->r17 != icon_entry_5 ||
-        MEM_BU(0xD, (gpr)(int32_t)p5_label) != (uint8_t)(extra + 1)) {
+    if (where != 0 || (uint32_t)ctx->r17 != icon_entry_5) {
         return;
     }
-    p5_label = 0;
-    MEM_W(0, (gpr)(int32_t)icon_sprite) = (int32_t)p4_sprite;
-    p5_drawing = true;
+    const uint32_t entry = (uint32_t)ctx->r16, now = conker::netsession::frame();
+    for (P5Label& l : p5_labels) {
+        if (l.entry == 0 || l.entry != entry) {
+            continue;
+        }
+        const bool fresh = now - l.frame <= 1;
+        l.entry = 0;
+        if (fresh && MEM_BU(0xD, (gpr)(int32_t)entry) == (uint8_t)(extra + 1)) {
+            MEM_W(0, (gpr)(int32_t)icon_sprite) = (int32_t)p4_sprite;
+            p5_drawing = true;
+        }
+        return;
+    }
 }
 
 extern "C" void conker_possess_icon_texture(uint8_t* rdram, recomp_context* ctx) {
@@ -3548,6 +3584,153 @@ extern "C" void conker_possess_icon_texture(uint8_t* rdram, recomp_context* ctx)
         }
     }
     ctx->r9 = (gpr)(int32_t)(texture < 0x00800000u ? p5_texture & 0x7FFFFFFFu : p5_texture);
+}
+
+// (possess51) The 5th player on the teams screen (func_151E1744, the screen after the character select: each team's characters, a
+// player's "P1" to "P4" icon, a computer player's figure, icon #5). Each frame the screen counts the players' teams (D_800E0C00) for the
+// list's first D_8008FE40 entries (D_8008FE44, the players' controllers), moves a player's team with its stick (left and right; up and
+// down the computer players, as gGameState + 0x22 + 2 * controller has them, func_151DE8F0's), fills the teams with computer players
+// after the players and draws an icon for each entry. Online, once the 5th player has joined on the character select, it's on the screen
+// as a player: put in the list after the players (controller 4) as the screen starts its frame (0x151E1944: $a2 the players, one more
+// with it), its team kept in ours (join_state + 0x14) and its stick's presses made as func_151DE8F0 makes a controller's, from the
+// frame's input (0x151E19FC: $a1 its presses' place, less 0x22, sent to ours), and its icon the P5 one (0x151E2164: its text entry noted,
+// conker_possess_icon). As the screen's frame ends (0x151E2264) it's taken out of the list again (the entries after it moved down), so the
+// menus after the screen and the match's setup have the list as before; the match's setup puts its character in with the team it chose
+// here (conker_possess_list). Not in a mode whose screen reads the list's first 4 as controllers (its type 8: func_151E24F0).
+namespace {
+    constexpr uint32_t teams_players = 0x8008FE40;   // D_8008FE40: the players on the screen
+    constexpr uint32_t teams_presses = 0x40;         // join_state + 0x40: the 5th player's presses this frame, as the screen reads a controller's
+    int teams_fifth_at = -1;                        // where the 5th player is in the list this frame (-1: not)
+
+    bool teams_mode_ok(uint8_t* rdram) {
+        const uint32_t state = word(rdram, game_state);
+        if ((state >> 24) != 0x80) {
+            return false;
+        }
+        const int mode = (int)(int8_t)MEM_B(0x42, (gpr)(int32_t)state);
+        return mode >= 0 && mode <= 32 && (int8_t)MEM_B(0, (gpr)(int32_t)(modes + (uint32_t)(mode * 10) + 8u)) != 8;
+    }
+
+    // A stick's way past 50 from under it (or held there a while, then again), as func_151DE8F0 has a controller's: -1, 0 or 1.
+    int stick_press(uint8_t* rdram, int8_t now, uint32_t was_at, uint32_t held_at) {
+        const gpr state = (gpr)(int32_t)join_state;
+        const int8_t was = MEM_B(was_at, state);
+        int dir = 0;
+        if (was >= -49 && now < -49) {
+            dir = -1;
+        } else if (was < 50 && now >= 50) {
+            dir = 1;
+        }
+        MEM_B(was_at, state) = now;
+        if (now >= -49 && now < 50) {
+            MEM_B(held_at, state) = 0;
+        } else {
+            const int32_t held = (int32_t)MEM_BU(held_at, state) + MEM_W(0, (gpr)(int32_t)frame_step);
+            if (held >= 51) {
+                MEM_B(held_at, state) = 40;
+                MEM_B(was_at, state) = 0;
+            } else {
+                MEM_B(held_at, state) = (int8_t)held;
+            }
+        }
+        return dir;
+    }
+}
+
+bool conker::possess_test::fifth_on_teams(uint8_t* rdram) {
+    return online5() && fifth_is_joined(rdram) && teams_mode_ok(rdram);
+}
+
+extern "C" void conker_possess_teams(uint8_t* rdram, recomp_context* ctx, int where) {
+    const gpr state = (gpr)(int32_t)join_state;
+    if (where == 0) {
+        // the frame's start: the 5th player put in the list after the players
+        teams_fifth_at = -1;
+        {
+            // (the mode, logged as the screen starts: its index and type, the type 8 one's screen without the 5th player)
+            static uint32_t last_frame = 0;
+            const uint32_t now = conker::netsession::frame();
+            if (online5() && now != last_frame + 1) {
+                const uint32_t gs = word(rdram, game_state);
+                const int mode = (gs >> 24) == 0x80 ? (int)(int8_t)MEM_B(0x42, (gpr)(int32_t)gs) : -1;
+                const int type = mode >= 0 && mode <= 32 ? (int)(int8_t)MEM_B(0, (gpr)(int32_t)(modes + (uint32_t)(mode * 10) + 8u)) : -1;
+                log("f=%u [teams] the teams screen: mode %d (type %d)%s", (unsigned)now, mode, type,
+                    teams_mode_ok(rdram) ? "" : ", its screen without the 5th player");
+            }
+            last_frame = now;
+        }
+        if (!conker::possess_test::fifth_on_teams(rdram)) {
+            return;
+        }
+        const int players = (int)(int32_t)ctx->r6;
+        if (players < 0 || players >= 15) {
+            return;
+        }
+        int8_t list[16], team[16];
+        for (uint32_t i = 0; i < 16; i++) {
+            list[i] = (int8_t)MEM_B(0, (gpr)(int32_t)(match_list + i));
+            team[i] = (int8_t)MEM_B(0, (gpr)(int32_t)(match_teams + i));
+        }
+        int8_t chosen = MEM_B(0x14, state);
+        if (MEM_BU(0x15, state) == 0) {
+            chosen = fifth_team(rdram, list, team, players);
+            MEM_B(0x14, state) = chosen;
+            MEM_B(0x15, state) = 1;
+            MEM_W(0x10, state) = 0;
+            log("f=%u [teams] the 5th player on the teams screen: team %d to start with", (unsigned)conker::netsession::frame(), (int)chosen);
+        }
+        MEM_B(0, (gpr)(int32_t)(match_list + (uint32_t)players)) = (int8_t)extra;
+        MEM_B(0, (gpr)(int32_t)(match_teams + (uint32_t)players)) = chosen;
+        ctx->r6 = (gpr)(int32_t)(players + 1);
+        teams_fifth_at = players;
+    } else if (where == 1) {
+        // its presses read (the list's entry $v0, controller 4): from ours
+        if (teams_fifth_at < 0 || (int32_t)ctx->r2 != extra) {
+            return;
+        }
+        bool plugged = false;
+        uint16_t buttons = 0;
+        float x = 0.0f, y = 0.0f;
+        if (!(conker::netsession::input(extra, &plugged, &buttons, &x, &y) && plugged)) {
+            x = y = 0.0f;
+        }
+        int8_t sx = 0, sy = 0;
+        convert_to_n64_range(x, y, sx, sy);
+        const int dx = stick_press(rdram, sx, 0x10, 0x12), dy = stick_press(rdram, sy, 0x11, 0x13);
+        uint16_t presses = 0;
+        presses |= dy < 0 ? 0x2 : 0;   // down
+        presses |= dy > 0 ? 0x1 : 0;   // up
+        presses |= dx < 0 ? 0x4 : 0;   // left
+        presses |= dx > 0 ? 0x8 : 0;   // right
+        MEM_H(teams_presses, state) = (int16_t)presses;
+        ctx->r5 = (gpr)(int32_t)(join_state + teams_presses - 0x22u);
+    } else if (where == 2) {
+        // its icon's text entry, just queued
+        if (teams_fifth_at >= 0 && (int8_t)MEM_B(0, (gpr)(int32_t)MEM_W(0x44, ctx->r29)) == (int8_t)extra) {
+            note_p5_label(rdram);
+        }
+    } else {
+        // the frame's end: its team kept, and it taken out of the list again
+        if (teams_fifth_at < 0) {
+            return;
+        }
+        const uint32_t at = (uint32_t)teams_fifth_at;
+        teams_fifth_at = -1;
+        if ((int8_t)MEM_B(0, (gpr)(int32_t)(match_list + at)) != (int8_t)extra) {
+            return;
+        }
+        const int8_t chosen = MEM_B(0, (gpr)(int32_t)(match_teams + at));
+        if (chosen != MEM_B(0x14, state)) {
+            log("f=%u [teams] the 5th player's team: %d", (unsigned)conker::netsession::frame(), (int)chosen);
+        }
+        MEM_B(0x14, state) = chosen;
+        for (uint32_t i = at; i < 15; i++) {
+            MEM_B(0, (gpr)(int32_t)(match_list + i)) = MEM_B(0, (gpr)(int32_t)(match_list + i + 1));
+            MEM_B(0, (gpr)(int32_t)(match_teams + i)) = MEM_B(0, (gpr)(int32_t)(match_teams + i + 1));
+        }
+        MEM_B(0, (gpr)(int32_t)(match_list + 15u)) = -1;
+        MEM_B(0, (gpr)(int32_t)(match_teams + 15u)) = 0;
+    }
 }
 
 // func_151E2834, 0x151E2E6C (each character's kind made, D_80087270): the 5th player's, the one it picked, where the mode lets the players
@@ -3623,7 +3806,12 @@ extern "C" void conker_possess_list(uint8_t* rdram, recomp_context* ctx) {
             if (count >= most) {
                 what = "no room for the 5th player's character (the mode's most characters, and no computer player to take off)";
             } else {
-                const int8_t chosen = fifth_team(rdram, list, team, count);
+                int8_t chosen = fifth_team(rdram, list, team, count);
+                // (possess51) the team it chose on the teams screen (conker_possess_teams), where there are teams
+                const int8_t on_screen = MEM_B(0x14, (gpr)(int32_t)join_state);
+                if (MEM_BU(0x15, (gpr)(int32_t)join_state) != 0 && on_screen >= 0 && on_screen < mode_teams(rdram)) {
+                    chosen = on_screen;
+                }
                 for (int j = 15; j > extra; j--) {
                     list[j] = list[j - 1];
                     team[j] = team[j - 1];

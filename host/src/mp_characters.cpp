@@ -132,6 +132,9 @@ extern "C" void conker_team_caps(uint8_t* rdram, recomp_context* ctx) {
     }
     const int humans = humans_now(rdram);
     const bool five = conker::possess_test::fifth_joined(rdram);   // (possess47: see fifth_place; possess49: once the 5th player has joined)
+    // (possess51) the 5th player on the screen as a player (possess_test.cpp, conker_possess_teams): a player more, and no place kept for it
+    const bool shown = conker::possess_test::fifth_on_teams(rdram);
+    const int players = humans + (shown ? 1 : 0);
     if (humans < 2 && !five) {   // (0.10.91: two players as well, with the computer players conker_bots_most lets them have)
         return;
     }
@@ -139,10 +142,10 @@ extern "C" void conker_team_caps(uint8_t* rdram, recomp_context* ctx) {
     // players, $s3, the most of the entry's two (+2 under three players, +5 three or more), $v0 the entry)
     const int most_before = (int)(int32_t)ctx->r19;
     int most = humans >= 2 ? std::max(most_before, (int)(int8_t)MEM_B(2, ctx->r2)) : most_before;
-    if (five) {
+    if (five && !shown) {
         most = fifth_place(most, humans);
     }
-    const int team_most = humans >= 2 ? std::max((int)(int32_t)ctx->r5, humans) : (int)(int32_t)ctx->r5;
+    const int team_most = players >= 2 ? std::max((int)(int32_t)ctx->r5, players) : (int)(int32_t)ctx->r5;
     static int logged = 0;
     if ((team_most != (int)(int32_t)ctx->r5 || most != most_before) && logged < 4) {
         char line[200];
@@ -181,12 +184,14 @@ extern "C" void conker_team_trim(uint8_t* rdram, recomp_context* ctx) {
     const uint32_t entry = team_tables + (uint32_t)table * 12u;
     int most = humans >= 2 ? std::max((int)(int8_t)MEM_B(5, (gpr)(int32_t)entry), (int)(int8_t)MEM_B(2, (gpr)(int32_t)entry))
                            : (int)(int8_t)MEM_B(2, (gpr)(int32_t)entry);
-    if (five) {
+    const bool shown = conker::possess_test::fifth_on_teams(rdram);   // (possess51: in the list as a player, see conker_team_caps)
+    if (five && !shown) {
         most = fifth_place(most, humans);
     }
+    const int players = humans + (shown ? 1 : 0);
     int count = (int)(int16_t)(int32_t)ctx->r16;
     const int before = count;
-    while (count > most && count > humans && count <= 16 && (int8_t)MEM_B(0, (gpr)(int32_t)(team_list + (uint32_t)(count - 1))) == -2) {
+    while (count > most && count > players && count <= 16 && (int8_t)MEM_B(0, (gpr)(int32_t)(team_list + (uint32_t)(count - 1))) == -2) {
         MEM_B(0, (gpr)(int32_t)(team_list + (uint32_t)(count - 1))) = -1;
         MEM_B(0, (gpr)(int32_t)(team_of + (uint32_t)(count - 1))) = 0;
         count--;
@@ -289,7 +294,7 @@ extern "C" void conker_team_most(uint8_t* rdram, recomp_context* ctx) {
     if (!conker::netsession::active() || (int32_t)ctx->r3 != 8) {
         return;
     }
-    const int humans = humans_now(rdram);
+    const int humans = humans_now(rdram) + (conker::possess_test::fifth_on_teams(rdram) ? 1 : 0);   // (possess51: the 5th player's too)
     const int most = std::min(10, (int)(int32_t)ctx->r19 - std::max(humans, 1));
     if (most > 8) {
         ctx->r3 = (gpr)(int32_t)most;
@@ -334,3 +339,83 @@ extern "C" void conker_team_sound(uint8_t* rdram, recomp_context* ctx) {
     have = true;
 }
 
+
+// possess51: online, the teams screen's computer players with two teams, a team at a time (func_151E1744, before 0x151E1D74, where both
+// ways of working out the teams' sizes meet: $sp + 0x78 and 0x79 the two teams' sizes, $sp + 0xA0 and 0xA1 the players on each, $s3
+// the most characters, $ra the second team's own most). The game's are the same number on each team (the stick up and down, any
+// player's), then C-left and C-right moving places from one team to the other (D_8008FDC4). Online, the host's C-left (player 1's
+// presses, gGameState + 0x20: 0x40) adds a computer player to the left team and C-right (0x80) one to the right team, and past the most
+// the team can have (its most characters, the players on it counted, and the match's most characters, the other team's counted) the
+// team's start again from none (from one for a team with no player: a team never has no one). The stick does nothing to them. The counts
+// are kept in ours (0x80FD0A20, with the 5th player's state: they go with a resync's state, the same on every machine), started from the
+// teams as the game had them when the screen begins (the frame before it not one of the screen's).
+namespace {
+    constexpr uint32_t team_bot_state = 0x80FD0A20;   // +0, +1 each team's computer players; +4 the screen's last frame
+}
+
+extern "C" void conker_team_bots(uint8_t* rdram, recomp_context* ctx) {
+    if (!conker::netsession::active() || (int32_t)ctx->r20 != 2) {
+        return;
+    }
+    const gpr sp = ctx->r29, ours = (gpr)(int32_t)team_bot_state;
+    const int most = (int)(int32_t)ctx->r19;
+    int players_on[2], size[2];
+    for (int t = 0; t < 2; t++) {
+        players_on[t] = (int)(int8_t)MEM_B(0xA0 + t, sp);
+        size[t] = (int)(int8_t)MEM_B(0x78 + t, sp);
+    }
+    const int players = players_on[0] + players_on[1];
+    // each team's most, as the screen keeps it (8, or the second team's own; online more, conker_team_most)
+    int cap[2];
+    for (int t = 0; t < 2; t++) {
+        int c = 8;
+        if (t == 1 && (int8_t)(int32_t)ctx->r31 != 0) {
+            c = (int)(int8_t)(int32_t)ctx->r31;
+        }
+        if (c == 8) {
+            const int online_most = std::min(10, most - std::max(players, 1));
+            if (online_most > 8) {
+                c = online_most;
+            }
+        }
+        cap[t] = c;
+    }
+    const uint32_t now = conker::netsession::frame();
+    int bots[2];
+    if ((uint32_t)MEM_W(4, ours) + 1u != now) {
+        for (int t = 0; t < 2; t++) {
+            bots[t] = std::max(0, size[t] - players_on[t]);
+        }
+        char line[120];
+        std::snprintf(line, sizeof(line), "[teams] computer players a team at a time: %d and %d to start with", bots[0], bots[1]);
+        conker::netsession::log(line);
+    } else {
+        bots[0] = (int)(int8_t)MEM_B(0, ours);
+        bots[1] = (int)(int8_t)MEM_B(1, ours);
+    }
+    MEM_W(4, ours) = (int32_t)now;
+    const uint16_t presses = MEM_HU(0x20, (gpr)(int32_t)MEM_W(0, (gpr)(int32_t)game_state));
+    const bool add[2] = { (presses & 0x40) != 0, (presses & 0x80) != 0 };
+    bool changed = false;
+    for (int t = 0; t < 2; t++) {
+        const int other = 1 - t;
+        const int fewest = players_on[t] == 0 ? 1 : 0;
+        auto top = [&]() { return std::max(fewest, std::min(cap[t] - players_on[t], most - players - bots[other])); };
+        const int was = bots[t];
+        if (add[t]) {
+            bots[t] = bots[t] + 1 > top() ? fewest : bots[t] + 1;
+        }
+        bots[t] = std::min(std::max(bots[t], fewest), top());
+        changed = changed || bots[t] != was;
+    }
+    for (int t = 0; t < 2; t++) {
+        MEM_B(t, ours) = (int8_t)bots[t];
+        MEM_B(0x78 + t, sp) = (int8_t)(players_on[t] + bots[t]);
+    }
+    if (changed) {
+        MEM_W(0x74, sp) = 0x4FF;   // the screen's move sound
+        char line[120];
+        std::snprintf(line, sizeof(line), "[teams] computer players: %d on the left team, %d on the right", bots[0], bots[1]);
+        conker::netsession::log(line);
+    }
+}
