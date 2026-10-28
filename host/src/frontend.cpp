@@ -296,10 +296,25 @@ namespace {
             flags |= SDL_WINDOW_HIDDEN;
             conker::window_chrome::start_rect(false, &x, &y, &open_width, &open_height);
         }
+        // (possess76) CONKER_WINDOW_DISPLAY=n: the window opens on the computer's display n (counted as Windows' Display settings
+        // number them, 1 on), in its middle (or its quarter, with CONKER_WINDOW_TILE); the displays are listed in conker_displays.txt
+        const int display = conker::window_chrome::display_index();
+        if (display > 0 || tile != 0) {
+            SDL_Rect area{ 0, 0, 1600, 900 };
+            if (SDL_GetDisplayUsableBounds(display, &area) != 0 || area.w <= 0 || area.h <= 0) {
+                SDL_GetDisplayBounds(display, &area);
+            }
+            if (tile == 0) {
+                open_width = (std::min)(open_width, area.w - 80);
+                open_height = (std::min)(open_height, area.h - 60);
+                x = area.x + (area.w - open_width) / 2;
+                y = area.y + (area.h - open_height) / 2;
+            }
+        }
         if (tile != 0) {
             SDL_Rect area{ 0, 0, 1600, 900 };
-            if (SDL_GetDisplayUsableBounds(0, &area) != 0 || area.w <= 0 || area.h <= 0) {
-                SDL_GetDisplayBounds(0, &area);
+            if (SDL_GetDisplayUsableBounds(display, &area) != 0 || area.w <= 0 || area.h <= 0) {
+                SDL_GetDisplayBounds(display, &area);
             }
             open_width = area.w / 2;
             open_height = area.h / 2;

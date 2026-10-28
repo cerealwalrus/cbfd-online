@@ -206,6 +206,53 @@ int conker::window_chrome::tile() {
     return value;
 }
 
+// (possess76) CONKER_WINDOW_DISPLAY: the display the window opens on, as SDL counts them (0 if not set), found from the number Windows'
+// Display settings give it (1 on: the display's DISPLAY<n> device name); the displays are listed in conker_displays.txt
+int conker::window_chrome::display_index() {
+    static const int value = []() {
+        const int count = SDL_GetNumVideoDisplays();
+        FILE* list = std::fopen("conker_displays.txt", "w");
+        const char* text = std::getenv("CONKER_WINDOW_DISPLAY");
+        const int wanted = text != nullptr ? std::atoi(text) : 0;
+        int found = 0;
+        for (int i = 0; i < count; i++) {
+            SDL_Rect bounds{};
+            SDL_GetDisplayBounds(i, &bounds);
+            int number = i + 1;
+#if defined(_WIN32)
+            // the display's number in Windows' settings, from its device name (\\.\DISPLAY3 is display 3)
+            POINT centre{ bounds.x + bounds.w / 2, bounds.y + bounds.h / 2 };
+            HMONITOR monitor = MonitorFromPoint(centre, MONITOR_DEFAULTTONEAREST);
+            MONITORINFOEXA info{};
+            info.cbSize = sizeof(info);
+            if (monitor != nullptr && GetMonitorInfoA(monitor, &info)) {
+                const char* digits = info.szDevice;
+                while (*digits != 0 && (*digits < '0' || *digits > '9')) {
+                    digits++;
+                }
+                if (*digits != 0) {
+                    number = std::atoi(digits);
+                }
+            }
+#endif
+            const char* name = SDL_GetDisplayName(i);
+            if (list != nullptr) {
+                std::fprintf(list, "display %d (SDL's %d): %s, %d x %d at %d, %d\n", number, i, name != nullptr ? name : "?", bounds.w, bounds.h,
+                    bounds.x, bounds.y);
+            }
+            if (wanted > 0 && number == wanted) {
+                found = i;
+            }
+        }
+        if (list != nullptr) {
+            std::fprintf(list, "CONKER_WINDOW_DISPLAY=%d: SDL's display %d\n", wanted, found);
+            std::fclose(list);
+        }
+        return found;
+    }();
+    return value;
+}
+
 bool conker::window_chrome::start_rect(bool, int* x, int* y, int* width, int* height) {
     // the window's place when it isn't maximized: its size (1600 x 900, or --window's), smaller on a smaller screen, in the middle
     SDL_Rect area{ 0, 0, 1600, 900 };
