@@ -820,8 +820,7 @@ namespace {
             online_prev_buttons = 0;
             log("f=%u (online) the 5th player plays character %d through the extra camera%s", (unsigned)frames, ch5, mine ? " (this machine's player)" : "");
             if (mine && !online_told_playing) {
-                online_told_playing = true;
-                conker::notices::show("You're player 5: you play the match's 5th character", true);
+                online_told_playing = true;   // (possess93: no notice for it on the screen: the 5th player plays as any player does)
             }
         }
         // the 5th player's controller as controller 5: its record (the camera reads it too) and the buttons pressed this frame (not Start)
