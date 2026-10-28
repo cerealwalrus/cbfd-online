@@ -1070,7 +1070,31 @@ extern "C" void conker_look_view(uint8_t* rdram, recomp_context* ctx) {
     // by the ground somewhere not found yet. Here the view's eye (its y as the view has it, +0x2F0; the camera's own left to the game) is put
     // where flat ground has it: over the look-at point by its distance across times the tangent of 0.81 of the look's pitch. Only the aim
     // tilts the view then; Conker's height moves it up and down whole. Every machine alike for every player's camera (det_math).
-    if (player >= 0 && steady_camera(rdram, camera)) {
+    // (possess104) and the view's height eased after Conker's, the eye and the look-at point alike (so it never tilts): with both locked to
+    // him (possess103) every step of his showed, uneven on a ramp (2.5 and 2.8 a frame by turns, possess103's [look-slope] lines) and
+    // stopping dead at its top and bottom. 0.35 of the way a frame (about 5 behind him climbing a ramp), at once past 80
+    // (a fall, a comeback). Once a frame for each player's camera, on every machine alike.
+    struct SteadyHeight { bool have = false; float height = 0.0f; uint32_t frame = 0; };
+    static SteadyHeight steady_height[aim_players];
+    const bool steady_now = player >= 0 && player < aim_players && steady_camera(rdram, camera);
+    if (player >= 0 && player < aim_players && !steady_now) {
+        steady_height[player].have = false;
+    }
+    if (steady_now) {
+        SteadyHeight& sh = steady_height[player];
+        const float conker_y = read_float(rdram, (gpr)(int32_t)MEM_W(0x3D0, camera), 0x18);
+        const uint32_t frame_now = conker::netsession::active() ? conker::netsession::frame() : 0u;
+        if (!sh.have || std::fabs(conker_y - sh.height) > 80.0f) {
+            sh.have = true;
+            sh.height = conker_y;
+            sh.frame = frame_now;
+        } else if (!conker::netsession::active() || frame_now != sh.frame) {
+            sh.frame = frame_now;
+            sh.height += (conker_y - sh.height) * 0.35f;
+        }
+        write_float(rdram, camera, 0x2E4, read_float(rdram, camera, 0x2E4) + (sh.height - conker_y));
+    }
+    if (steady_now) {
         const float vex = read_float(rdram, camera, 0x2EC), vez = read_float(rdram, camera, 0x2F8 + 8);
         const float vax = read_float(rdram, camera, 0x2E0), vay = read_float(rdram, camera, 0x2E4), vaz = read_float(rdram, camera, 0x2E8);
         const float across = std::sqrt((vax - vex) * (vax - vex) + (vaz - vez) * (vaz - vez));
