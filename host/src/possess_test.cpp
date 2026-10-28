@@ -44,6 +44,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <mutex>
 #include <string>
 #include <vector>
 #if defined(_WIN32)
@@ -2171,6 +2172,9 @@ namespace {
             }
         };
         draw_layer4(0, false);
+        // (possess82) not while the renderer reads a list: the frame before's, waiting to be drawn, points at view 5's record (the full
+        // view's) for its viewports, and drawn while it was view 1's it came out in view 1's quarter of the screen
+        std::lock_guard<std::mutex> render_lock(conker::netview::render_mutex());
         uint8_t kept_record[0x180];
         const bool records_ok = (view_records_now >> 24) == 0x80 && (view_records_now & 0x7FFFFFu) + 5u * 0x180u < 0x800000u;
         if (records_ok) {
