@@ -275,6 +275,8 @@ namespace conker {
         // (possess49) the 5th player's machine, its pause menu open: the menu's text this frame (CONT, QUIT and the rest, queued as the
         // game's update runs it), queued again for the 5th player's HUD over its view (possess_test.cpp's fifth_hud), before its flush
         void fifth_pause_text(uint8_t* rdram, recomp_context* ctx);
+        // (possess61) the 5th player's HUD drawing the menu's text: the pause screen's pictures (its textures) loaded (true) and let go (false)
+        void fifth_pictures(uint8_t* rdram, bool on);
         // (possess49) the game's overlay (the pause screen) begins (on) and is about to flush its text (off), on the 5th player's machine
         // with its pause menu open: the text the pause screen queues meanwhile noted, for fifth_pause_text
         void fifth_overlay_noting(uint8_t* rdram, bool on);
@@ -440,6 +442,8 @@ namespace conker {
         // (possess59) the 5th player's machine, the match's players on a split screen: the extra camera's view is drawn in view 1's part
         // (possess_test.cpp's fifth_split), which net_view.cpp makes this machine's full screen, as player 1's machine's
         bool fifth_split_view(uint8_t* rdram);
+        // (possess61) where this frame's extra view's second pass (func_15019CC8's) began in the list, 0 if none yet
+        uint32_t fifth_second_pass();
         // (possess51) the 5th player is on the teams screen as a player (it has joined, in a mode whose screen can have it): the screen's
         // limits count it (mp_characters.cpp)
         bool fifth_on_teams(uint8_t* rdram);

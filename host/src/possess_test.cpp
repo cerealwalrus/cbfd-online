@@ -1424,6 +1424,14 @@ void conker::possess_test::note_drawn_end(uint32_t end, bool extra_view) {
 }
 
 namespace {
+    uint32_t second_pass_at = 0;   // (possess61) where this frame's extra view's second pass began (conker_possess_view_local)
+}
+
+uint32_t conker::possess_test::fifth_second_pass() {
+    return second_pass_at;
+}
+
+namespace {
     bool extra_view_now = false;   // (possess34) the extra camera's view being drawn
     // (possess35) the characters' fades and hidden bits in the extra camera's view (as view 1), kept from frame to frame
     uint8_t extra_fade[25] = {}, extra_hidden[25] = {};
@@ -2173,8 +2181,11 @@ namespace {
             list = call_list(rdram, ctx, func_15019BB8, list, 0);
             *ctx = saved;
             conker_net_view_pass(rdram, (int32_t)list, std::max(0, (int)was_last), 2);
-            if (conker::netsession::active() && conker::netmenu::is_open()) {
-                // the menu's text (its run queued it for the game's flush), queued again for this one
+            const bool pause_here = conker::netsession::active() && conker::netmenu::is_open();
+            if (pause_here) {
+                // the menu's text (its run queued it for the game's flush), queued again for this one, and drawn by the overlay's flush with
+                // the pause screen's pictures loaded (possess61: QUIT and CONT. are pictures in that text, and were missing without them)
+                conker::netmenu::fifth_pictures(rdram, true);
                 conker::netmenu::fifth_pause_text(rdram, ctx);
                 *ctx = saved;
                 static uint32_t told = 0;
@@ -2184,6 +2195,9 @@ namespace {
             }
             list = call_list(rdram, ctx, func_15019E60, list, 0);
             *ctx = saved;
+            if (pause_here) {
+                conker::netmenu::fifth_pictures(rdram, false);
+            }
             list = call_list(rdram, ctx, func_151E84B0, list, 0);
             *ctx = saved;
             list = call_list(rdram, ctx, func_15043384, list, 0);
@@ -2254,6 +2268,7 @@ extern "C" void conker_possess_overlay(uint8_t* rdram, recomp_context* ctx, int 
 }
 
 extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
+    second_pass_at = 0;   // (possess61: this frame's, once the view's second pass begins)
     if (!local_view_wanted(rdram)) {
         return;
     }
@@ -2453,6 +2468,8 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
     *ctx = saved;
     // (possess27) and its second pass (func_1501878C's second loop of the views: func_1515D6D0 + func_15019CC8, what's drawn in
     // layer 5 of func_151674F8's, after the 3D of the first)
+    // (possess61: where it starts, for net_view.cpp's rocket launcher overlay: fifth_second_pass)
+    second_pass_at = list;
     list = call_list(rdram, ctx, func_1515D6D0, list, 0);
     *ctx = saved;
     list = call_list(rdram, ctx, func_15019CC8, list, 0);

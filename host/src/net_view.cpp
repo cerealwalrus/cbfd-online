@@ -37,6 +37,10 @@
 
 #include "conker.hpp"
 
+// (possess61) after a look's command dump, the next frame's drawing of each character for each camera logged (conker_player_visibility)
+static int char_draw_log_frames = 0;
+static int char_draw_logged = 0;
+
 namespace {
     // The look kinds (+0x23E of the look camera) in which the screen-space sprites are moved down with the full view: the rocket launcher's
     // (0x16) and the sniper scope's (0x24: what the log showed while aiming it; CONKER_NET_SPRITE_KINDS="16,15" (hex, comma-separated) replaces the list to try others).
@@ -490,7 +494,10 @@ namespace {
             const bool fifth_look = conker::possess_test::fifth_split_view(rdram) && local == 0;
             const int look_player = fifth_look ? 4 : local;
             if ((look_base >> 24) == 0x80 && (look_base & 0x7FFFFFu) < 0x7F0000u) {
-                for (int k = 0; k < (fifth_look ? 5 : 4); k++) {
+                // (possess61: the 5th player's look record, the 5th, on every machine while the extra camera is there: its rocket launcher's
+                // overlay is drawn in the first camera's chain as anybody's is)
+                const int look_records = (fifth_look || conker::possess_test::online_extra_camera()) ? 5 : 4;
+                for (int k = 0; k < look_records; k++) {
                     const gpr record = (gpr)(int32_t)(look_base + (uint32_t)k * 0x9A0u);
                     if ((int)MEM_BU(0x23D, record) == look_player && MEM_BU(0x23E, record) != 0) {
                         // This machine's look (a player can have more than one record: the one with a kind is the look in use). The kind is
@@ -505,7 +512,7 @@ namespace {
                     if ((int)MEM_BU(0x23D, record) != look_player && (int)MEM_BU(0x23D, record) < 4 && sprite_kinds().count((int)MEM_BU(0x23E, record)) != 0 && MEM_BU(0x23E, record) != 0x16) {
                         remote_sniper = true;
                     }
-                    if (MEM_BU(0x23E, record) == 0x16 && (int)MEM_BU(0x23D, record) < 4) {
+                    if (MEM_BU(0x23E, record) == 0x16 && (int)MEM_BU(0x23D, record) < look_records) {
                         rocket_mask |= 1u << (int)MEM_BU(0x23D, record);
                         if ((int)MEM_BU(0x23D, record) == look_player) {
                             rocket_look = true;
@@ -592,6 +599,8 @@ namespace {
                     }
                 }
                 conker::netsession::log("[net view] look dump ends");
+                char_draw_log_frames = 2;
+                char_draw_logged = 0;
             }
         }
         int scope_lines = 0;
@@ -614,6 +623,54 @@ namespace {
                 std::snprintf(line, sizeof(line), "[net view] look %02X: pass %zu at %08X (%u bytes): camera %d kind %d%s", local_kind, i, frame[i].gfx,
                     to > frame[i].gfx ? to - frame[i].gfx : 0u, frame[i].camera, frame[i].kind, frame[i].camera == local ? " (this machine's)" : "");
                 conker::netsession::log(line);
+            }
+        }
+        // the rocket launcher's overlay pass (from..to) made to show nothing: its scissors emptied
+        const auto hide_overlay_pass = [&](uint32_t from, uint32_t to) {
+            if ((from >> 24) != 0x80 || to <= from || to - from > 0x4000u) {
+                return;
+            }
+            for (uint32_t address = from; address < from + 40 && address < to; address += 8) {
+                const uint32_t op = (uint32_t)MEM_W(0, (gpr)(int32_t)address) >> 24;
+                if (op == 0xE7 || op == 0xE6 || op == 0xE8 || op == 0xE9) {
+                    MEM_W(0, (gpr)(int32_t)address) = (int32_t)0xED000000u;
+                    MEM_W(4, (gpr)(int32_t)address) = 0;
+                    break;
+                }
+            }
+            for (uint32_t address = from; address < to; address += 8) {
+                if (((uint32_t)MEM_W(0, (gpr)(int32_t)address) >> 24) == 0xED && address > from + 40) {
+                    MEM_W(0, (gpr)(int32_t)address) = (int32_t)0xED000000u;
+                    MEM_W(4, (gpr)(int32_t)address) = 0;
+                }
+            }
+        };
+        // (possess61) the 5th player's machine with its rocket launcher's look: the extra camera's view (drawn as view 1's after the game's)
+        // has the overlay in its own second pass (func_15019CC8: the overlay, then its short setup), whose passes start where possess_test.cpp
+        // noted (fifth_second_pass): all but the last of them hidden, as the game's chain's are below
+        if (rocket_look && local == 0 && conker::possess_test::fifth_split_view(rdram)) {
+            const uint32_t second = conker::possess_test::fifth_second_pass();
+            std::vector<size_t> found;
+            for (size_t i = 0; i < frame.size() && second != 0; i++) {
+                if (frame[i].gfx < second) {
+                    continue;
+                }
+                if (frame[i].kind != 0 || frame[i].camera != 0) {
+                    break;
+                }
+                found.push_back(i);
+            }
+            static int told = 0;
+            if (told < 6) {
+                told++;
+                char line[160];
+                std::snprintf(line, sizeof(line), "[net view] the 5th player's rocket launcher: its second pass at %08X has %zu passes (%s)", second, found.size(),
+                    found.size() >= 2 ? "the overlay hidden" : "nothing to hide");
+                conker::netsession::log(line);
+            }
+            for (size_t n = 0; n + 1 < found.size(); n++) {
+                const size_t i = found[n];
+                hide_overlay_pass(frame[i].gfx, i + 1 < frame.size() ? frame[i + 1].gfx : end);
             }
         }
         for (int ovp = 0; ovp < 4; ovp++) if (rocket_mask != 0) {
@@ -646,26 +703,7 @@ namespace {
             }
             if (hud_pass >= 0 && setups.size() >= 2) {
                 for (size_t s = 1; s < setups.size(); s++) {
-                    const uint32_t from = frame[setups[s]].gfx;
-                    const uint32_t to = frame[setups[s] + 1].gfx;
-                    if ((from >> 24) == 0x80 && to > from && to - from <= 0x4000u) {
-                        // The overlay pass sets no scissor of its own (logged), so it is drawn with the last one set: an empty one is set at its
-                        // start, in place of one of its first pipe syncs.
-                        for (uint32_t address = from; address < from + 40 && address < to; address += 8) {
-                            const uint32_t op = (uint32_t)MEM_W(0, (gpr)(int32_t)address) >> 24;
-                            if (op == 0xE7 || op == 0xE6 || op == 0xE8 || op == 0xE9) {
-                                MEM_W(0, (gpr)(int32_t)address) = (int32_t)0xED000000u;
-                                MEM_W(4, (gpr)(int32_t)address) = 0;
-                                break;
-                            }
-                        }
-                        for (uint32_t address = from; address < to; address += 8) {
-                            if (((uint32_t)MEM_W(0, (gpr)(int32_t)address) >> 24) == 0xED && address > from + 40) {
-                                MEM_W(0, (gpr)(int32_t)address) = (int32_t)0xED000000u;
-                                MEM_W(4, (gpr)(int32_t)address) = 0;
-                            }
-                        }
-                    }
+                    hide_overlay_pass(frame[setups[s]].gfx, frame[setups[s] + 1].gfx);
                 }
             }
         }
@@ -1759,6 +1797,9 @@ void conker::netview::port_read() {
 void conker::netview::frame_begin(uint8_t* rdram) {
     conker::netmenu::view_frame_begin();   // (0.10.88)
     conker::netmenu::coop_hud_clear();   // (0.10.61: the co-op HUD ranges are this frame's only)
+    if (char_draw_log_frames > 0) {
+        char_draw_log_frames--;   // (possess61: set as a look's dump ends, so the frame after it is logged)
+    }
     (void)rdram;
     if (conker::netsession::active()) {
         conker::netsession::watch_poll("dlb", 0);
@@ -2058,6 +2099,14 @@ extern "C" void conker_net_view_pass(uint8_t* rdram, int gfx, int camera, int ki
 extern "C" void conker_player_visibility(uint8_t* rdram, recomp_context* ctx, int which) {
     const uint32_t object = (uint32_t)MEM_W(0x5C, ctx->r29);
     const uint32_t camera = (uint32_t)MEM_W(0x60, ctx->r29);
+    if (which == 0 && char_draw_log_frames > 0 && char_draw_logged < 300 && conker::netsession::active()) {
+        // (possess61) which character is drawn for which camera, in which layer, its hidden bits (+0x74), and in which view
+        char_draw_logged++;
+        char line[160];
+        std::snprintf(line, sizeof(line), "[net view] char draw f=%u: object %u camera %u layer %d +74 %02X%s", (unsigned)conker::netsession::frame(), object, camera,
+            (int)MEM_W(0x64, ctx->r29), (unsigned)(ctx->r15 & 0xFFu), conker::possess_test::drawing_extra_view() ? " (the extra view)" : "");
+        conker::netsession::log(line);
+    }
     static const bool keep_cull = std::getenv("CONKER_NET_KEEPCULL") != nullptr;
     // (0.9.53 hid a player's body from its own camera while its look's kind was 0x18, the crossbow's: that kind is there as long as the
     // crossbow is held, so the player went invisible: 0.9.72 took it away.)
