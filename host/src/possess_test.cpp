@@ -1506,6 +1506,15 @@ namespace {
         return extra_shown;
     }
 
+    // (possess59) online, the match's players on a split screen (each machine's view is one of its parts, net_view.cpp making it full
+    // screen): the extra camera's view drawn as view 1 in view 1's own part of the screen (its record's viewport and projection, not
+    // the full-screen one's), on every machine alike (what it sees is kept for the next frame's updates); on the 5th player's machine its
+    // HUD laid out for that part as the game lays a player's out (the split screen's), and net_view.cpp makes view 1's part this
+    // machine's full screen (its field of view, the HUD's places, the reticle's), as it does on player 1's machine.
+    bool fifth_split(uint8_t* rdram) {
+        return conker::netsession::active() && online5() && (int32_t)MEM_W(0, (gpr)(int32_t)last_player) >= 1;
+    }
+
     // (possess44) the extra camera's view is shown on this machine: offline whenever it's drawn, online on the 5th player's machine alone
     bool view_shown_here() {
         return !conker::netsession::active() || conker::netsession::local_slot() == extra;
@@ -2143,8 +2152,11 @@ namespace {
         const int8_t was_blur = MEM_B(0, (gpr)(int32_t)blur_where);
         const int32_t was_view = MEM_W(0, (gpr)(int32_t)view_now);
         swap_character_state(rdram, ch5);
-        MEM_W(0, (gpr)(int32_t)last_player) = 0;
-        MEM_B(0, (gpr)(int32_t)humans_now) = 1;
+        if (!fifth_split(rdram)) {
+            // (possess59: with a split screen the game's own players and layout, view 1's part's HUD: see fifth_split)
+            MEM_W(0, (gpr)(int32_t)last_player) = 0;
+            MEM_B(0, (gpr)(int32_t)humans_now) = 1;
+        }
         MEM_B(0, (gpr)(int32_t)blur_where) = 0;
         MEM_W(0, (gpr)(int32_t)view_now) = 0;
         list = call_list(rdram, ctx, func_150198FC, list, 0);
@@ -2285,7 +2297,9 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
     // 2. view 1 the extra camera's
     std::memcpy(rdram + (base - 0x80000000u), rdram + (base + (uint32_t)extra * camera_size - 0x80000000u), camera_size);
     MEM_B(0x23D, (gpr)(int32_t)base) = 0;
-    std::memcpy(rdram + (views - 0x80000000u), rdram + (views + (uint32_t)extra * 0x180u - 0x80000000u), 0x180);
+    if (!fifth_split(rdram)) {   // (possess59: with a split screen, view 1's own record: see fifth_split)
+        std::memcpy(rdram + (views - 0x80000000u), rdram + (views + (uint32_t)extra * 0x180u - 0x80000000u), 0x180);
+    }
     std::memcpy(rdram + (mats - 0x80000000u), rdram + (mats + (uint32_t)extra * 0x40u - 0x80000000u), 0x40);
     // (possess33) played or not, the extra character drawn as the bot it is while only shown (its brain's AI flag, +0x84; the game's memory
     // is put back after): shown, it's drawn; played (+0x84 0, a player's), it wasn't, with its fade, hidden bits and render item the same
@@ -3376,6 +3390,10 @@ namespace {
         log("f=%u [join] the character select's scene: %d places at %08X:%s", (unsigned)conker::netsession::frame(), count, (unsigned)records,
             out.c_str());
     }
+}
+
+bool conker::possess_test::fifth_split_view(uint8_t* rdram) {
+    return online_view_here() && fifth_split(rdram);
 }
 
 bool conker::possess_test::fifth_joined(uint8_t* rdram) {

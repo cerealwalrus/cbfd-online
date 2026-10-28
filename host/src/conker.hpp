@@ -437,6 +437,9 @@ namespace conker {
         // (possess49, online, 5 players) the 5th player has joined on the character select (its P5 column): the match is set up with a
         // character of its own, and the menus leave room for it
         bool fifth_joined(uint8_t* rdram);
+        // (possess59) the 5th player's machine, the match's players on a split screen: the extra camera's view is drawn in view 1's part
+        // (possess_test.cpp's fifth_split), which net_view.cpp makes this machine's full screen, as player 1's machine's
+        bool fifth_split_view(uint8_t* rdram);
         // (possess51) the 5th player is on the teams screen as a player (it has joined, in a mode whose screen can have it): the screen's
         // limits count it (mp_characters.cpp)
         bool fifth_on_teams(uint8_t* rdram);

@@ -486,10 +486,13 @@ namespace {
         {
             // (the look cameras, another array than the view's: pointer at 0x800DBFF0, 0x9A0 apart, the player at +0x23D, the look's kind at +0x23E)
             const uint32_t look_base = (uint32_t)MEM_W(0, (gpr)(int32_t)0x800DBFF0);
+            // (possess59: on the 5th player's machine its look is the 5th camera's, player 4's, drawn as view 1)
+            const bool fifth_look = conker::possess_test::fifth_split_view(rdram) && local == 0;
+            const int look_player = fifth_look ? 4 : local;
             if ((look_base >> 24) == 0x80 && (look_base & 0x7FFFFFu) < 0x7F0000u) {
-                for (int k = 0; k < 4; k++) {
+                for (int k = 0; k < (fifth_look ? 5 : 4); k++) {
                     const gpr record = (gpr)(int32_t)(look_base + (uint32_t)k * 0x9A0u);
-                    if ((int)MEM_BU(0x23D, record) == local && MEM_BU(0x23E, record) != 0) {
+                    if ((int)MEM_BU(0x23D, record) == look_player && MEM_BU(0x23E, record) != 0) {
                         // This machine's look (a player can have more than one record: the one with a kind is the look in use). The kind is
                         // logged when it changes, and the looks listed in sprite_kinds() have the game's screen-space sprites (the rocket's
                         // explosion, the sniper laser's star) moved with the view, as the rocket launcher's are.
@@ -499,12 +502,12 @@ namespace {
                         }
                         local_kind = kind_now;
                     }
-                    if ((int)MEM_BU(0x23D, record) != local && (int)MEM_BU(0x23D, record) < 4 && sprite_kinds().count((int)MEM_BU(0x23E, record)) != 0 && MEM_BU(0x23E, record) != 0x16) {
+                    if ((int)MEM_BU(0x23D, record) != look_player && (int)MEM_BU(0x23D, record) < 4 && sprite_kinds().count((int)MEM_BU(0x23E, record)) != 0 && MEM_BU(0x23E, record) != 0x16) {
                         remote_sniper = true;
                     }
                     if (MEM_BU(0x23E, record) == 0x16 && (int)MEM_BU(0x23D, record) < 4) {
                         rocket_mask |= 1u << (int)MEM_BU(0x23D, record);
-                        if ((int)MEM_BU(0x23D, record) == local) {
+                        if ((int)MEM_BU(0x23D, record) == look_player) {
                             rocket_look = true;
                         }
                     }
@@ -1684,7 +1687,8 @@ bool conker::netview::full_view_bounds(uint8_t* rdram, int camera, float& left, 
         return false;
     }
     const int players = players_now(rdram);
-    const int local = conker::netsession::view_player();
+    // (possess59: the 5th player's view drawn as view 1's, fifth_split_view)
+    const int local = conker::possess_test::fifth_split_view(rdram) ? 0 : conker::netsession::view_player();
     if (players <= 1 || players > max_cameras || local < 0 || local >= players || camera != local) {
         return false;
     }
@@ -1749,6 +1753,11 @@ void conker::netview::frame_end(uint8_t* rdram, uint32_t list_end) {
     // (0.10.95: or the one it chose to watch, view_player)
     conker::netsession::spectate_poll();
     int local = forced_slot >= 0 ? forced_slot : conker::netsession::view_player();
+    // (possess59) the 5th player's machine, a split screen: its view (the extra camera's) is drawn as view 1's, made full screen as on
+    // player 1's machine (possess_test.cpp's fifth_split_view)
+    if (forced_slot < 0 && conker::possess_test::fifth_split_view(rdram)) {
+        local = 0;
+    }
     if (local < 0) {
         local = 0;
     }
@@ -1980,7 +1989,8 @@ extern "C" void conker_net_view_pass(uint8_t* rdram, int gfx, int camera, int ki
     (void)rdram;
     // (possess-test) not the extra camera's view's passes (drawn as view 1 at the frame's end, possess_test.cpp): its commands are the
     // 5th player's machine's alone, full screen already, and let go on the others
-    if (!view_is_full() || conker::possess_test::drawing_extra_view()) {
+    // (possess59: but on the 5th player's machine with a split screen they are this machine's view's, view 1's: fifth_split_view)
+    if (!view_is_full() || (conker::possess_test::drawing_extra_view() && !conker::possess_test::fifth_split_view(rdram))) {
         return;
     }
     // (a pass calls func_1501A490 for its setup: the pass is already listed, and the setup comes just after its start)
