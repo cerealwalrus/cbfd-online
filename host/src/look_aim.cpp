@@ -326,13 +326,7 @@ void conker::look_aim::add_camera_options(recomp::config::Config& config) {
         "stay: by default C-Up (first person) on the right stick's click and C-Down on RB. <recomp-color primary>Off</recomp-color> matches the "
         "original game. Only the normal camera: in R-Look, aiming and cutscenes, the right stick is the C-buttons as usual.",
         toggle, Toggle::Off);
-    config.add_number_option(options::camera_fov, "Camera: Field of View",
-        "How wide the normal camera sees, as its vertical field of view (the same whatever the aspect ratio). "
-        "<recomp-color primary>50\xC2\xB0</recomp-color> matches the original game (60.6\xC2\xB0 across at 4:3). More shows more "
-        "around Conker, less brings the view in closer; the camera stays as far away. Only the normal camera: R-Look, "
-        "aiming (so the scope's zoom), cutscenes and other special cameras stay as the game has them.",
-        35.0, 80.0, 1.0, 0, false, 50.0);
-    recompui::set_number_option_suffix(options::camera_fov, "\xC2\xB0");
+    // (possess58) Camera: Field of View taken out: every player sees the game's own field of view (field_of_view.cpp does nothing)
 
     config.add_enum_option(options::stick_response, "Stick: Aiming Response",
         "How the view follows the stick in R-Look (hold R and look around)." + about +
@@ -363,6 +357,10 @@ void conker::look_aim::add_camera_options(recomp::config::Config& config) {
 // here (find_option_config). Each input's other settings are hidden while its sensitivity is zero, which
 // turns that input off.
 void conker::look_aim::add_mouse_gyro_options(recomp::config::Config& config) {
+    // (possess58) the mouse taken out for now: none of its settings, so its sensitivity reads as zero (RecompFrontend: no mouse
+    // movement, the cursor left free) and its others as their defaults (the mouse turns no camera). Gyro stays.
+    constexpr bool mouse_settings = false;
+    if (mouse_settings) {
     config.add_percent_number_option(recompui::config::general::options::mouse_sensitivity, "Mouse: Sensitivity",
         "How fast the mouse turns the camera and aims, in R-Look (hold R and look around) and the second aiming mode "
         "(e.g. the sniper scope). <b>Zero turns mouse control off</b> and leaves the cursor free. "
@@ -380,6 +378,7 @@ void conker::look_aim::add_mouse_gyro_options(recomp::config::Config& config) {
     config.add_enum_option(options::mouse_invert, "Mouse: Invert Aiming",
         "Inverts the mouse in R-Look (hold R and look around) and the second aiming mode (e.g. the sniper scope), separately from the stick and gyro. With <recomp-color primary>None</recomp-color>, moving the mouse up looks up; <recomp-color primary>Invert Y</recomp-color> matches the game's stick, where up looks down.",
         invert, Invert::None);
+    }
 
     config.add_percent_number_option(recompui::config::general::options::gyro_sensitivity, "Gyro: Sensitivity",
         "How strongly gyro aims in R-Look (hold R and look around) and the second aiming mode (e.g. the sniper scope), "
@@ -395,7 +394,9 @@ void conker::look_aim::add_mouse_gyro_options(recomp::config::Config& config) {
 
     static std::vector<recomp::config::ConfigValueVariant> off = { 0.0 };
     for (const std::string& id : { options::mouse_camera, options::mouse_response, options::mouse_invert }) {
-        config.add_option_hidden_dependency(id, recompui::config::general::options::mouse_sensitivity, off);
+        if (mouse_settings) {
+            config.add_option_hidden_dependency(id, recompui::config::general::options::mouse_sensitivity, off);
+        }
     }
     for (const std::string& id : { options::gyro_response, options::gyro_invert }) {
         config.add_option_hidden_dependency(id, recompui::config::general::options::gyro_sensitivity, off);
@@ -1310,7 +1311,7 @@ void conker::look_aim::leap_stick(float& x, float& y) {
 
 float conker::look_aim::camera_field_of_view() {
     // None without the settings: the game's own field of view (field_of_view.cpp).
-    return (float)number_option(options::camera_fov, 0.0);
+    return 0.0f;   // (possess58: the setting taken out, the game's own field of view for everyone)
 }
 
 void conker::look_aim::free_camera_invert(bool& x, bool& y) {

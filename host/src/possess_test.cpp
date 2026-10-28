@@ -331,7 +331,10 @@ namespace {
     // (possess19: the last run's log kept as conker_possess.prev.log) (possess44: two windows of the game on one computer, an online
     // test: the log the first has open is kept from the second's writing, which takes conker_possess_2.log)
     FILE* open_log() {
-        static const char* const names[][2] = { { "conker_possess.log", "conker_possess.prev.log" }, { "conker_possess_2.log", "conker_possess_2.prev.log" } };
+        // (possess58: up to 5 windows, a 5 player test on one computer: conker_possess_3.log to _5.log for the others)
+        static const char* const names[][2] = { { "conker_possess.log", "conker_possess.prev.log" }, { "conker_possess_2.log", "conker_possess_2.prev.log" },
+            { "conker_possess_3.log", "conker_possess_3.prev.log" }, { "conker_possess_4.log", "conker_possess_4.prev.log" },
+            { "conker_possess_5.log", "conker_possess_5.prev.log" } };
         for (const auto& name : names) {
             std::error_code ec;
             if (std::filesystem::exists(name[0], ec)) {
@@ -3607,27 +3610,13 @@ extern "C" void conker_possess_icon(uint8_t* rdram, recomp_context* ctx, int whe
 }
 
 extern "C" void conker_possess_icon_texture(uint8_t* rdram, recomp_context* ctx) {
-    // (possess56) while the 5th player plays as the game's own player (fifth_map), that controller's P icon (sprites 0x894 to 0x897, P1 to
-    // P4: the HUD's, the score table's) is its P5 one, whatever draws it: nobody else plays with that controller in the match
-    if (!p5_drawing && p5_have && fifth_mapped(rdram) && (uint32_t)ctx->r20 == 0x894u + (MEM_BU(0, (gpr)(int32_t)fifth_map) & 3u) &&
-        (uint32_t)ctx->r9 != 0x80000000u) {
-        static uint32_t told = 0;
-        if (told++ < 3) {
-            log("f=%u the P%d icon (sprite %X) drawn as the P5 one: the 5th player plays with that controller", (unsigned)frames,
-                (int)(MEM_BU(0, (gpr)(int32_t)fifth_map) & 3u) + 1, (unsigned)(uint32_t)ctx->r20);
-        }
-        p5_drawing = true;
-    }
     if (!p5_drawing) {
         return;
     }
     p5_drawing = false;
     const uint32_t texture = (uint32_t)ctx->r9;
-    if (texture == 0x80000000u) {
+    if ((uint32_t)ctx->r20 != p4_sprite || texture == 0x80000000u) {
         return;
-    }
-    if ((uint32_t)ctx->r20 != p4_sprite && !p5_have) {
-        return;   // (made from the P4 icon's texture: only once the P4 icon itself has been loaded here)
     }
     const uint32_t from = texture < 0x00800000u ? texture | 0x80000000u : texture;
     if ((from >> 24) != 0x80 || (from & 0x7FFFFFu) > 0x800000u - 0x1000u) {
@@ -3659,43 +3648,6 @@ extern "C" void conker_possess_icon_texture(uint8_t* rdram, recomp_context* ctx)
         }
     }
     ctx->r9 = (gpr)(int32_t)(texture < 0x00800000u ? p5_texture & 0x7FFFFFFFu : p5_texture);
-}
-
-// (possess57) func_1510D0EC (an asset's address, loaded first if it isn't: a sprite's texture) at its start (where 0: $a0 the asset)
-// and as it returns (1: $v0 the address): while the 5th player plays as the game's own player, that controller's P icon wherever it's
-// drawn from (the pause screen's score table builds its own commands from the address), our P5 one instead. Ours is put in our memory
-// each time; made from the P4 icon (conker_possess_icon_texture, the character select's label), so only once that's been drawn here.
-namespace {
-    uint32_t asset_asked = 0xFFFFFFFFu;
-}
-
-extern "C" void conker_possess_asset(uint8_t* rdram, recomp_context* ctx, int where) {
-    if (where == 0) {
-        asset_asked = (uint32_t)ctx->r4;
-        return;
-    }
-    const uint32_t asked = asset_asked;
-    asset_asked = 0xFFFFFFFFu;
-    if (!p5_have || !fifth_mapped(rdram) || asked != 0x894u + (MEM_BU(0, (gpr)(int32_t)fifth_map) & 3u)) {
-        return;
-    }
-    const uint32_t texture = (uint32_t)ctx->r2;
-    if (texture == 0x80000000u || texture == 0) {
-        return;
-    }
-    constexpr int n = conker::p5icon::size;
-    for (int y = 0; y < n; y++) {
-        for (int x = 0; x < n; x++) {
-            const int sx = x ^ ((y & 1) ? 2 : 0);
-            MEM_W(4 * (y * n + sx), (gpr)(int32_t)p5_texture) = (int32_t)p5_made[y * n + x];
-        }
-    }
-    static uint32_t told = 0;
-    if (told++ < 3) {
-        log("f=%u the P%d icon's texture (asset %X, at %08X) given as the P5 one: the 5th player plays with that controller", (unsigned)frames,
-            (int)(MEM_BU(0, (gpr)(int32_t)fifth_map) & 3u) + 1, (unsigned)asked, (unsigned)texture);
-    }
-    ctx->r2 = (gpr)(int32_t)(texture < 0x00800000u ? p5_texture & 0x7FFFFFFFu : p5_texture);
 }
 
 // (possess51) The 5th player on the teams screen (func_151E1744, the screen after the character select: each team's characters, a

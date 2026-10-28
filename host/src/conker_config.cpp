@@ -269,7 +269,7 @@ void conker::init_config() {
     // (0.10.4: rumble is off for good, and its settings are gone: no rumble options on the General tab)
     recompui::config::create_general_tab(general_options);
     conker::look_aim::add_camera_options(recompui::config::create_config_tab("Camera", camera_tab_id, false));
-    conker::look_aim::add_mouse_gyro_options(recompui::config::create_config_tab("Mouse & Gyro", mouse_gyro_tab_id, false));
+    conker::look_aim::add_mouse_gyro_options(recompui::config::create_config_tab("Gyro", mouse_gyro_tab_id, false));
     conker::netchat::add_options(recompui::config::create_config_tab("Online", "online", false));
 
     recomp::config::Config& graphics_config = recompui::config::create_graphics_tab();

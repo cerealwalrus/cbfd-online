@@ -42,7 +42,6 @@ namespace conker {
 {
  "aim_lock_on": "Off",
  "aim_swap_sticks": "On",
- "camera_field_of_view_degrees": 50,
  "camera_invert_turning": "None",
  "camera_turn_speed": 100,
  "look_stick_invert": "None",

@@ -762,8 +762,10 @@ namespace {
 
     // The keyboard and the mouse are player 1's: their bindings count on port 1 only. Mouse buttons
     // can be bound with the keyboard's controls or, in single player, the controller's.
+    // (possess58) the mouse taken out for now: its buttons press nothing, bound or not (look_aim.cpp: its settings gone too)
+    constexpr bool mouse_buttons_on = false;
     bool is_keyboard_or_mouse(const recompinput::InputField& field) {
-        return field.input_type == recompinput::InputType::Keyboard || field.input_type == recompinput::InputType::Mouse;
+        return field.input_type == recompinput::InputType::Keyboard || (mouse_buttons_on && field.input_type == recompinput::InputType::Mouse);
     }
 
     // A binding to the right stick (either axis, either way).
@@ -797,7 +799,7 @@ namespace {
             for (size_t i = 0; i < recompinput::num_bindings_per_input; i++) {
                 const recompinput::InputField& field = binding(cont_profile, input, i);
                 if (field.input_type == recompinput::InputType::Mouse) {
-                    v += keyboard ? recompinput::get_input_analog(0, field) : 0.0f;
+                    v += keyboard && mouse_buttons_on ? recompinput::get_input_analog(0, field) : 0.0f;
                 }
                 else if (controller != nullptr) {
                     v += controller_field_analog(controller, field, swap_sticks);
@@ -830,7 +832,7 @@ namespace {
                 if (cont_profile >= 0) {
                     const recompinput::InputField& field = binding(cont_profile, input, i);
                     if (field.input_type == recompinput::InputType::Mouse) {
-                        pressed |= keyboard && recompinput::get_input_digital(0, field);
+                        pressed |= keyboard && mouse_buttons_on && recompinput::get_input_digital(0, field);
                     }
                     else if (controller != nullptr && !(free_stick && is_right_stick(field))) {
                         const bool down = controller_field_digital(controller, field, swap_sticks);
