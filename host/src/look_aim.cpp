@@ -241,6 +241,7 @@ namespace {
         const std::string stick_camera = "stick_free_camera";
         const std::string camera_fov = "camera_field_of_view_degrees";
         const std::string aim_swap_sticks = "aim_swap_sticks";
+        const std::string aim_level_slopes = "aim_level_slopes";   // (possess98)
         const std::string aim_lock_on = "aim_lock_on";
     }
 
@@ -311,6 +312,14 @@ namespace {
 // The Camera tab, its settings in alphabetical order (possess65).
 void conker::look_aim::add_camera_options(recomp::config::Config& config) {
     // (possess65) in alphabetical order
+    // (possess98)
+    config.add_enum_option(options::aim_level_slopes, "Aiming: Level on Slopes",
+        "Keeps your aim level as you walk up and down ramps and steps while holding R. In the original game the camera's eye "
+        "and the point it looks at follow Conker's height a little behind him, the eye more than the point, so walking up a "
+        "ramp tilts the view and the crosshair up (about 4 degrees), and walking down tilts them down, until you stop. "
+        "<recomp-color primary>On</recomp-color>: both keep up with Conker's height at once. "
+        "<recomp-color primary>Off</recomp-color> matches the original game. Online it is each player's own setting.",
+        toggle, Toggle::Off);
     config.add_enum_option(options::aim_swap_sticks, "Aiming: Swap Sticks",
         "Controls aiming like a third-person shooter: while you aim, the right stick aims and the left stick moves, as "
         "the C-buttons do (e.g. the shotgun, the slingshot, the sniper scope, R-Look), in single player, and online with a gamepad (the SMG, the M4...). "
@@ -1004,6 +1013,44 @@ extern "C" void conker_look_view(uint8_t* rdram, recomp_context* ctx) {
             conker::netsession::log(line);
         }
     }
+    // (possess98) Aiming: Level on Slopes. In R-Look's second stage the look-at point and the eye follow Conker's height through the game's
+    // smoothing, the eye more slowly (possess97's [look-slope] lines, walking up a ramp at 2.7 a frame, the aim's pitch still: the look-at
+    // point 9 behind his height, the eye 16, the view tilted 4.4 degrees up for as long as he climbed). Fitted to those lines, each eases
+    // toward his height by about 0.195 (the look-at point) and 0.14 (the eye) of the way a frame. Here the same easing of his height is
+    // worked out for each, and what it leaves behind (his height less the eased one) is added back to the view's look-at point and eye
+    // (their y as the view has them, +0x2E4 and +0x2F0; the camera's own, which the game eases from, are left): standing still it's nothing,
+    // on a slope the view keeps the height it has on flat ground. Each player's setting, with the frame's input online (a bit of the look
+    // flags), and every machine works it out alike for every player's camera, once a frame.
+    if (player >= 0 && player < aim_players) {
+        struct LevelState { bool have = false; float eye = 0.0f, at = 0.0f; uint32_t frame = 0; float add_eye = 0.0f, add_at = 0.0f; };
+        static LevelState level[aim_players];
+        LevelState& st = level[player];
+        const bool online_now = conker::netsession::active();
+        const bool wanted = online_now ? (conker::netsession::look_flags((int)MEM_BU(0x23D, camera)) & 8u) != 0
+                                       : option<Toggle>(options::aim_level_slopes) == Toggle::On;
+        const gpr level_conker = (gpr)(int32_t)MEM_W(0x3D0, camera);
+        const bool in_look = MEM_H(0x73C, camera) == 2 && ((uint32_t)level_conker & 0xFF000000u) == 0x80000000u;
+        if (!wanted || !in_look) {
+            st.have = false;
+        } else {
+            const float cy = read_float(rdram, level_conker, 0x18);
+            const uint32_t frame_now = online_now ? conker::netsession::frame() : 0u;
+            if (!st.have) {
+                st.have = true;
+                st.eye = st.at = cy;
+                st.add_eye = st.add_at = 0.0f;
+                st.frame = frame_now;
+            } else if (!online_now || frame_now != st.frame) {
+                st.frame = frame_now;
+                st.at += (cy - st.at) * 0.195f;
+                st.eye += (cy - st.eye) * 0.14f;
+                st.add_at = cy - st.at;
+                st.add_eye = cy - st.eye;
+            }
+            write_float(rdram, camera, 0x2E4, read_float(rdram, camera, 0x2E4) + st.add_at);
+            write_float(rdram, camera, 0x2F0, read_float(rdram, camera, 0x2F0) + st.add_eye);
+        }
+    }
     if (!swap_state(player)) {
         return;
     }
@@ -1361,7 +1408,7 @@ namespace {
     // look_flag): online they were this machine's for every player, so a player whose settings differed from the other
     // machine's (Stick: Aiming Response Direct here, Smooth there) aimed differently on each machine: aiming the tommy gun
     // (whose look the SMG's and the M4's fix-ups don't cover) the games drifted apart every second (0.9.46 test).
-    constexpr uint8_t look_turn_x = 1, look_turn_y = 2, look_direct = 4;
+    constexpr uint8_t look_turn_x = 1, look_turn_y = 2, look_direct = 4, look_level = 8;   // (look_level: possess98, Aiming: Level on Slopes)
 
     // Whether the look mode's camera's player has the bit: online from the frame's agreed input (that player's own settings),
     // offline this machine's.
@@ -1384,7 +1431,8 @@ namespace {
 uint8_t conker::look_aim::sampled_look_flags() {
 #if defined(CONKER_RT64)
     return (uint8_t)((own_turn_stick_x() ? look_turn_x : 0) | (own_turn_stick_y() ? look_turn_y : 0) |
-        (option<Response>(options::stick_response) == Response::Direct ? look_direct : 0));
+        (option<Response>(options::stick_response) == Response::Direct ? look_direct : 0) |
+        (option<Toggle>(options::aim_level_slopes) == Toggle::On ? look_level : 0));
 #else
     return 0;
 #endif
