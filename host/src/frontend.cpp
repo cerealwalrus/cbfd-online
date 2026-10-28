@@ -283,7 +283,10 @@ namespace {
         // 0.10.5: windowed, the window opens maximized (1600 x 900 is its size when it's restored). Not with --window WxH, which asks
         // for that size; in Fullscreen RT64 makes it full screen once it's up, as before.
         // (0.10.49: or 1600 x 900, by the Graphics tab's Windowed Size)
-        const bool open_maximized = (conker::frontend::window_width <= 0 || conker::frontend::window_height <= 0) &&
+        // (possess75) CONKER_WINDOW_TILE=1 to 4 (test5.cmd's windows): the window opens in that quarter of the screen (1 top left, 2 top
+        // right, 3 bottom left, 4 bottom right), half the screen's size, and keeps it when the game starts
+        const int tile = conker::window_chrome::tile();
+        const bool open_maximized = tile == 0 && (conker::frontend::window_width <= 0 || conker::frontend::window_height <= 0) &&
             conker::windowed_size::fill_screen();
         // (0.10.44) on Windows the launcher draws its own title bar (window_chrome.cpp). (0.10.50) The window is a normal one (so
         // Windows snaps it, lays it out and maximizes it as any other), made hidden, and shown once its frame is taken over.
@@ -292,6 +295,16 @@ namespace {
         if (own_chrome) {
             flags |= SDL_WINDOW_HIDDEN;
             conker::window_chrome::start_rect(false, &x, &y, &open_width, &open_height);
+        }
+        if (tile != 0) {
+            SDL_Rect area{ 0, 0, 1600, 900 };
+            if (SDL_GetDisplayUsableBounds(0, &area) != 0 || area.w <= 0 || area.h <= 0) {
+                SDL_GetDisplayBounds(0, &area);
+            }
+            open_width = area.w / 2;
+            open_height = area.h / 2;
+            x = area.x + ((tile - 1) % 2) * open_width;
+            y = area.y + ((tile - 1) / 2) * open_height;
         }
         else if (open_maximized) {
             flags |= SDL_WINDOW_MAXIMIZED;
@@ -330,7 +343,10 @@ namespace {
         }
         using WindowMode = ultramodern::renderer::WindowMode;
         WindowMode want = WindowMode::Windowed;
-        if (ultramodern::is_game_started()) {
+        if (conker::window_chrome::tile() != 0) {
+            want = WindowMode::Windowed;   // (possess75: a test's tiled windows stay windowed)
+        }
+        else if (ultramodern::is_game_started()) {
             want = static_cast<WindowMode>(std::get<uint32_t>(recompui::config::get_graphics_config().get_option_value(
                 recompui::config::graphics::options::wm_option)));
         }

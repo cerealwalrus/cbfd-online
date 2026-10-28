@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdio>
+#include <cstdlib>
 
 #include <SDL.h>
 #include <SDL_syswm.h>
@@ -195,6 +196,16 @@ bool conker::window_chrome::wanted() {
 #endif
 }
 
+// (possess75) CONKER_WINDOW_TILE: the quarter of the screen this window opens in (1 to 4), 0 if none (frontend.cpp's create_window)
+int conker::window_chrome::tile() {
+    static const int value = []() {
+        const char* text = std::getenv("CONKER_WINDOW_TILE");
+        const int n = text != nullptr ? std::atoi(text) : 0;
+        return (n >= 1 && n <= 4) ? n : 0;
+    }();
+    return value;
+}
+
 bool conker::window_chrome::start_rect(bool, int* x, int* y, int* width, int* height) {
     // the window's place when it isn't maximized: its size (1600 x 900, or --window's), smaller on a smaller screen, in the middle
     SDL_Rect area{ 0, 0, 1600, 900 };
@@ -279,7 +290,7 @@ void conker::window_chrome::update(bool game_started, bool settings_full_screen)
         if (size_seen < 0) {
             size_seen = fill;
         }
-        else if (fill != size_seen && !settings_full_screen) {
+        else if (fill != size_seen && !settings_full_screen && tile() == 0) {
             size_seen = fill;
             std::printf("[window] Windowed Size: %s\n", fill ? "Fill Screen" : "1600 x 900");
             if (fill) {

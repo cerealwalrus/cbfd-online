@@ -533,6 +533,8 @@ namespace conker {
         // (its size, smaller on a smaller screen, in the middle).
         bool wanted();
         bool start_rect(bool fill, int* x, int* y, int* width, int* height);
+        // (possess75) CONKER_WINDOW_TILE: the quarter of the screen the window opens in, 1 to 4 (0: none)
+        int tile();
         // After it's made (hidden): the frame taken over, the window put there and shown (maximized or not).
         void attach(SDL_Window* window, bool maximized, int x, int y, int width, int height);
         // True while the launcher draws the title bar.
