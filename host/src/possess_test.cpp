@@ -3791,7 +3791,39 @@ extern "C" void conker_possess_list(uint8_t* rdram, recomp_context* ctx) {
     const int most = mode_most(rdram, players);
     const char* what = !in_input ? "the 5th player not in the frame's input: no character for it" :
         "the 5th player hasn't joined on the character select: no character for it";
-    int taken = 0;
+    int taken = 0, added = 0;
+    // (possess52) fewer than 4 characters before it (the teams screen left with too few: it keeps 5 with the 5th player on it, but a
+    // mode without it may not): computer players added up to 4, each on the team with the fewest characters (the 5th player's counted
+    // on the team it chose), so the 5th player still has its own
+    if (here && count >= 1 && count < extra && most > extra) {
+        const int teams = mode_teams(rdram);
+        int8_t fifth_on = fifth_team(rdram, list, team, count);
+        const int8_t on_screen = MEM_B(0x14, (gpr)(int32_t)join_state);
+        if (MEM_BU(0x15, (gpr)(int32_t)join_state) != 0 && on_screen >= 0 && on_screen < teams) {
+            fifth_on = on_screen;
+        }
+        while (count < extra) {
+            int8_t t = 0;
+            if (teams >= 2 && teams <= 8) {
+                int on[8] = {};
+                for (int i = 0; i < count; i++) {
+                    if (team[i] >= 0 && team[i] < teams) {
+                        on[team[i]]++;
+                    }
+                }
+                on[fifth_on]++;
+                for (int k = 1; k < teams; k++) {
+                    if (on[k] < on[t]) {
+                        t = (int8_t)k;
+                    }
+                }
+            }
+            list[count] = -2;
+            team[count] = t;
+            count++;
+            added++;
+        }
+    }
     if (here) {
         if (count < extra) {
             what = "fewer than 4 characters: none for the 5th player, whose own comes after 4 others";
@@ -3843,7 +3875,8 @@ extern "C" void conker_possess_list(uint8_t* rdram, recomp_context* ctx) {
     }
     log("f=%u (online) the match is set up: %s (the 5th player %s; %d characters, the mode's most %d%s); entries (controller/team):%s ->%s",
         (unsigned)conker::netsession::frame(), what, here ? "in" : (in_input ? "in the input, not joined" : "not in"), count, most,
-        taken > 0 ? (taken == 1 ? ", a computer player taken off" : ", computer players taken off") : "", was_text, now_text);
+        taken > 0 ? (taken == 1 ? ", a computer player taken off" : ", computer players taken off") :
+                    (added > 0 ? ", computer players added to make 4 before it" : ""), was_text, now_text);
     const std::string line = std::string("[possess] the match is set up: ") + what;
     conker::netsession::log(line.c_str());
 }
