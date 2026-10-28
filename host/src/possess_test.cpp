@@ -2183,11 +2183,8 @@ namespace {
             conker_net_view_pass(rdram, (int32_t)list, std::max(0, (int)was_last), 2);
             const bool pause_here = conker::netsession::active() && conker::netmenu::is_open();
             if (pause_here) {
-                // the menu's text (its run queued it for the game's flush), queued again for this one, and drawn by the overlay's flush with
-                // the pause screen's pictures loaded (possess61: QUIT and CONT. are pictures in that text, and were missing without them)
-                conker::netmenu::fifth_pictures(rdram, true);
-                conker::netmenu::fifth_pause_text(rdram, ctx);
-                *ctx = saved;
+                // (possess63: the menu's text is queued again after the pause screen only, below: queued here as well (possess62), each
+                // button showed twice, one of them in the wrong colour or picture, and the screen flickered between them)
                 static uint32_t told = 0;
                 if (told++ < 3) {
                     log("f=%u the 5th player's pause screen drawn over its view as the game draws its own (a split screen)", (unsigned)frames);
@@ -2195,9 +2192,6 @@ namespace {
             }
             list = call_list(rdram, ctx, func_15019E60, list, 0);
             *ctx = saved;
-            if (pause_here) {
-                conker::netmenu::fifth_pictures(rdram, false);
-            }
             list = call_list(rdram, ctx, func_151E84B0, list, 0);
             *ctx = saved;
             if (pause_here) {
@@ -2480,10 +2474,39 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
     // layer 5 of func_151674F8's, after the 3D of the first)
     // (possess61: where it starts, for net_view.cpp's rocket launcher overlay: fifth_second_pass)
     second_pass_at = list;
+    // (possess63) with a split screen, the second pass's objects told the view is the 5th player's (D_80082FA4 4): what's drawn there for
+    // one player's own view alone, as the gun's reticle in R-Look (a 32 x 32 picture over the view's middle, drawn with the gun in the
+    // second pass of its player's view only), is the 5th player's then, not player 1's. The views' tables (their 5th entry ours while
+    // view_pass_on) are given view 1's entries, as the view's first pass left them, for whatever reads them by that index.
+    // CONKER_POSSESS_VIEW4=0 leaves it out.
+    static const bool view4_on = []() { const char* t = std::getenv("CONKER_POSSESS_VIEW4"); return t == nullptr || std::string(t) != "0"; }();
+    const bool second_as_view4 = view4_on && fifth_split(rdram);
+    if (second_as_view4) {
+        for (int i = 0; i < slot4_count; i++) {
+            const Slot4Table& t = slot4_tables[i];
+            if (t.always || t.stride > 0x100u) {
+                continue;
+            }
+            const uint32_t shadow = slot4_shadow + 0x100u * (uint32_t)i;
+            for (uint32_t b = 0; b < t.stride; b++) {
+                MEM_B(b, (gpr)(int32_t)shadow) = MEM_B(b, (gpr)(int32_t)t.base);
+            }
+        }
+        view_pass_on = true;
+        MEM_W(0, (gpr)(int32_t)view_now) = 4;
+        static uint32_t told = 0;
+        if (told++ < 3) {
+            log("f=%u the extra view's second pass drawn with the view taken for the 5th player's (4)", (unsigned)frames);
+        }
+    }
     list = call_list(rdram, ctx, func_1515D6D0, list, 0);
     *ctx = saved;
     list = call_list(rdram, ctx, func_15019CC8, list, 0);
     *ctx = saved;
+    if (second_as_view4) {
+        MEM_W(0, (gpr)(int32_t)view_now) = 0;
+        view_pass_on = false;
+    }
     // (possess39) and the characters' poses made ready to be drawn, as func_1501878C does once its views are drawn: func_1502E474
     // turns the frame's bone matrices (the pool at D_800C3E80[frame], D_800C3E7A of them) from the floats func_1502BEE4 works them out
     // in to the fixed point the drawing reads (func_150A9984). The view's commands were drawing its characters from the floats: their
