@@ -825,9 +825,31 @@ extern "C" int conker_steady_ease(uint8_t* rdram, recomp_context* ctx) {
     MEM_W(0, ctx->r6) = 0;
     return 1;
 }
+
+// (possess102) func_15122440, 0x15122534: the angle the camera's eye is raised by, about to be the character's ground slope ($f6, its
+// +0xB8) plus a little ($f2). The eye is built from it (its height over the look-at point, the sine of it at the camera's distance), so
+// on a ramp the eye sat lower going up (108 over Conker in possess101's [look-slope] lines, 115.8 on the flat, the look's pitch still)
+// and higher going down (122.4): the crosshair tilted with the ramp. With Aiming: Steady Camera, in R-Look's second stage, the slope is
+// left out (as on flat ground), so only the aim tilts the view. $s0 the camera.
+extern "C" void conker_steady_slope(uint8_t* rdram, recomp_context* ctx) {
+    if (!steady_camera(rdram, ctx->r16)) {
+        return;
+    }
+    static uint32_t told = 0;
+    if (ctx->f6.fl != 0.0f && told < 20 && conker::netsession::active()) {
+        told++;
+        char line[120];
+        std::snprintf(line, sizeof(line), "[look-slope] f=%u Steady Camera: the ground's slope %.2f left out of the eye's angle (camera %d)",
+            conker::netsession::frame(), ctx->f6.fl, (int)MEM_BU(0x23D, ctx->r16));
+        conker::netsession::log(line);
+    }
+    ctx->f6.fl = 0.0f;
+}
 #else
 extern "C" int conker_steady_ease(uint8_t*, recomp_context*) {
     return 0;
+}
+extern "C" void conker_steady_slope(uint8_t*, recomp_context*) {
 }
 #endif
 

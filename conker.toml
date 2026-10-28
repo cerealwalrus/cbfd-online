@@ -388,6 +388,12 @@ func = "func_150495B0"
 before_vram = 0x150495B0
 text = "{ extern int conker_steady_ease(uint8_t*, recomp_context*); if (conker_steady_ease(rdram, ctx) != 0) { return; } }"
 
+# Aiming: Steady Camera (possess102): the camera's eye angle, the ground's slope about to be added; left out in R-Look with the setting.
+[[patches.hook]]
+func = "func_15122440"
+before_vram = 0x15122534
+text = "{ extern void conker_steady_slope(uint8_t*, recomp_context*); conker_steady_slope(rdram, ctx); }"
+
 [[patches.hook]]
 func = "func_15130A9C"
 before_vram = 0x15131168
