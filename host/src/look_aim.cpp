@@ -308,9 +308,19 @@ namespace {
         "<br /><recomp-color primary>Direct</recomp-color>: the view follows it exactly, with no easing.";
 }
 
-// The Camera tab: the normal camera, then aiming with the stick (R-Look and the second aiming mode).
-// Grouped by what they're about, each group's names starting alike.
+// The Camera tab, its settings in alphabetical order (possess65).
 void conker::look_aim::add_camera_options(recomp::config::Config& config) {
+    // (possess65) in alphabetical order
+    config.add_enum_option(options::aim_swap_sticks, "Aiming: Swap Sticks",
+        "Controls aiming like a third-person shooter: while you aim, the right stick aims and the left stick moves, as "
+        "the C-buttons do (e.g. the shotgun, the slingshot, the sniper scope, R-Look), in single player, and online with a gamepad (the SMG, the M4...). "
+        "Conker keeps facing where you aim and walks the way you push, sideways and back too. With the mouse, the keys "
+        "bound to the stick (W, A, S, D) move. With the "
+        "shotgun, holding R alone shows the laser sight, so you can move and strafe with it; holding Z as well, the left "
+        "stick only moves forward and back, as Z makes C-Left and C-Right turn the aim. "
+        "Back to normal once you stop aiming. <recomp-color primary>Off</recomp-color> matches the original game, where "
+        "the stick aims and the C-buttons move.",
+        toggle, Toggle::Off);
     config.add_enum_option(options::camera_turn_invert, "Camera: Invert Turning",
         "Inverts the camera's left and right turning in single player, with the right stick or C-Left and C-Right. "
         "<recomp-color primary>None</recomp-color> matches the original game. Strafing in multiplayer isn't affected. "
@@ -335,16 +345,6 @@ void conker::look_aim::add_camera_options(recomp::config::Config& config) {
     config.add_enum_option(options::stick_invert, "Stick: Invert Aiming",
         "Inverts the stick in R-Look (hold R and look around) and in the second aiming mode (e.g. the sniper scope, the magnum, throwables), separately from the mouse and gyro. <recomp-color primary>Invert Y</recomp-color> is the default and matches the original game: pushing the stick up looks down.",
         invert, Invert::Y);
-    config.add_enum_option(options::aim_swap_sticks, "Aiming: Swap Sticks",
-        "Controls aiming like a third-person shooter: while you aim, the right stick aims and the left stick moves, as "
-        "the C-buttons do (e.g. the shotgun, the slingshot, the sniper scope, R-Look), in single player, and online with a gamepad (the SMG, the M4...). "
-        "Conker keeps facing where you aim and walks the way you push, sideways and back too. With the mouse, the keys "
-        "bound to the stick (W, A, S, D) move. With the "
-        "shotgun, holding R alone shows the laser sight, so you can move and strafe with it; holding Z as well, the left "
-        "stick only moves forward and back, as Z makes C-Left and C-Right turn the aim. "
-        "Back to normal once you stop aiming. <recomp-color primary>Off</recomp-color> matches the original game, where "
-        "the stick aims and the C-buttons move.",
-        toggle, Toggle::Off);
     // (possess64) Aiming: Lock-On taken out of the launcher for now: the lock-on is off for everyone, online or not (conker_aim_lock_on)
 }
 
