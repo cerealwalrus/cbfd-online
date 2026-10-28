@@ -2121,21 +2121,45 @@ namespace {
         // with a split screen, so the reticle came out twice the size, low on the screen (possess72's test). For their drawing it is
         // given view 1's (the part of the screen the 5th player's view is drawn in, as player 1's reticle is placed in its own), put
         // back after: the online view then places it as player 1's machine places player 1's.
+        // (possess74) and only the reticle's objects are drawn for the 5th player's view: possess72/73 drew every object of layer 4 for it,
+        // and some of them (the player's own character among them, drawn for its own player's view) came out dark and blocky over the
+        // view. The others are drawn for view 1 as func_15019BB8 draws them (each object type's list, D_800DCE50 (0x1A0 a part, 4 bytes a
+        // type), emptied for the drawing that isn't its, and put back; a type is the reticle's by its setup list, its +0x10, D_8008AC70).
+        auto draw_layer4 = [&](int view_arg, bool reticle_only) {
+            uint32_t heads[2][104];
+            for (uint32_t part = 0; part < 2; part++) {
+                for (uint32_t t = 0; t < 104; t++) {
+                    const gpr at = (gpr)(int32_t)(0x800DCE50u + part * 0x1A0u + t * 4u);
+                    heads[part][t] = (uint32_t)MEM_W(0, at);
+                    const bool reticle = (uint32_t)MEM_W(0x10, (gpr)(int32_t)(0x8008B4A8u + t * 0x34u)) == 0x8008AC70u;
+                    if (reticle != reticle_only) {
+                        MEM_W(0, at) = 0;
+                    }
+                }
+            }
+            for (int part = 0; part < 2; part++) {
+                ctx->r4 = (gpr)(int32_t)list;
+                ctx->r5 = 4;
+                ctx->r6 = (gpr)view_arg;
+                ctx->r7 = (gpr)part;
+                func_151674F8(rdram, ctx);
+                list = (uint32_t)ctx->r2;
+                *ctx = saved;
+            }
+            for (uint32_t part = 0; part < 2; part++) {
+                for (uint32_t t = 0; t < 104; t++) {
+                    MEM_W(0, (gpr)(int32_t)(0x800DCE50u + part * 0x1A0u + t * 4u)) = (int32_t)heads[part][t];
+                }
+            }
+        };
+        draw_layer4(0, false);
         uint8_t kept_record[0x180];
         const bool records_ok = (view_records_now >> 24) == 0x80 && (view_records_now & 0x7FFFFFu) + 5u * 0x180u < 0x800000u;
         if (records_ok) {
             std::memcpy(kept_record, rdram + (view_records_now + 4u * 0x180u - 0x80000000u), sizeof(kept_record));
             std::memcpy(rdram + (view_records_now + 4u * 0x180u - 0x80000000u), rdram + (view_records_now - 0x80000000u), sizeof(kept_record));
         }
-        for (int part = 0; part < 2; part++) {
-            ctx->r4 = (gpr)(int32_t)list;
-            ctx->r5 = 4;
-            ctx->r6 = 4;
-            ctx->r7 = (gpr)part;
-            func_151674F8(rdram, ctx);
-            list = (uint32_t)ctx->r2;
-            *ctx = saved;
-        }
+        draw_layer4(4, true);
         if (records_ok) {
             std::memcpy(rdram + (view_records_now + 4u * 0x180u - 0x80000000u), kept_record, sizeof(kept_record));
         }
