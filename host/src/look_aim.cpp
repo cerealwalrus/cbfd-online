@@ -808,11 +808,11 @@ static bool level_on_slopes(uint8_t* rdram, gpr camera) {
 // itself when it would pass it: the value the target, its speed 0), so the view keeps up with Conker's height and the aim stays where
 // it is walking up or down a ramp (possess97's [look-slope] lines: the eye 16 behind his height on a ramp, the look-at point 9, the aim
 // tilted 4.4 degrees). Every camera of the look records (D_800DBFF0, 0x9A0 each), from the game's memory on every machine.
-extern "C" bool conker_level_ease(uint8_t* rdram, recomp_context* ctx) {
+extern "C" int conker_level_ease(uint8_t* rdram, recomp_context* ctx) {
     const uint32_t value = (uint32_t)ctx->r4;
     const uint32_t looks = (uint32_t)MEM_W(0, (gpr)(int32_t)0x800DBFF0);
     if ((looks >> 24) != 0x80 || value < looks) {
-        return false;
+        return 0;
     }
     uint32_t field = 0;
     uint32_t record = 0;
@@ -823,19 +823,19 @@ extern "C" bool conker_level_ease(uint8_t* rdram, recomp_context* ctx) {
         }
     }
     if (field == 0) {
-        return false;
+        return 0;
     }
     const gpr camera = (gpr)(int32_t)(looks + record * 0x9A0u);
     if (!level_on_slopes(rdram, camera)) {
-        return false;
+        return 0;
     }
     MEM_W(0, ctx->r4) = (int32_t)(uint32_t)ctx->r5;
     MEM_W(0, ctx->r6) = 0;
-    return true;
+    return 1;
 }
 #else
-extern "C" bool conker_level_ease(uint8_t*, recomp_context*) {
-    return false;
+extern "C" int conker_level_ease(uint8_t*, recomp_context*) {
+    return 0;
 }
 #endif
 

@@ -386,7 +386,7 @@ text = "{ extern void conker_widen_piece_cull_right(uint8_t*, recomp_context*); 
 [[patches.hook]]
 func = "func_150495B0"
 before_vram = 0x150495B0
-text = "{ extern bool conker_level_ease(uint8_t*, recomp_context*); if (conker_level_ease(rdram, ctx)) { return; } }"
+text = "{ extern int conker_level_ease(uint8_t*, recomp_context*); if (conker_level_ease(rdram, ctx) != 0) { return; } }"
 
 [[patches.hook]]
 func = "func_15130A9C"
