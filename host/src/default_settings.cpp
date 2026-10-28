@@ -22,7 +22,6 @@ namespace conker {
 {
  "api_option": "Auto",
  "ar_option": "Expand",
- "conker_detail": "AlwaysHighest",
  "cutscene_aspect": "Expand",
  "developer_mode": false,
  "ds_option": 0,

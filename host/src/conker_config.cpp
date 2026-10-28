@@ -113,17 +113,7 @@ namespace {
             "the same amount both ways so nothing is stretched (a sliver of the top and bottom goes with it). "
             "<recomp-color primary>Shown</recomp-color> shows the whole picture, border and all.",
             border_choices, OverscanBorders::Hidden);
-        static const std::vector<recomp::config::ConfigOptionEnumOption> detail_choices = {
-            {ConkerDetail::AlwaysHighest, "AlwaysHighest", "Always Highest"},
-            {ConkerDetail::Original, "Original", "Original"},
-        };
-        config.add_enum_option(conker_detail_id, "Conker's Detail",
-            "Characters have a few models, from the most detailed down, and the game picks one by how far the "
-            "camera is, and whether they're moving. "
-            "<recomp-color primary>Always Highest</recomp-color> keeps Conker on his most detailed model, so it no "
-            "longer swaps as the camera pulls back or as he starts and stops walking. Multiplayer is left as it was. "
-            "<recomp-color primary>Original</recomp-color> lets the game pick, as on the N64.",
-            detail_choices, ConkerDetail::AlwaysHighest);
+        // (possess69) Conker's Detail taken out of the launcher: Always Highest for everyone (model_detail::always_highest)
 
         static const std::vector<recomp::config::ConfigOptionEnumOption> vsync_choices = {
             {VSync::On, "On", "On"},
@@ -376,11 +366,8 @@ bool conker::overscan_borders::hidden() {
 }
 
 bool conker::model_detail::always_highest() {
-    if (!conker::graphics_config_ready()) {
-        return true;
-    }
-    const auto value = recompui::config::get_graphics_config().get_option_value(conker_detail_id);
-    return static_cast<ConkerDetail>(std::get<uint32_t>(value)) == ConkerDetail::AlwaysHighest;
+    // (possess69) always on for everyone, the setting gone (the multiplayer arenas keep the game's own pick: model_detail.cpp)
+    return true;
 }
 
 bool conker::vsync::enabled() {
