@@ -645,31 +645,37 @@ namespace {
                 }
             }
         };
-        // (possess61) the 5th player's machine with its rocket launcher's look: the extra camera's view (drawn as view 1's after the game's)
-        // has the overlay in its own second pass (func_15019CC8: the overlay, then its short setup), whose passes start where possess_test.cpp
-        // noted (fifth_second_pass): all but the last of them hidden, as the game's chain's are below
+        // (possess61, possess62) the 5th player's machine with its rocket launcher's look: the extra camera's view (drawn as view 1's after the
+        // game's) has the overlay (rows of 256 x 8 rectangles over the whole view) at the end of func_150198FC's drawing, as the game's chain
+        // has it: in the passes of camera 1 after the pass for no camera (func_150198FC's), up to its HUD pass. They're hidden. (In the game's
+        // chain func_15019CC8's short setup comes between them and the HUD pass; in the 5th player's HUD it comes before: none of its own.)
         if (rocket_look && local == 0 && conker::possess_test::fifth_split_view(rdram)) {
             const uint32_t second = conker::possess_test::fifth_second_pass();
             std::vector<size_t> found;
+            bool after_bars = false;
             for (size_t i = 0; i < frame.size() && second != 0; i++) {
                 if (frame[i].gfx < second) {
                     continue;
                 }
-                if (frame[i].kind != 0 || frame[i].camera != 0) {
+                if (frame[i].kind == 2) {
                     break;
                 }
-                found.push_back(i);
+                if (frame[i].camera == 255 && frame[i].kind == 0) {
+                    after_bars = true;
+                    continue;
+                }
+                if (after_bars && frame[i].kind == 0 && frame[i].camera == 0) {
+                    found.push_back(i);
+                }
             }
             static int told = 0;
             if (told < 6) {
                 told++;
                 char line[160];
-                std::snprintf(line, sizeof(line), "[net view] the 5th player's rocket launcher: its second pass at %08X has %zu passes (%s)", second, found.size(),
-                    found.size() >= 2 ? "the overlay hidden" : "nothing to hide");
+                std::snprintf(line, sizeof(line), "[net view] the 5th player's rocket launcher: after its second pass at %08X, %zu overlay passes hidden", second, found.size());
                 conker::netsession::log(line);
             }
-            for (size_t n = 0; n + 1 < found.size(); n++) {
-                const size_t i = found[n];
+            for (size_t i : found) {
                 hide_overlay_pass(frame[i].gfx, i + 1 < frame.size() ? frame[i + 1].gfx : end);
             }
         }
@@ -1277,6 +1283,16 @@ namespace {
                             w0, w1, cx, cy, width, height, bar ? " bar" : "", kind_name);
                         conker::netsession::log(line);
                         war_menu_logged++;
+                    }
+                    // (possess62) the 5th player's machine with its pause menu open: the pictures (QUIT, CONT. and the like, larger than the
+                    // pieces above) and where they went
+                    static int fifth_menu_logged = 0;
+                    if (fifth_menu_logged < 200 && op != 0xF6 && (width > 16.5f || height > 16.5f) && conker::possess_test::fifth_split_view(rdram)) {
+                        fifth_menu_logged++;
+                        char line[180];
+                        std::snprintf(line, sizeof(line), "[net view] 5th pause f=%u rect %08X%s: %08X %08X (centre %g,%g, %gx%g)%s %s%s", (unsigned)conker::netsession::frame(), address,
+                            nested ? " (called)" : (pause_outside ? " (outside)" : ""), w0, w1, cx, cy, width, height, bar ? " bar" : "", kind_name, hide ? " hidden" : "");
+                        conker::netsession::log(line);
                     }
                     static int race_menu_logged = 0;
                     if (race_menu && race_menu_logged < 120) {
