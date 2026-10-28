@@ -19,7 +19,6 @@
 // level 1, which the game chose for its split screens.
 
 #include <algorithm>
-#include <cstdarg>
 #include <cstdint>
 #include <cstdio>
 
@@ -37,118 +36,7 @@ namespace {
 // object's last after this, so a changed one loads the model as the game's own would. Level 0
 // is always one of the object's models (+0x2C8, their count, is at least 1 for an object that
 // gets here: the game clamps the level to count - 1 and stops if that's below 0).
-// (possess68) A measurement of what the setting costs in the game's memory: conker_detail.log, next to the game. For Conker (object 0)
-// each model change is logged (the level the game picked, the one used, the new model's size: the heap block it was loaded into),
-// with the game's heap before and after (func_10003C6C's heap: its blocks from D_800380B4, +0 next, +8 owner << 24 | size, owner 0
-// free); and every 30 seconds or so the model in use and the heap.
-namespace {
-    FILE* detail_log = nullptr;
-
-    void dlog(const char* format, ...) {
-        if (detail_log == nullptr) {
-            detail_log = std::fopen("conker_detail.log", "w");
-            if (detail_log == nullptr) {
-                return;
-            }
-        }
-        va_list args;
-        va_start(args, format);
-        std::vfprintf(detail_log, format, args);
-        va_end(args);
-        std::fputc('\n', detail_log);
-        std::fflush(detail_log);
-    }
-
-    uint32_t mem_word(uint8_t* rdram, uint32_t address) {
-        return (uint32_t)MEM_W(0, (gpr)(int32_t)address);
-    }
-
-    bool in_ram(uint32_t address) {
-        return (address >> 24) == 0x80 && (address & 0x00FFFFFFu) < 0x00800000u;
-    }
-
-    struct HeapInfo {
-        uint32_t used = 0, free_bytes = 0, largest = 0, blocks = 0;
-    };
-
-    // the heap's blocks walked; and the size of the one holding `inside` (from its start to the next block's), if asked
-    HeapInfo walk_heap(uint8_t* rdram, uint32_t inside = 0, uint32_t* holder_size = nullptr) {
-        HeapInfo info;
-        uint32_t block = mem_word(rdram, 0x800380B4);
-        for (int n = 0; n < 60000 && in_ram(block); n++) {
-            const uint32_t header = mem_word(rdram, block + 8);
-            const uint32_t size = header & 0x00FFFFFFu;
-            const uint32_t next = mem_word(rdram, block);
-            if ((header >> 24) == 0) {
-                info.free_bytes += size;
-                info.largest = std::max(info.largest, size);
-            } else {
-                info.used += size;
-            }
-            info.blocks++;
-            if (holder_size != nullptr && inside >= block && in_ram(next) && inside < next) {
-                *holder_size = next - block;
-            }
-            if (!in_ram(next) || next <= block) {
-                break;
-            }
-            block = next;
-        }
-        return info;
-    }
-
-    struct Pending {
-        bool on = false;
-        uint32_t call = 0;
-        int from = 0, to = 0, picked = 0;
-        HeapInfo before;
-    } pending;
-    uint32_t calls = 0;
-
-    void measure(uint8_t* rdram, gpr object, int picked, int used) {
-        calls++;
-        const int current = (int)(int8_t)MEM_B(0x1C8, object);
-        const bool highest = conker::model_detail::always_highest() && MEM_BU(0, (gpr)(int32_t)multiplayer_detail_flag) == 0;
-        if (pending.on && current == pending.to) {
-            uint32_t model_size = 0;
-            const uint32_t model = mem_word(rdram, (uint32_t)object + 4);
-            const HeapInfo after = walk_heap(rdram, model, &model_size);
-            dlog("call %u: Conker's model level %d -> %d loaded (the game picked %d; setting %s): the model %08X, its heap block %u bytes; "
-                "heap free %u -> %u (%+d), in use %u -> %u (%+d), largest free %u",
-                calls, pending.from, pending.to, pending.picked, highest ? "Always Highest" : "Original", model, model_size,
-                pending.before.free_bytes, after.free_bytes, (int)after.free_bytes - (int)pending.before.free_bytes,
-                pending.before.used, after.used, (int)after.used - (int)pending.before.used, after.largest);
-            pending.on = false;
-        }
-        if (used != current && !pending.on) {
-            pending.on = true;
-            pending.call = calls;
-            pending.from = current;
-            pending.to = used;
-            pending.picked = picked;
-            pending.before = walk_heap(rdram);
-        }
-        if (calls % 900 == 1) {
-            uint32_t model_size = 0;
-            const uint32_t model = mem_word(rdram, (uint32_t)object + 4);
-            const HeapInfo now = walk_heap(rdram, model, &model_size);
-            dlog("call %u: setting %s; Conker on model level %d (the game picks %d), the model's heap block %u bytes; heap in use %u, "
-                "free %u (largest %u), %u blocks", calls, highest ? "Always Highest" : "Original", current, picked, model_size, now.used,
-                now.free_bytes, now.largest, now.blocks);
-        }
-    }
-}
-
 extern "C" void conker_model_detail(uint8_t* rdram, recomp_context* ctx) {
-    {
-        // (possess68) the measurement, for Conker (the player's object) offline
-        const uint32_t index = (uint32_t)MEM_W(0x50, ctx->r29);
-        if (index == 0 && !conker::netsession::active()) {
-            const int picked = (int)(int32_t)ctx->r3;
-            const bool highest = conker::model_detail::always_highest() && MEM_BU(0, (gpr)(int32_t)multiplayer_detail_flag) == 0;
-            measure(rdram, ctx->r7, picked, highest ? 0 : picked);
-        }
-    }
     // (possess79) multiplayer (the arenas, and online): every character on its most detailed model, for every view, Conker too (the
     // original keeps him at level 1 there). The squirrels, the Tediz and the rest picked a model by their distance from the view's
     // camera; the 5th player's view (possess_test.cpp) borrows player 1's camera's slot, and its characters came out on their far,
@@ -156,19 +44,9 @@ extern "C" void conker_model_detail(uint8_t* rdram, recomp_context* ctx) {
     // kept). An object whose level the game sets itself (+0x1C9) doesn't get here.
     if (MEM_BU(0, (gpr)(int32_t)multiplayer_detail_flag) != 0 || conker::netsession::active()) {
         const gpr models = (gpr)MEM_W(0x2C4, ctx->r7);
-        const int picked = (int)(int32_t)ctx->r3;
         const int best = MEM_BU(0, models) == 0x5A ? 1 : 0;
         const int count = (int)MEM_BU(0x2C8, ctx->r7);
         const int level = std::min(best, std::max(count - 1, 0));
-        static int told = 0;
-        if (told < 12 && picked != level && conker::netsession::active()) {
-            told++;
-            char line[200];
-            std::snprintf(line, sizeof(line), "[detail] object %u: model level %d picked (of %d, first model %02X, now %d), made %d%s",
-                (unsigned)MEM_W(0x50, ctx->r29), picked, count, (unsigned)MEM_BU(0, models), (int)(int8_t)MEM_B(0x1C8, ctx->r7), level,
-                conker::possess_test::drawing_extra_view() ? " (the 5th player's view)" : "");
-            conker::netsession::log(line);
-        }
         ctx->r3 = (gpr)level;
         return;
     }

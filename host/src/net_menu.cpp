@@ -350,21 +350,6 @@ namespace {
     }
 }
 
-// (possess61) the pause screen's pictures (the textures its two functions loaded, set aside as they ended: tex_begin, tex_end) loaded for
-// the 5th player's HUD's text, QUIT and CONT. among it: without them the flush drew no picture for them
-void conker::netmenu::fifth_pictures(uint8_t* rdram, bool on) {
-    static bool began = false;
-    if (on) {
-        if (!began && !tex_saved && menu_open.load() && fifth_machine()) {
-            tex_begin(rdram);
-            began = true;
-        }
-    } else if (began) {
-        began = false;
-        tex_end(rdram);
-    }
-}
-
 void conker::netmenu::fifth_pause_text(uint8_t* rdram, recomp_context* ctx) {
     if (!menu_open.load() || !fifth_machine()) {
         return;

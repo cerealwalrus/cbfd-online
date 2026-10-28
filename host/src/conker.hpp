@@ -275,8 +275,6 @@ namespace conker {
         // (possess49) the 5th player's machine, its pause menu open: the menu's text this frame (CONT, QUIT and the rest, queued as the
         // game's update runs it), queued again for the 5th player's HUD over its view (possess_test.cpp's fifth_hud), before its flush
         void fifth_pause_text(uint8_t* rdram, recomp_context* ctx);
-        // (possess61) the 5th player's HUD drawing the menu's text: the pause screen's pictures (its textures) loaded (true) and let go (false)
-        void fifth_pictures(uint8_t* rdram, bool on);
         // (possess49) the game's overlay (the pause screen) begins (on) and is about to flush its text (off), on the 5th player's machine
         // with its pause menu open: the text the pause screen queues meanwhile noted, for fifth_pause_text
         void fifth_overlay_noting(uint8_t* rdram, bool on);

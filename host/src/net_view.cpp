@@ -37,11 +37,6 @@
 
 #include "conker.hpp"
 
-// (possess70) a diagnostic: the drawing functions' calls this frame (conker.toml's conker_draw_note hooks), each with where in the list it
-// starts, to find what draws R-Look's reticle (DE 80089EB8 before its picture)
-struct DrawNote { int which; uint32_t a0, a1, a2, a3, target, view, stack10, stack18; bool extra; };
-static std::vector<DrawNote> draw_notes;
-
 // (possess78) func_1502C974 draws a character faded (R-Look: the game fades the aiming player's own character, its +0x7) only for the
 // camera that's the character's own (+0x127); for any other camera it's drawn whole (if its +0x318's +0x2C is 0x100). The extra camera's
 // view is drawn as camera 0, player 1's: so the 5th player's own character was drawn whole in its own R-Look (in front of the view, dark
@@ -60,30 +55,12 @@ namespace {
     }
 }
 
+// (possess70's hooks, conker.toml: func_1502CCFC's entry and the other drawing calls) now only for possess78's put_owner_back
 extern "C" void conker_draw_note(uint8_t* rdram, recomp_context* ctx, int which) {
+    (void)ctx;
+    (void)which;
     put_owner_back(rdram);
-    if (!conker::netsession::active() || draw_notes.size() >= 30000) {
-        return;
-    }
-    DrawNote n{};
-    n.which = which;
-    n.a0 = (uint32_t)ctx->r4;
-    n.a1 = (uint32_t)ctx->r5;
-    n.a2 = (uint32_t)ctx->r6;
-    n.a3 = (uint32_t)ctx->r7;
-    n.target = (which == 5 || which == 6) ? (uint32_t)ctx->r25 : (which == 4 || which == 7) ? (uint32_t)ctx->r2 : 0;
-    n.view = (uint32_t)MEM_W(0, (gpr)(int32_t)0x80082FA4);
-    if (which == 1) {
-        n.stack10 = (uint32_t)MEM_W(0x10, ctx->r29);
-        n.stack18 = (uint32_t)MEM_W(0x18, ctx->r29);
-    }
-    n.extra = conker::possess_test::drawing_extra_view();
-    draw_notes.push_back(n);
 }
-
-// (possess61) after a look's command dump, the next frame's drawing of each character for each camera logged (conker_player_visibility)
-static int char_draw_log_frames = 0;
-static int char_draw_logged = 0;
 
 namespace {
     // The look kinds (+0x23E of the look camera) in which the screen-space sprites are moved down with the full view: the rocket launcher's
@@ -468,7 +445,6 @@ namespace {
         // for a frame at a time. CONKER_POSSESS_MAINVIEW=1 leaves them shown.
         static const bool main_view_shown = []() { const char* t = SDL_getenv("CONKER_POSSESS_MAINVIEW"); return t != nullptr && std::string(t) == "1"; }();
         const uint32_t fifth_from = (!main_view_shown && conker::possess_test::fifth_split_view(rdram)) ? conker::possess_test::fifth_view_start() : 0u;
-        int main_view_hidden = 0;
         int redirected = 0, shown = 0, hidden = 0, matrices = 0, fills = 0, logged = 0, rects_logged = 0, rects_moved = 0, rects_hidden = 0;
         // where this machine's camera's 3D passes and its HUD passes are (each ends where the next pass starts)
         std::vector<std::pair<uint32_t, uint32_t>> segments, hud_segments;
@@ -606,98 +582,6 @@ namespace {
                         to > frame[i].gfx ? to - frame[i].gfx : 0u, frame[i].camera, frame[i].kind, frame[i].camera == local ? " (this machine's)" : "");
                     conker::netsession::log(line);
                 }
-            }
-        }
-        // (possess60) every command of this machine's camera's passes (and the passes for no camera: the overlay, the match's HUD) in the
-        // 40th frame of a look (R-Look with a gun, the sniper's scope, the magnum's, the rocket launcher's: the first 6 kinds seen), with one
-        // level of the lists they call, to find what draws the look's reticle and overlay: on a 4 players' machine they're drawn, on the 5th
-        // player's they weren't (its own passes are camera 0's there, after the game's)
-        {
-            static int look_run_kind = 0, look_run = 0, look_dumps = 0;
-            static std::set<int> look_kinds_dumped;
-            look_run = (local_kind != 0 && local_kind == look_run_kind) ? look_run + 1 : 0;
-            look_run_kind = local_kind;
-            if (look_run == 40 && look_dumps < 6 && look_kinds_dumped.insert(local_kind).second) {
-                look_dumps++;
-                int lines = 0;
-                char line[160];
-                std::snprintf(line, sizeof(line), "[net view] look %02X dump begins (f=%u): camera %d of %d, the 5th player's view %d, list %08X..%08X",
-                    local_kind, (unsigned)conker::netsession::frame(), local, players, conker::possess_test::fifth_split_view(rdram) ? 1 : 0, start, end);
-                conker::netsession::log(line);
-                for (size_t i = 0; i < frame.size(); i++) {
-                    const uint32_t from = frame[i].gfx, to = i + 1 < frame.size() ? frame[i + 1].gfx : end;
-                    std::snprintf(line, sizeof(line), "[net view] look %02X: pass %zu at %08X..%08X camera %d kind %d", local_kind, i, from, to, frame[i].camera, frame[i].kind);
-                    conker::netsession::log(line);
-                    if (frame[i].camera != local && frame[i].camera != 255) {
-                        continue;
-                    }
-                    for (uint32_t a = from; a < to && a - from < 0x4000u && lines < 4000; a += 8) {
-                        const uint32_t w0 = (uint32_t)MEM_W(0, (gpr)(int32_t)a), w1 = (uint32_t)MEM_W(4, (gpr)(int32_t)a);
-                        std::snprintf(line, sizeof(line), "[net view] lk %08X: %08X %08X", a, w0, w1);
-                        conker::netsession::log(line);
-                        lines++;
-                        if ((w0 >> 24) == 0xDE && (w1 >> 24) == 0x80 && (w1 & 7u) == 0 && (w1 & 0x7FFFFFu) < 0x7FF000u) {
-                            for (uint32_t b = w1, n = 0; n < 64 && lines < 4000; b += 8, n++) {
-                                const uint32_t v0 = (uint32_t)MEM_W(0, (gpr)(int32_t)b), v1 = (uint32_t)MEM_W(4, (gpr)(int32_t)b);
-                                std::snprintf(line, sizeof(line), "[net view] lk   > %08X: %08X %08X", b, v0, v1);
-                                conker::netsession::log(line);
-                                lines++;
-                                if ((v0 >> 24) == 0xDF) {
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-                conker::netsession::log("[net view] look dump ends");
-                // (possess70) the reticle's DE 80089EB8: the drawing calls just before each one in the list; and every call of the extra
-                // view's (the 5th player's machine), or of this machine's camera's 3D pass, from func_150195A0 on
-                {
-                    const auto name = [](int which) {
-                        static const char* const names[] = { "?", "object 1502CCFC", "attached 15035FE8", "characters 1502BAD0", "layer item (setup)",
-                            "layer item", "layer item", "layer item (end)", "shadow 15186794", "3D pass 150195A0", "second pass 15019CC8" };
-                        return (which >= 0 && which <= 10) ? names[which] : "?";
-                    };
-                    const auto note_line = [&](const char* tag, const DrawNote& n) {
-                        char text[220];
-                        std::snprintf(text, sizeof(text), "[net view] draw %s: %s at %08X a1 %08X a2 %08X a3 %08X target %08X view %u sp10 %08X sp18 %08X%s", tag,
-                            name(n.which), n.a0, n.a1, n.a2, n.a3, n.target, n.view, n.stack10, n.stack18, n.extra ? " (extra view)" : "");
-                        conker::netsession::log(text);
-                    };
-                    int hits = 0;
-                    for (uint32_t a = start; a + 8 <= end && hits < 4; a += 8) {
-                        if ((uint32_t)MEM_W(0, (gpr)(int32_t)a) == 0xDE000000u && (uint32_t)MEM_W(4, (gpr)(int32_t)a) == 0x80089EB8u) {
-                            hits++;
-                            char text[120];
-                            std::snprintf(text, sizeof(text), "[net view] draw: the reticle's DE 80089EB8 at %08X", a);
-                            conker::netsession::log(text);
-                            int shown = 0;
-                            for (size_t i = draw_notes.size(); i-- > 0 && shown < 8;) {
-                                if (draw_notes[i].a0 <= a && draw_notes[i].a0 + 0x4000u > a) {
-                                    note_line("before it", draw_notes[i]);
-                                    shown++;
-                                }
-                            }
-                        }
-                    }
-                    if (hits == 0) {
-                        conker::netsession::log("[net view] draw: no DE 80089EB8 in the list");
-                    }
-                    int listed = 0;
-                    bool in_view = false;
-                    for (const DrawNote& n : draw_notes) {
-                        const bool mine = conker::possess_test::fifth_split_view(rdram) ? n.extra : (!n.extra && (int)n.a1 == local);
-                        if (n.which == 9 || n.which == 10) {
-                            in_view = mine;
-                        }
-                        if (in_view && listed < 160 && n.which != 9) {
-                            note_line("in this view", n);
-                            listed++;
-                        }
-                    }
-                }
-                char_draw_log_frames = 2;
-                char_draw_logged = 0;
             }
         }
         int scope_lines = 0;
@@ -1124,7 +1008,6 @@ namespace {
                             MEM_W(0, (gpr)(int32_t)address) = (int32_t)0xED000000u;
                             MEM_W(4, (gpr)(int32_t)address) = 0;
                             hidden++;
-                            main_view_hidden++;
                         } else if (k == local) {
                             MEM_W(0, (gpr)(int32_t)address) = (int32_t)scissor_word0(left, top);
                             MEM_W(4, (gpr)(int32_t)address) = (int32_t)scissor_word1(right, bottom);
@@ -1389,16 +1272,6 @@ namespace {
                             w0, w1, cx, cy, width, height, bar ? " bar" : "", kind_name);
                         conker::netsession::log(line);
                         war_menu_logged++;
-                    }
-                    // (possess62) the 5th player's machine with its pause menu open: the pictures (QUIT, CONT. and the like, larger than the
-                    // pieces above) and where they went
-                    static int fifth_menu_logged = 0;
-                    if (fifth_menu_logged < 200 && op != 0xF6 && (width > 16.5f || height > 16.5f) && conker::possess_test::fifth_split_view(rdram)) {
-                        fifth_menu_logged++;
-                        char line[180];
-                        std::snprintf(line, sizeof(line), "[net view] 5th pause f=%u rect %08X%s: %08X %08X (centre %g,%g, %gx%g)%s %s%s", (unsigned)conker::netsession::frame(), address,
-                            nested ? " (called)" : (pause_outside ? " (outside)" : ""), w0, w1, cx, cy, width, height, bar ? " bar" : "", kind_name, hide ? " hidden" : "");
-                        conker::netsession::log(line);
                     }
                     static int race_menu_logged = 0;
                     if (race_menu && race_menu_logged < 120) {
@@ -1890,20 +1763,6 @@ namespace {
             }
             std::memcpy(last_sig, sig, sizeof(sig));
         }
-        {
-            // (possess80) player 1's camera's passes hidden on the 5th player's machine: logged now and then, and when none were found
-            static uint32_t main_logged = 0, main_frames = 0;
-            if (fifth_from != 0) {
-                main_frames++;
-                if ((main_logged < 5 || main_frames % 1800 == 0 || main_view_hidden == 0) && main_logged < 60) {
-                    main_logged++;
-                    char line[200];
-                    std::snprintf(line, sizeof(line), "[net view] f=%u player 1's camera's passes under the 5th player's view: %d scissors hidden (its view from %08X)",
-                        (unsigned)conker::netsession::frame(), main_view_hidden, (unsigned)fifth_from);
-                    conker::netsession::log(line);
-                }
-            }
-        }
         if (log_it) {
             char line[320];
             std::snprintf(line, sizeof(line), "[net view] frame list %08X..%08X: %d viewports redirected, %d scissors shown, %d hidden, %d projection matrices (shape %g), %d fills, HUD shift %d, %d HUD rectangles moved (%d of them to a screen edge), %d hidden, %zu passes",
@@ -1946,127 +1805,11 @@ void conker::netview::port_read() {
 void conker::netview::frame_begin(uint8_t* rdram) {
     conker::netmenu::view_frame_begin();   // (0.10.88)
     conker::netmenu::coop_hud_clear();   // (0.10.61: the co-op HUD ranges are this frame's only)
-    if (char_draw_log_frames > 0) {
-        char_draw_log_frames--;   // (possess61: set as a look's dump ends, so the frame after it is logged)
-    }
-    draw_notes.clear();   // (possess70)
     (void)rdram;
     if (conker::netsession::active()) {
         conker::netsession::watch_poll("dlb", 0);
     }
     passes.clear();
-}
-
-// (possess82 diagnostics) the 5th player's view as the renderer gets it: its projection (the first G_MTX loading one), the view's
-// matrix multiplied into it (the next), its viewport (the first G_MOVEMEM of one), where each command points and what's there, at the
-// frame's end and again just before the renderer reads the list. A frame whose camera (from the matrix) or projection is far off the
-// frame before's is logged, and so is anything changed between the two.
-namespace {
-    struct ViewWatch {
-        bool have = false;
-        uint32_t frame = 0, view_from = 0, list_end = 0;
-        uint32_t p_cmd = 0, v_cmd = 0, vp_cmd = 0, p_at = 0, v_at = 0, vp_at = 0;
-        uint8_t p[64] = {}, v[64] = {}, vp[16] = {};
-        float eye[3] = {}, p00 = 0, p11 = 0, p21 = 0, p20 = 0;
-        bool checked = false;
-    };
-    std::mutex watch_mutex;
-    ViewWatch watches[6];
-    int watch_next = 0;
-    ViewWatch watch_last;
-    int watch_logged = 0;
-
-    float watch_element(const uint8_t* m, int i, int j) {
-        // a copy in host order of the RDRAM words: word w at m + 4w
-        auto word = [&](int w) { uint32_t x; std::memcpy(&x, m + 4 * w, 4); return x; };
-        const int k = i * 4 + j;
-        const uint32_t iw = word(k / 2), fw = word(8 + k / 2);
-        const uint32_t ih = (k & 1) ? (iw & 0xFFFFu) : (iw >> 16), fh = (k & 1) ? (fw & 0xFFFFu) : (fw >> 16);
-        return (float)(int32_t)((ih << 16) | fh) / 65536.0f;
-    }
-
-    void watch_copy(uint8_t* rdram, uint32_t at, uint8_t* out, uint32_t size) {
-        for (uint32_t w = 0; w < size / 4; w++) {
-            const uint32_t x = (uint32_t)MEM_W(w * 4, (gpr)(int32_t)at);
-            std::memcpy(out + 4 * w, &x, 4);
-        }
-    }
-
-    void watch_decode(ViewWatch& v) {
-        for (int k = 0; k < 3; k++) {
-            v.eye[k] = -(watch_element(v.v, 3, 0) * watch_element(v.v, k, 0) + watch_element(v.v, 3, 1) * watch_element(v.v, k, 1) +
-                watch_element(v.v, 3, 2) * watch_element(v.v, k, 2));
-        }
-        v.p00 = watch_element(v.p, 0, 0);
-        v.p11 = watch_element(v.p, 1, 1);
-        v.p21 = watch_element(v.p, 2, 1);
-        v.p20 = watch_element(v.p, 2, 0);
-    }
-
-    void watch_frame(uint8_t* rdram, uint32_t from, uint32_t end) {
-        ViewWatch v;
-        v.frame = conker::netsession::frame();
-        v.view_from = from;
-        v.list_end = end;
-        int n = 0;
-        for (uint32_t a = from; a + 8 <= end && n < 40000; a += 8, n++) {
-            const uint32_t w0 = (uint32_t)MEM_W(0, (gpr)(int32_t)a), w1 = (uint32_t)MEM_W(4, (gpr)(int32_t)a);
-            const bool direct = (w1 >> 24) == 0x80 && (w1 & 0xFFFFFFu) < 0xFFFF00u;
-            if ((w0 >> 24) == 0xDA && direct) {
-                if ((w0 & 0xFFu) == 0x07 && v.p_cmd == 0) {
-                    v.p_cmd = a;
-                    v.p_at = w1;
-                } else if ((w0 & 0xFFu) == 0x05 && v.p_cmd != 0 && v.v_cmd == 0) {
-                    v.v_cmd = a;
-                    v.v_at = w1;
-                }
-            } else if ((w0 >> 24) == 0xDC && (w0 & 0xFFFFFFu) == 0x080008u && direct && v.vp_cmd == 0) {
-                v.vp_cmd = a;
-                v.vp_at = w1;
-            }
-            if (v.p_cmd != 0 && v.v_cmd != 0 && v.vp_cmd != 0) {
-                break;
-            }
-        }
-        if (v.p_cmd == 0 || v.v_cmd == 0) {
-            if (watch_logged < 150) {
-                watch_logged++;
-                char line[200];
-                std::snprintf(line, sizeof(line), "[view watch] f=%u the 5th player's view %08X..%08X: projection %08X, view %08X, viewport %08X (not all found)",
-                    (unsigned)v.frame, from, end, v.p_at, v.v_at, v.vp_at);
-                conker::netsession::log(line);
-            }
-            return;
-        }
-        watch_copy(rdram, v.p_at, v.p, 64);
-        watch_copy(rdram, v.v_at, v.v, 64);
-        if (v.vp_cmd != 0) {
-            watch_copy(rdram, v.vp_at, v.vp, 16);
-        }
-        watch_decode(v);
-        v.have = true;
-        if (watch_last.have && watch_logged < 150) {
-            const float dx = v.eye[0] - watch_last.eye[0], dy = v.eye[1] - watch_last.eye[1], dz = v.eye[2] - watch_last.eye[2];
-            const float moved = std::sqrt(dx * dx + dy * dy + dz * dz);
-            const bool proj_changed = std::fabs(v.p11 - watch_last.p11) > 0.03f * std::fabs(watch_last.p11) + 1e-4f ||
-                std::fabs(v.p00 - watch_last.p00) > 0.03f * std::fabs(watch_last.p00) + 1e-4f || std::fabs(v.p21 - watch_last.p21) > 0.02f ||
-                std::fabs(v.p20 - watch_last.p20) > 0.02f;
-            const bool vp_changed = std::memcmp(v.vp, watch_last.vp, 16) != 0;
-            if (moved > 50.0f || proj_changed || vp_changed || v.frame % 900 == 0) {
-                watch_logged++;
-                char line[400];
-                std::snprintf(line, sizeof(line), "[view watch] f=%u camera %.0f %.0f %.0f (moved %.0f), projection %.3f %.3f %.3f %.3f at %08X, view at %08X, viewport at %08X %08X %08X%s%s",
-                    (unsigned)v.frame, v.eye[0], v.eye[1], v.eye[2], moved, v.p00, v.p11, v.p20, v.p21, v.p_at, v.v_at, v.vp_at,
-                    (unsigned)MEM_W(0, (gpr)(int32_t)(v.vp_cmd ? v.vp_at : v.p_at)), (unsigned)MEM_W(4, (gpr)(int32_t)(v.vp_cmd ? v.vp_at : v.p_at)),
-                    proj_changed ? " (the projection changed)" : "", vp_changed ? " (the viewport changed)" : "");
-                conker::netsession::log(line);
-            }
-        }
-        watch_last = v;
-        std::lock_guard<std::mutex> lock(watch_mutex);
-        watches[watch_next % 6] = v;
-        watch_next++;
-    }
 }
 
 void conker::netview::frame_end(uint8_t* rdram, uint32_t list_end) {
@@ -2188,9 +1931,6 @@ void conker::netview::frame_end(uint8_t* rdram, uint32_t list_end) {
         coop_hud_prepare(rdram, base, players, local);
     }
     rewrite_frame(rdram, frame, list_end, base, players, local, log_it);
-    if (conker::possess_test::fifth_split_view(rdram) && conker::possess_test::fifth_view_start() != 0) {
-        watch_frame(rdram, conker::possess_test::fifth_view_start(), list_end);   // (possess82 diagnostics)
-    }
     if (can_journal) {
         Journal journal;
         journal.start = start;
@@ -2286,38 +2026,6 @@ void conker::netview::render_done(uint8_t* rdram, uint32_t data_ptr) {
 // rewrite goes in again for this read, and is put back after it (render_done) as before.
 void conker::netview::render_begin(uint8_t* rdram, uint32_t data_ptr) {
     {
-        // (possess82 diagnostics) the 5th player's view's projection, view and viewport as the renderer is about to read them
-        std::lock_guard<std::mutex> lock(watch_mutex);
-        const uint32_t task = data_ptr & 0x1FFFFFFFu;
-        for (ViewWatch& v : watches) {
-            const uint32_t from = v.view_from & 0x1FFFFFFFu;
-            if (!v.have || v.checked || from < task || from - task > 0x100000u) {
-                continue;
-            }
-            v.checked = true;
-            ViewWatch now = v;
-            watch_copy(rdram, v.p_at, now.p, 64);
-            watch_copy(rdram, v.v_at, now.v, 64);
-            if (v.vp_cmd != 0) {
-                watch_copy(rdram, v.vp_at, now.vp, 16);
-            }
-            const uint32_t p_word = (uint32_t)MEM_W(4, (gpr)(int32_t)v.p_cmd), v_word = (uint32_t)MEM_W(4, (gpr)(int32_t)v.v_cmd);
-            const uint32_t vp_word = v.vp_cmd != 0 ? (uint32_t)MEM_W(4, (gpr)(int32_t)v.vp_cmd) : v.vp_at;
-            const bool changed = std::memcmp(now.p, v.p, 64) != 0 || std::memcmp(now.v, v.v, 64) != 0 || std::memcmp(now.vp, v.vp, 16) != 0 ||
-                p_word != v.p_at || v_word != v.v_at || vp_word != v.vp_at;
-            static int changed_logged = 0;
-            if (changed && changed_logged < 150) {
-                changed_logged++;
-                watch_decode(now);
-                char line[400];
-                std::snprintf(line, sizeof(line), "[view watch] the list of f=%u changed before the renderer read it (game frame now %u): camera %.0f %.0f %.0f -> %.0f %.0f %.0f, projection %.3f %.3f -> %.3f %.3f, commands point at %08X %08X %08X (were %08X %08X %08X)",
-                    (unsigned)v.frame, (unsigned)conker::netsession::frame(), v.eye[0], v.eye[1], v.eye[2], now.eye[0], now.eye[1], now.eye[2], v.p00, v.p11,
-                    now.p00, now.p11, p_word, v_word, vp_word, v.p_at, v.v_at, v.vp_at);
-                conker::netsession::log(line);
-            }
-        }
-    }
-    {
         char note[120];
         std::snprintf(note, sizeof(note), "a task for the list %08X (game frame %u)", (unsigned)data_ptr, (unsigned)conker::netsession::frame());
         note_event(note);
@@ -2396,14 +2104,6 @@ extern "C" void conker_net_view_pass(uint8_t* rdram, int gfx, int camera, int ki
 extern "C" void conker_player_visibility(uint8_t* rdram, recomp_context* ctx, int which) {
     const uint32_t object = (uint32_t)MEM_W(0x5C, ctx->r29);
     const uint32_t camera = (uint32_t)MEM_W(0x60, ctx->r29);
-    if (which == 0 && char_draw_log_frames > 0 && char_draw_logged < 300 && conker::netsession::active()) {
-        // (possess61) which character is drawn for which camera, in which layer, its hidden bits (+0x74), and in which view
-        char_draw_logged++;
-        char line[160];
-        std::snprintf(line, sizeof(line), "[net view] char draw f=%u: object %u camera %u layer %d +74 %02X%s", (unsigned)conker::netsession::frame(), object, camera,
-            (int)MEM_W(0x64, ctx->r29), (unsigned)(ctx->r15 & 0xFFu), conker::possess_test::drawing_extra_view() ? " (the extra view)" : "");
-        conker::netsession::log(line);
-    }
     static const bool keep_cull = std::getenv("CONKER_NET_KEEPCULL") != nullptr;
     // (0.9.53 hid a player's body from its own camera while its look's kind was 0x18, the crossbow's: that kind is there as long as the
     // crossbow is held, so the player went invisible: 0.9.72 took it away.)
@@ -2452,14 +2152,6 @@ extern "C" void conker_player_visibility(uint8_t* rdram, recomp_context* ctx, in
                 owner_swapped_at = obj_at;
                 owner_was = owner;
                 MEM_B(0x127, (gpr)(int32_t)obj_at) = (int8_t)(own ? 0x00 : 0xFE);
-                static int told = 0;
-                if (told < 6 && own && (uint32_t)ctx->r2 < 0xFFu) {
-                    told++;
-                    char line[160];
-                    std::snprintf(line, sizeof(line), "[net view] f=%u the 5th player's own character in its view at %u of 255 (its own camera %u taken as camera 0)",
-                        (unsigned)conker::netsession::frame(), (unsigned)ctx->r2, (unsigned)owner);
-                    conker::netsession::log(line);
-                }
             }
         }
         // the game's own hiding of a character from its own camera (func_1502E4C4's end: the bit of the character's own number in +0x74,

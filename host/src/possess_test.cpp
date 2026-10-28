@@ -1435,10 +1435,6 @@ uint32_t conker::possess_test::fifth_second_pass() {
 // (possess80) where this frame's extra view's commands begin in the frame's list, on the machine that shows it (0: not drawn this frame)
 namespace {
     uint32_t fifth_view_at = 0;
-    // (possess80 diagnostics) the extra view's eye, the last two frames', to find a frame drawn from somewhere else
-    float eye_was[2][3] = {};
-    uint32_t eye_frames = 0;
-    uint32_t skipped_logged = 0;
 }
 
 uint32_t conker::possess_test::fifth_view_start() {
@@ -2409,11 +2405,6 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
     }
     put_kept_back(rdram);   // (none should be left; to be safe)
     if (!start_copied) {
-        // (possess80 diagnostics) a frame without the extra view: the 5th player's machine showed player 1's camera's then
-        if (skipped_logged < 40 && view_shown_here()) {
-            skipped_logged++;
-            log("f=%u (possess80) the extra view not drawn this frame: no copy of the frame's start", (unsigned)frames);
-        }
         return;
     }
     start_copied = false;
@@ -2474,93 +2465,10 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
     // 2. view 1 the extra camera's
     std::memcpy(rdram + (base - 0x80000000u), rdram + (base + (uint32_t)extra * camera_size - 0x80000000u), camera_size);
     MEM_B(0x23D, (gpr)(int32_t)base) = 0;
-    // (possess80 diagnostics) a frame whose eye is far from both frames around it (logged a frame late)
-    if (view_shown_here()) {
-        float eye[3];
-        for (int i = 0; i < 3; i++) {
-            const uint32_t w = (uint32_t)MEM_W(0x2EC + 4 * i, (gpr)(int32_t)base);
-            std::memcpy(&eye[i], &w, 4);
-        }
-        auto far_from = [](const float* a, const float* b) {
-            const float dx = a[0] - b[0], dy = a[1] - b[1], dz = a[2] - b[2];
-            return std::sqrt(dx * dx + dy * dy + dz * dz);
-        };
-        static uint32_t jumps_logged = 0;
-        if (eye_frames >= 2 && jumps_logged < 60) {
-            const float out = far_from(eye_was[1], eye_was[0]), back = far_from(eye, eye_was[0]);
-            if (out > 60.0f && back < out * 0.25f) {
-                jumps_logged++;
-                log("f=%u (possess80) the extra view's eye a frame ago was %.0f away from the frames around it (%.0f %.0f %.0f, then %.0f %.0f %.0f)",
-                    (unsigned)frames, out, eye_was[1][0], eye_was[1][1], eye_was[1][2], eye[0], eye[1], eye[2]);
-            }
-        }
-        std::memcpy(eye_was[0], eye_was[1], sizeof(eye_was[0]));
-        std::memcpy(eye_was[1], eye, sizeof(eye));
-        eye_frames++;
-    }
     if (!fifth_split(rdram)) {   // (possess59: with a split screen, view 1's own record: see fifth_split)
         std::memcpy(rdram + (views - 0x80000000u), rdram + (views + (uint32_t)extra * 0x180u - 0x80000000u), 0x180);
     }
     std::memcpy(rdram + (mats - 0x80000000u), rdram + (mats + (uint32_t)extra * 0x40u - 0x80000000u), 0x40);
-    // (possess81) the view's matrix (its eye, worked out from the matrix) against the camera's own eye (+0x2EC): logged when they part,
-    // and a frame whose matrix's eye jumps away (60 or more from the frame before's) while the camera's own eye stays (under 20) is drawn
-    // with the frame before's matrix instead, for that one frame (the 5th player's view showed a frame from low by the floor, the helmet
-    // below, in R-Look). CONKER_POSSESS_HOLDVIEW=0: never.
-    if (view_shown_here()) {
-        static const bool hold_on = []() { const char* t = std::getenv("CONKER_POSSESS_HOLDVIEW"); return t == nullptr || std::string(t) != "0"; }();
-        static uint8_t good[0x40] = {};
-        static bool have_good = false, held_last = false;
-        static float good_eye[3] = {}, good_cam[3] = {};
-        static uint32_t parted_logged = 0, held_logged = 0;
-        auto element = [&](uint32_t m, int i, int j) {
-            const uint32_t k = (uint32_t)(i * 4 + j) * 2u;
-            const int32_t v = (int32_t)(((uint32_t)(uint16_t)MEM_H(k, (gpr)(int32_t)m) << 16) | (uint32_t)(uint16_t)MEM_H(0x20 + k, (gpr)(int32_t)m));
-            return (float)v / 65536.0f;
-        };
-        auto matrix_eye = [&](uint32_t m, float* out) {
-            for (int k = 0; k < 3; k++) {
-                out[k] = -(element(m, 3, 0) * element(m, k, 0) + element(m, 3, 1) * element(m, k, 1) + element(m, 3, 2) * element(m, k, 2));
-            }
-        };
-        auto distance = [](const float* a, const float* b) {
-            const float dx = a[0] - b[0], dy = a[1] - b[1], dz = a[2] - b[2];
-            return std::sqrt(dx * dx + dy * dy + dz * dz);
-        };
-        float m_eye[3], cam[3];
-        matrix_eye(mats, m_eye);
-        for (int i = 0; i < 3; i++) {
-            const uint32_t w = (uint32_t)MEM_W(0x2EC + 4 * i, (gpr)(int32_t)base);
-            std::memcpy(&cam[i], &w, 4);
-        }
-        const float parted = distance(m_eye, cam);
-        if (parted > 40.0f && parted_logged < 80) {
-            parted_logged++;
-            log("f=%u (possess81) the extra view's matrix has its eye %.0f from the camera's (matrix %.0f %.0f %.0f, camera %.0f %.0f %.0f; look kind %02X stage %d)",
-                (unsigned)frames, parted, m_eye[0], m_eye[1], m_eye[2], cam[0], cam[1], cam[2], (unsigned)MEM_BU(0x23E, (gpr)(int32_t)base),
-                (int)MEM_H(0x73C, (gpr)(int32_t)base));
-        }
-        bool hold = false;
-        if (have_good && !held_last) {
-            const float jumped = distance(m_eye, good_eye), moved = distance(cam, good_cam);
-            hold = jumped >= 60.0f && moved < 20.0f;
-            if (hold && held_logged < 80) {
-                held_logged++;
-                log("f=%u (possess81) the extra view's matrix's eye jumped %.0f (the camera's own moved %.0f; look kind %02X stage %d): the frame before's used%s",
-                    (unsigned)frames, jumped, moved, (unsigned)MEM_BU(0x23E, (gpr)(int32_t)base), (int)MEM_H(0x73C, (gpr)(int32_t)base),
-                    hold_on ? "" : " (not: CONKER_POSSESS_HOLDVIEW=0)");
-            }
-        }
-        if (hold && hold_on) {
-            std::memcpy(rdram + (mats - 0x80000000u), good, 0x40);
-            held_last = true;
-        } else {
-            std::memcpy(good, rdram + (mats - 0x80000000u), 0x40);
-            std::memcpy(good_eye, m_eye, sizeof(good_eye));
-            std::memcpy(good_cam, cam, sizeof(good_cam));
-            have_good = true;
-            held_last = false;
-        }
-    }
     // (possess33) played or not, the extra character drawn as the bot it is while only shown (its brain's AI flag, +0x84; the game's memory
     // is put back after): shown, it's drawn; played (+0x84 0, a player's), it wasn't, with its fade, hidden bits and render item the same
     if (extra_played) {
@@ -2685,40 +2593,10 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
     // layer 5 of func_151674F8's, after the 3D of the first)
     // (possess61: where it starts, for net_view.cpp's rocket launcher overlay: fifth_second_pass)
     second_pass_at = list;
-    // (possess63) with a split screen, the second pass's objects told the view is the 5th player's (D_80082FA4 4): what's drawn there for
-    // one player's own view alone, as the gun's reticle in R-Look (a 32 x 32 picture over the view's middle, drawn with the gun in the
-    // second pass of its player's view only), is the 5th player's then, not player 1's. The views' tables (their 5th entry ours while
-    // view_pass_on) are given view 1's entries, as the view's first pass left them, for whatever reads them by that index.
-    // (possess77: off unless CONKER_POSSESS_VIEW4=1. The reticle is the HUD pass's, fifth_hud_pass, and with this on the 5th player's
-    // own character showed in its R-Look, dark and blocky, over its view.)
-    static const bool view4_on = []() { const char* t = std::getenv("CONKER_POSSESS_VIEW4"); return t != nullptr && std::string(t) == "1"; }();
-    const bool second_as_view4 = view4_on && fifth_split(rdram);
-    if (second_as_view4) {
-        for (int i = 0; i < slot4_count; i++) {
-            const Slot4Table& t = slot4_tables[i];
-            if (t.always || t.stride > 0x100u) {
-                continue;
-            }
-            const uint32_t shadow = slot4_shadow + 0x100u * (uint32_t)i;
-            for (uint32_t b = 0; b < t.stride; b++) {
-                MEM_B(b, (gpr)(int32_t)shadow) = MEM_B(b, (gpr)(int32_t)t.base);
-            }
-        }
-        view_pass_on = true;
-        MEM_W(0, (gpr)(int32_t)view_now) = 4;
-        static uint32_t told = 0;
-        if (told++ < 3) {
-            log("f=%u the extra view's second pass drawn with the view taken for the 5th player's (4)", (unsigned)frames);
-        }
-    }
     list = call_list(rdram, ctx, func_1515D6D0, list, 0);
     *ctx = saved;
     list = call_list(rdram, ctx, func_15019CC8, list, 0);
     *ctx = saved;
-    if (second_as_view4) {
-        MEM_W(0, (gpr)(int32_t)view_now) = 0;
-        view_pass_on = false;
-    }
     // (possess39) and the characters' poses made ready to be drawn, as func_1501878C does once its views are drawn: func_1502E474
     // turns the frame's bone matrices (the pool at D_800C3E80[frame], D_800C3E7A of them) from the floats func_1502BEE4 works them out
     // in to the fixed point the drawing reads (func_150A9984). The view's commands were drawing its characters from the floats: their
@@ -3077,19 +2955,6 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
     }
     MEM_W(0, (gpr)(int32_t)head) = (int32_t)list;
     fifth_view_at = (view_shown_here() && list > list_before) ? list_before : 0;   // (possess80)
-    if (view_shown_here() && list <= list_before && skipped_logged < 40) {
-        skipped_logged++;
-        log("f=%u (possess80) the extra view's commands let go this frame", (unsigned)frames);
-    }
-    {
-        // (possess80 diagnostics) what the view draws from the RDP's own buffers (the framebuffers, the blur's copy), as the renderer
-        // finds them when it draws: on this machine they had player 1's camera's picture in them, drawn first
-        static uint32_t rdp_logged = 0;
-        if (rdp_left > 0 && rdp_logged < 80 && view_shown_here()) {
-            rdp_logged++;
-            log("f=%u (possess80) the extra view draws %u pieces from the RDP's buffers", (unsigned)frames, (unsigned)rdp_left);
-        }
-    }
     for (const auto& pt : patches) {
         MEM_W(0, (gpr)(int32_t)pt.first) = (int32_t)pt.second;
     }
