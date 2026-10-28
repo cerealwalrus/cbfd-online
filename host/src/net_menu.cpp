@@ -165,7 +165,8 @@ namespace {
     // on the 4 players' machines), and its commands are copied into the 5th player's HUD over its view (possess_test.cpp's fifth_hud),
     // which draws no pause screen of its own: what it draws is put back as the frame ends
     bool fifth_machine() {
-        return conker::netsession::active() && conker::possess_test::online_view_here();
+        // (possess94: not while the 5th player watches another, out of the match: its machine shows the game's own view then)
+        return conker::netsession::active() && conker::possess_test::online_view_here() && !conker::netsession::watching_out_now();
     }
     // (possess60) with a split screen (4 players and the 5th), the 5th player's HUD draws the pause screen as the game draws its own
     // (possess_test.cpp's fifth_hud, in the game's order); what it changes in the game's memory is put back as the frame ends

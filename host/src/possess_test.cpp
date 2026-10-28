@@ -1733,8 +1733,9 @@ namespace {
     }
 
     // (possess44) the extra camera's view is shown on this machine: offline whenever it's drawn, online on the 5th player's machine alone
+    // (possess94) but not while its player watches another, out of the match (net_session.cpp's spectate_poll)
     bool view_shown_here() {
-        return !conker::netsession::active() || conker::netsession::local_slot() == extra;
+        return !conker::netsession::active() || (conker::netsession::local_slot() == extra && !conker::netsession::watching_out_now());
     }
 
     uint32_t call_list(uint8_t* rdram, recomp_context* ctx, void (*fn)(uint8_t*, recomp_context*), uint32_t list, int view) {
@@ -2031,12 +2032,22 @@ namespace {
         struct Ref { uint32_t command, at, size; int segment; int body; };
         std::vector<Ref> refs;
         // a list called (or jumped or branched to): its stretch [at, end), the command naming it (in its parent: -1 the frame's
-        // list), the parent's index
-        struct Body { uint32_t at, end, command; int parent; };
+        // list), the parent's index; (possess94) the segment its address went through (-1: none) and that segment's base then, and
+        // whether it turned out to be no list of the game's (bad, at the command that showed it: see run's give_up)
+        struct Body { uint32_t at, end, command; int parent; int segment; uint32_t base; uint32_t bad_at; bool bad; };
         std::vector<Body> bodies;
         uint32_t commands = 0, textures = 0, branches = 0;
         uint32_t bogus_cimgs = 0, stale_branches = 0;   // (possess92 diagnostics)
-        std::vector<std::pair<uint32_t, uint32_t>> cimgs;   // (possess42) the color images its commands set (address, bytes)
+        uint32_t bad_bodies = 0, failed_textures = 0;   // (possess94 diagnostics: give_up's lists; textures at 0, none the game could load)
+        bool light = false;   // (possess94) the segments alone (the frame's list before the view's commands, walked for them)
+        // (possess42) the color images its commands set; (possess94) with the list each was set in, the bytes of a row, and whether its
+        // size is one of the game's buffers' (one set at a buffer's start: known)
+        struct Cimg { uint32_t at, size, row; int body; bool exact; };
+        std::vector<Cimg> cimgs;
+        std::vector<std::pair<uint32_t, uint32_t>> known;   // (possess94) the game's own buffers (rdp_buffers)
+        uint32_t scissor_rows = 0;     // (possess94) the rows the last G_SETSCISSOR lets the RDP draw in (0: none seen)
+        int cimg_now = -1;             // (possess94) the color image drawn into now (an index of cimgs), and whether a scissor
+        bool scissor_since = false;    // was set since it was
         uint32_t timg_at = 0, timg_w1 = 0, timg_siz = 0, timg_width = 0;
         int timg_body = -1;
         uint32_t resolve(uint32_t a, int* segment) const {
@@ -2049,6 +2060,9 @@ namespace {
             return 0x80000000u | (a & 0x00FFFFFFu);
         }
         void note(int body, uint32_t command, uint32_t w1, uint32_t size) {
+            if (light) {
+                return;
+            }
             int segment = -1;
             const uint32_t at = resolve(w1, &segment);
             if (at >= 0x80000000u && at < 0x80000000u + game_size && size > 0 && size <= 0x10000) {
@@ -2060,7 +2074,7 @@ namespace {
             return timg_siz == 0 ? (texels + 1u) / 2u : texels << (timg_siz - 1u);
         }
         void texture(uint32_t size) {
-            if (timg_at == 0) {
+            if (timg_at == 0 || light) {
                 return;
             }
             textures++;
@@ -2077,13 +2091,32 @@ namespace {
             int segment = -1;
             const uint32_t target = resolve(w1, &segment);
             const int b = (int)bodies.size();
-            bodies.push_back({ target, target, command, parent });
+            bodies.push_back({ target, target, command, parent, segment, segment >= 0 ? seg[segment] : 0u, 0u, false });
             const uint32_t end = run(target, depth + 1, 0, b);
             bodies[b].end = std::max(end, target);
         }
         // walks from `at` (in list `body`, -1 the frame's) to its end, or `stop`; returns where it ended
         uint32_t run(uint32_t at, int depth, uint32_t stop, int body) {
             uint32_t e1_at = 0, e1_w1 = 0;
+            // (possess94) A command no list of the game's has: the walk has gone into what isn't a list (named through a segment the RSP
+            // has another base for, or memory since used for something else). The list is marked as none (bad), the segments put back as
+            // they were at its start (a "segment" set in it sent the rest of the walk astray too), and the walk leaves it. Nothing found
+            // in it is copied, nor pointed at (its call is left as the game made it, for the RSP to follow its own way), and no "color
+            // image" in it keeps a texture from being copied (possess92's logs had 8 or 9 such lists a frame as the 5th player was blown
+            // up by its own grenade; a "color image" among them could take in the textures of an explosion only its view drew: left
+            // uncopied, drawn from the game's memory, black shapes over the screen). Never the view's own commands (-1).
+            uint32_t seg_start[16];
+            std::memcpy(seg_start, seg, sizeof(seg));
+            auto give_up = [&](uint32_t where) {
+                if (body < 0) {
+                    return false;
+                }
+                bodies[(size_t)body].bad = true;
+                bodies[(size_t)body].bad_at = where;
+                bad_bodies++;
+                std::memcpy(seg, seg_start, sizeof(seg));
+                return true;
+            };
             while (commands < 400000) {
                 if ((at & 7u) != 0 || at < 0x80000000u || at >= 0x80000000u + game_size || (stop != 0 && at >= stop)) {
                     return at;
@@ -2091,28 +2124,57 @@ namespace {
                 const uint32_t w0 = mem_word(rdram, at), w1 = mem_word(rdram, at + 4);
                 commands++;
                 switch (w0 >> 24) {
-                    case 0x01:   // G_VTX
-                        note(body, at, w1, ((w0 >> 12) & 0xFFu) * 16u);
+                    case 0x01: {   // G_VTX (possess94: 1 to 64 of them, from an address on 4 bytes at least)
+                        const uint32_t n = (w0 >> 12) & 0xFFu;
+                        int segment = -1;
+                        const uint32_t from = resolve(w1, &segment);
+                        if (n == 0 || n > 64 || (from & 3u) != 0) {
+                            if (give_up(at)) {
+                                return at;
+                            }
+                            break;
+                        }
+                        note(body, at, w1, n * 16u);
                         break;
-                    case 0xDA:   // G_MTX
+                    }
+                    case 0xDA:   // G_MTX (possess94: 64 bytes, as all of the game's are: DA38)
+                        if (((w0 >> 16) & 0xFFu) != 0x38u) {
+                            if (give_up(at)) {
+                                return at;
+                            }
+                            break;
+                        }
                         note(body, at, w1, 64);
                         break;
-                    case 0xDC:   // G_MOVEMEM
+                    case 0xDC: {   // G_MOVEMEM (possess94: to one of F3DEX2's places for it)
+                        const uint32_t place = w0 & 0xFFu;
+                        if (place != 2u && place != 6u && place != 8u && place != 10u && place != 12u && place != 14u) {
+                            if (give_up(at)) {
+                                return at;
+                            }
+                            break;
+                        }
                         note(body, at, w1, (((w0 >> 19) & 0x1Fu) + 1u) * 8u);
                         break;
+                    }
                     case 0xDB:   // G_MOVEWORD: a segment
                         if (((w0 >> 16) & 0xFFu) == 0x06 && (w0 & 0xFFFFu) < 64u) {
                             seg[(w0 & 0xFFFFu) / 4u] = w1 & 0x00FFFFFFu;
                             seg_set_at[(w0 & 0xFFFFu) / 4u] = at;
                         }
                         break;
-                    case 0xFD:   // G_SETTIMG: sized by the load after it
+                    case 0xFD: {   // G_SETTIMG: sized by the load after it
                         timg_at = at;
                         timg_w1 = w1;
                         timg_siz = (w0 >> 19) & 3u;
                         timg_width = (w0 & 0xFFFu) + 1u;
                         timg_body = body;
+                        int segment = -1;
+                        if (!light && resolve(w1, &segment) == 0x80000000u) {   // (possess94 diagnostics: func_1510D0EC's answer for one it can't load)
+                            failed_textures++;
+                        }
                         break;
+                    }
                     case 0xF3:   // G_LOADBLOCK
                         texture(texel_bytes(((w1 >> 12) & 0xFFFu) + 1u));
                         break;
@@ -2126,11 +2188,40 @@ namespace {
                         const uint32_t row = siz == 0 ? (width + 1u) / 2u : width << (siz - 1u);
                         // (possess92) only a real one: the RDP's images start on 64 bytes and are at most 1024 across (possess86's logs had
                         // one at 801BB9AD, 1.8 MB "of it" over the heap: a walk through what wasn't a list, below)
-                        if ((image & 0x3Fu) == 0 && width <= 1024u) {
-                            cimgs.push_back({ image, width >= 32 ? row * 240u : row });
-                        } else {
+                        // (possess94) and only in a list that is one (give_up, above); its size the game buffer's when it's one of those (240
+                        // rows of the screen's width took in 14 KB past the depth buffer's end, the heap's), otherwise as many rows as the
+                        // scissor lets the RDP draw into it (the one set after it, or the one before; 240 with none)
+                        if ((image & 0x3Fu) != 0 || width > 1024u) {
                             bogus_cimgs++;
+                            if (give_up(at)) {
+                                return at;
+                            }
+                            break;
                         }
+                        if (light) {
+                            break;
+                        }
+                        Cimg c{ image, width >= 32 ? row * (scissor_rows != 0 ? scissor_rows : 240u) : row, row, body, false };
+                        for (const auto& k : known) {
+                            if (k.first == image) {
+                                c.size = k.second;
+                                c.exact = true;
+                            }
+                        }
+                        cimg_now = (int)cimgs.size();
+                        scissor_since = false;
+                        cimgs.push_back(c);
+                        break;
+                    }
+                    case 0xED: {   // (possess94) G_SETSCISSOR: its lower right's y (10.2), the rows the RDP may draw in
+                        scissor_rows = std::max(1u, std::min(((w1 & 0xFFFu) + 3u) >> 2, 1024u));
+                        if (!light && cimg_now >= 0) {
+                            Cimg& c = cimgs[(size_t)cimg_now];
+                            if (!c.exact && c.size > c.row) {
+                                c.size = std::max(scissor_since ? c.size : 0u, c.row * scissor_rows);
+                            }
+                        }
+                        scissor_since = true;
                         break;
                     }
                     case 0xF0:   // G_LOADTLUT
@@ -2154,7 +2245,13 @@ namespace {
                         }
                         e1_at = 0;
                         break;
-                    case 0xDE:   // G_DL: a call (or a jump)
+                    case 0xDE:   // G_DL: a call (or a jump); (possess94) DE000000 or DE010000, nothing else
+                        if ((w0 & 0x00FEFFFFu) != 0) {
+                            if (give_up(at)) {
+                                return at;
+                            }
+                            break;
+                        }
                         child(at, w1, body, depth);
                         if (((w0 >> 16) & 0xFFu) != 0) {
                             return at + 8;
@@ -2994,18 +3091,101 @@ static void conker_possess_view_local_body(uint8_t* rdram, recomp_context* ctx) 
             walker.seg[(w0 & 0xFFFFu) / 4u] = mem_word(rdram, a + 4) & 0x00FFFFFFu;
         }
     }
+    // (possess94) and as the RSP has them as the view's commands begin: the frame's list before them walked through the lists it calls
+    // too (a segment set in one stays set after it), in the game's memory as the RSP draws from it (the view's put back after: local_copy).
+    // A segment set in a called list alone and named by the view's commands went by its top level's base (or none): the list "called"
+    // through it was where the walk went into what wasn't one.
+    {
+        ListWalk before{ local_copy.data() };
+        before.light = true;
+        if (in_rdram(start) && start <= list_before && list_before - start < 0x100000u) {
+            before.run(start, 0, list_before, -1);
+            std::string out;
+            uint32_t differ = 0;
+            for (int s = 0; s < 16; s++) {
+                if (before.seg[s] != walker.seg[s]) {
+                    differ |= 1u << s;
+                    char piece[64];
+                    std::snprintf(piece, sizeof(piece), " %d: %06X (its top level %06X)", s, (unsigned)before.seg[s], (unsigned)walker.seg[s]);
+                    out += piece;
+                }
+            }
+            static uint32_t told = 0, told_differ = 0xFFFFFFFFu;
+            if (differ != told_differ && told < 30) {
+                told++;
+                told_differ = differ;
+                log("f=%u [walk] the segments as the view's commands begin (the frame's list before them walked with its calls: %u lists, %u that aren't):%s",
+                    (unsigned)frames, (unsigned)before.bodies.size(), (unsigned)before.bad_bodies, differ != 0 ? out.c_str() : " as its top level set them");
+            }
+            std::memcpy(walker.seg, before.seg, sizeof(walker.seg));
+        }
+    }
+    // (possess94) the game's own buffers, for a color image set at one's start
+    const std::vector<std::pair<uint32_t, uint32_t>> game_buffers = rdp_buffers(rdram);
+    walker.known = game_buffers;
     walker.run(list_before, 0, list, -1);
-    {   // (possess92 diagnostics)
+    // (possess94) the lists that aren't (ListWalk's give_up), and those called from one
+    std::vector<uint8_t> bad(walker.bodies.size(), 0);
+    for (size_t b = 0; b < walker.bodies.size(); b++) {
+        const int p = walker.bodies[b].parent;
+        bad[b] = (walker.bodies[b].bad || (p >= 0 && bad[(size_t)p] != 0)) ? 1 : 0;
+    }
+    {   // (possess92 diagnostics) (possess94: and how the view's commands came to the first list that isn't one)
         static uint32_t told = 0;
-        if ((walker.bogus_cimgs != 0 || walker.stale_branches != 0) && told < 30) {
+        if ((walker.bogus_cimgs != 0 || walker.stale_branches != 0 || walker.bad_bodies != 0 || walker.failed_textures != 0) && told < 40) {
             told++;
-            log("f=%u [walk] the view's commands: %u G_BRANCH_Z with no G_RDPHALF_1 just before (not followed), %u color images that can't be one (left out)",
-                (unsigned)frames, (unsigned)walker.stale_branches, (unsigned)walker.bogus_cimgs);
+            log("f=%u [walk] the view's commands: %u G_BRANCH_Z with no G_RDPHALF_1 just before (not followed), %u color images that can't be one, "
+                "%u lists that aren't (nothing in them copied, their calls left as the game made them), %u textures at 0 (none the game could load)",
+                (unsigned)frames, (unsigned)walker.stale_branches, (unsigned)walker.bogus_cimgs, (unsigned)walker.bad_bodies, (unsigned)walker.failed_textures);
+            for (size_t b = 0; b < walker.bodies.size(); b++) {
+                if (!walker.bodies[b].bad) {
+                    continue;
+                }
+                std::vector<size_t> path;
+                for (int x = (int)b; x >= 0 && path.size() < 12; x = walker.bodies[(size_t)x].parent) {
+                    path.push_back((size_t)x);
+                }
+                std::reverse(path.begin(), path.end());
+                std::string chain;
+                for (size_t p : path) {
+                    const auto& bd = walker.bodies[p];
+                    char piece[128];
+                    std::snprintf(piece, sizeof(piece), " > %08X: %08X %08X to %08X (segment %d at %06X)", (unsigned)bd.command,
+                        (unsigned)mem_word(rdram, bd.command), (unsigned)mem_word(rdram, bd.command + 4), (unsigned)bd.at, bd.segment, (unsigned)bd.base);
+                    chain += piece;
+                }
+                const uint32_t top = walker.bodies[path.front()].command;
+                std::string who = "none of the objects";
+                for (const Drawn& d : drawn_now) {
+                    if (top >= d.start && top < d.end) {
+                        char piece[48];
+                        std::snprintf(piece, sizeof(piece), "object %X:%u", (unsigned)d.kind, (unsigned)d.object);
+                        who = piece;
+                    }
+                }
+                const uint32_t bad_at = walker.bodies[b].bad_at;
+                log("f=%u [walk]   the first:%s (%s's drawing); no list at %08X: %08X %08X (the game's memory has %08X %08X there)", (unsigned)frames,
+                    chain.c_str(), who.c_str(), (unsigned)bad_at, (unsigned)mem_word(rdram, bad_at), (unsigned)mem_word(rdram, bad_at + 4),
+                    (unsigned)mem_word(local_copy.data(), bad_at), (unsigned)mem_word(local_copy.data(), bad_at + 4));
+                break;
+            }
         }
     }
     // (possess42) the buffers the RDP draws into, as textures the view draws from: left as they are (see rdp_buffers)
-    std::vector<std::pair<uint32_t, uint32_t>> rdp = rdp_buffers(rdram);
-    rdp.insert(rdp.end(), walker.cimgs.begin(), walker.cimgs.end());
+    // (possess94) the game's own buffers, and the color images set in the view's lists that are lists, each its own size (see ListWalk)
+    std::vector<std::pair<uint32_t, uint32_t>> rdp = game_buffers;
+    for (const auto& c : walker.cimgs) {
+        if (c.body >= 0 && bad[(size_t)c.body] != 0) {
+            continue;
+        }
+        rdp.push_back({ c.at, c.size });
+        static uint32_t told = 0;
+        if (!c.exact && told < 20) {
+            told++;
+            log("f=%u [walk] a color image not one of the game's buffers: %08X, %u bytes a row, %u bytes (in %s)", (unsigned)frames, (unsigned)c.at,
+                (unsigned)c.row, (unsigned)c.size, c.body < 0 ? "the view's own commands" : "a list they call");
+        }
+    }
     auto on_rdp = [&](uint32_t at, uint32_t size) {
         for (const auto& b : rdp) {
             if (at < b.first + b.second && b.first < at + size) {
@@ -3044,7 +3224,7 @@ static void conker_possess_view_local_body(uint8_t* rdram, recomp_context* ctx) 
     std::vector<uint8_t> ref_changed(walker.refs.size(), 0);
     for (int b = 0; b < body_count; b++) {
         const auto& bd = walker.bodies[b];
-        if (bd.end > bd.at && changed(bd.at, bd.end - bd.at)) {
+        if (bad[(size_t)b] == 0 && bd.end > bd.at && changed(bd.at, bd.end - bd.at)) {   // (possess94: never one that isn't a list)
             need[b] = 1;
         }
     }
@@ -3054,6 +3234,9 @@ static void conker_possess_view_local_body(uint8_t* rdram, recomp_context* ctx) 
     uint32_t poses_left = 0;
     for (size_t i = 0; i < walker.refs.size(); i++) {
         const auto& r = walker.refs[i];
+        if (r.body >= 0 && bad[(size_t)r.body] != 0) {   // (possess94) found in what isn't a list: nothing to copy
+            continue;
+        }
         if (use_game_poses && r.at >= pose_pool && r.at < pose_pool_end) {
             poses_left++;
             continue;
@@ -3066,6 +3249,12 @@ static void conker_possess_view_local_body(uint8_t* rdram, recomp_context* ctx) 
         if (on_rdp(r.at, r.size)) {
             if (ref_op == 0xFD) {
                 rdp_left++;
+                static uint32_t told_left = 0;   // (possess94 diagnostics) a texture the view changed, left as it is
+                if (changed(r.at, r.size) && told_left < 20) {
+                    told_left++;
+                    log("f=%u [rdp] a texture the view changed left as it is (the RDP's): %08X, %u bytes (command %08X)", (unsigned)frames, (unsigned)r.at,
+                        (unsigned)r.size, (unsigned)r.command);
+                }
                 continue;
             }
             static uint32_t told_rdp = 0;
@@ -3076,7 +3265,7 @@ static void conker_possess_view_local_body(uint8_t* rdram, recomp_context* ctx) 
                     if (r.at < rdp[b].first + rdp[b].second && rdp[b].first < r.at + r.size) {
                         char piece[80];
                         std::snprintf(piece, sizeof(piece), " %08X+%X (%s)", (unsigned)rdp[b].first, (unsigned)rdp[b].second,
-                            b + walker.cimgs.size() >= rdp.size() ? "a color image the view's commands set" : "the game's buffers");
+                            b >= game_buffers.size() ? "a color image the view's commands set" : "the game's buffers");
                         ranges += piece;
                     }
                 }
@@ -3955,7 +4144,8 @@ namespace {
 }
 
 bool conker::possess_test::fifth_split_view(uint8_t* rdram) {
-    return online_view_here() && fifth_split(rdram);
+    // (possess94) not while the 5th player watches another, out of the match: the game's own view of the one it watches is shown
+    return online_view_here() && fifth_split(rdram) && !conker::netsession::watching_out_now();
 }
 
 bool conker::possess_test::fifth_joined(uint8_t* rdram) {

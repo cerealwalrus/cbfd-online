@@ -2399,10 +2399,30 @@ int conker::netsession::local_player() {
 
 namespace {
     std::atomic<int> spectate_target{ 0 };
+    // (possess94) this machine's player is out of the match (its last life gone, in a match with lives) and watches another player, as a
+    // watcher does, in place of the game's black screen over its view
+    std::atomic<bool> watching_out{ false };
+
+    // (possess94) the match's characters out of it: D_800D18A0, a bit a character (a player's is its number), set by func_1507D4F8 as a
+    // player's last life goes in a multiplayer match (func_15019BB8 then draws the black screen over that player's view, func_1507DB6C)
+    uint16_t characters_out() {
+        if (ram == nullptr || ram[(0x800BE616u ^ 3u) & 0x7FFFFFu] == 0) {
+            return 0;
+        }
+        return (uint16_t)(((uint32_t)ram[(0x800D18A0u ^ 3u) & 0x7FFFFFu] << 8) | (uint32_t)ram[(0x800D18A1u ^ 3u) & 0x7FFFFFu]);
+    }
+}
+
+bool conker::netsession::watching_out_now() {
+    return watching_out.load();
 }
 
 int conker::netsession::view_player() {
     const int own = local_player();
+    // (possess94) out of the match: the player it watches
+    if (own >= 0 && watching_out.load()) {
+        return spectate_target.load();
+    }
     // (possess-test) the 5th player: its own, the extra camera's view drawn over the game's (possess_test.cpp), once it plays; until
     // then player 1's
     if (own >= 4) {
@@ -2413,33 +2433,75 @@ int conker::netsession::view_player() {
 
 // Once a frame on the game thread (net_view.cpp's frame_end): a watcher's D-pad left and right (this machine's own controller, from
 // the frame's agreed input) go to the previous and next of the match's players.
+// (possess94) A player out of the match (its last life gone) watches the same way: the players still in only (a watcher too, while some
+// are), the one after its own first, the next one once the one it watches is out too; back to its own view as it comes back in.
 void conker::netsession::spectate_poll() {
     static uint16_t last_buttons = 0;
     int8_t list[4];
     int n = 0;
-    if (!active() || local_player() >= 0 || !match_players(list, &n)) {
+    const int own = active() ? local_player() : -1;
+    const uint16_t out = characters_out();
+    // (the 5th player's character is the match's 5th only while it plays: otherwise a computer player's)
+    const bool own_out = own >= 0 && own < 16 && ((out >> own) & 1u) != 0 && (own < 4 || conker::possess_test::fifth_playing());
+    if (!active() || (own >= 0 && !own_out) || !match_players(list, &n)) {
+        if (watching_out.exchange(false)) {
+            log_line("[net] this machine's player is in the match again: its own view");
+        }
         spectate_target = 0;
         last_buttons = 0;
         return;
     }
+    bool any_in = false;
+    for (int k = 0; k < n; k++) {
+        any_in = any_in || (k != own && ((out >> k) & 1u) == 0);
+    }
+    auto watchable = [&](int k) { return k >= 0 && k < n && k != own && (!any_in || ((out >> k) & 1u) == 0); };
+    auto next_from = [&](int from, int step) {
+        for (int i = 1; i <= n; i++) {
+            const int k = ((from + step * i) % n + n) % n;
+            if (watchable(k)) {
+                return k;
+            }
+        }
+        return -1;
+    };
+    const bool was_watching = watching_out.load();
+    int target = std::clamp(spectate_target.load(), 0, n - 1);
+    if (own_out && !was_watching) {
+        target = next_from(own < n ? own : n - 1, 1);
+        if (target < 0) {   // (nobody to watch: the game's own screen)
+            spectate_target = 0;
+            last_buttons = 0;
+            return;
+        }
+    } else if (!watchable(target)) {
+        const int k = next_from(target, 1);
+        if (k >= 0) {
+            target = k;
+        }
+    }
     bool plugged = false;
     uint16_t buttons = 0;
     float x = 0.0f, y = 0.0f;
-    if (!input(my_slot, &plugged, &buttons, &x, &y)) {
-        return;
+    if (input(my_slot, &plugged, &buttons, &x, &y)) {
+        const uint16_t pressed = (uint16_t)(buttons & ~last_buttons);
+        last_buttons = buttons;
+        const int k = (pressed & 0x0200) ? next_from(target, -1) : (pressed & 0x0100) ? next_from(target, 1) : -1;
+        if (k >= 0) {
+            target = k;
+        }
     }
-    const uint16_t pressed = (uint16_t)(buttons & ~last_buttons);
-    last_buttons = buttons;
-    int target = std::clamp(spectate_target.load(), 0, n - 1);
-    if (pressed & 0x0200) {
-        target = (target + n - 1) % n;
-    } else if (pressed & 0x0100) {
-        target = (target + 1) % n;
-    }
-    if (target != spectate_target.load()) {
-        log_line("[net] watching player %d of the match (slot %d)", target + 1, (int)list[target] + 1);
+    if (target != spectate_target.load() || (own_out && !was_watching)) {
+        log_line("[net] watching player %d of the match (slot %d)%s", target + 1, (int)list[target] + 1,
+            own_out ? " (this machine's player out of the match)" : "");
+        if (own_out) {
+            conker::notices::show("Out of lives: watching " + player_name((int)list[target]) + " (D-pad left / right to change)", true);
+        }
     }
     spectate_target = target;
+    if (own_out && !was_watching) {
+        watching_out = true;
+    }
 }
 
 std::string conker::netsession::player_name(int slot) {

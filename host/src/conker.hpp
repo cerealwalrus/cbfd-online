@@ -385,6 +385,8 @@ namespace conker {
         // one it watches (player 1 at first; the D-pad's left and right go through the others, spectate_poll)
         int view_player();
         void spectate_poll();
+        // (possess94) this machine's player is out of the match (its last life gone) and watches another player (spectate_poll)
+        bool watching_out_now();
         // The name a player goes by on the screen: their nickname, or "Player N".
         std::string player_name(int slot);
         // Online: whether that player's right stick turns their camera this frame (the frame's agreed input), and by how
