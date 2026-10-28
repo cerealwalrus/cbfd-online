@@ -3368,3 +3368,58 @@ text = "{ extern void conker_team_bots(uint8_t*, recomp_context*); conker_team_b
 func = "func_151E1744"
 before_vram = 0x151E1744
 text = "{ extern void conker_possess_teams_start(uint8_t*, recomp_context*); conker_possess_teams_start(rdram, ctx); }"
+
+# possess70 (a diagnostic): what each of these draws, where in the frame's list it starts (host/src/net_view.cpp, conker_draw_note), to
+# find what draws R-Look's reticle (a 32 x 32 picture at the view's middle, DE 80089EB8 before it), on the 4 players' machines and the
+# 5th player's: func_1502CCFC (an object's drawing), func_15035FE8 (the attached models), func_1502BAD0 (the characters), func_151674F8's
+# calls of its objects' drawing (0x15167784, 0x151677F8, 0x151678B0, 0x15167918), func_15186794 (the shadows), func_150195A0 and
+# func_15019CC8 (a view's 3D and second passes).
+[[patches.hook]]
+func = "func_1502CCFC"
+before_vram = 0x1502CCFC
+text = "{ extern void conker_draw_note(uint8_t*, recomp_context*, int); conker_draw_note(rdram, ctx, 1); }"
+
+[[patches.hook]]
+func = "func_15035FE8"
+before_vram = 0x15035FE8
+text = "{ extern void conker_draw_note(uint8_t*, recomp_context*, int); conker_draw_note(rdram, ctx, 2); }"
+
+[[patches.hook]]
+func = "func_1502BAD0"
+before_vram = 0x1502BAD0
+text = "{ extern void conker_draw_note(uint8_t*, recomp_context*, int); conker_draw_note(rdram, ctx, 3); }"
+
+[[patches.hook]]
+func = "func_151674F8"
+before_vram = 0x15167784
+text = "{ extern void conker_draw_note(uint8_t*, recomp_context*, int); conker_draw_note(rdram, ctx, 4); }"
+
+[[patches.hook]]
+func = "func_151674F8"
+before_vram = 0x151677F8
+text = "{ extern void conker_draw_note(uint8_t*, recomp_context*, int); conker_draw_note(rdram, ctx, 5); }"
+
+[[patches.hook]]
+func = "func_151674F8"
+before_vram = 0x151678B0
+text = "{ extern void conker_draw_note(uint8_t*, recomp_context*, int); conker_draw_note(rdram, ctx, 6); }"
+
+[[patches.hook]]
+func = "func_151674F8"
+before_vram = 0x15167918
+text = "{ extern void conker_draw_note(uint8_t*, recomp_context*, int); conker_draw_note(rdram, ctx, 7); }"
+
+[[patches.hook]]
+func = "func_15186794"
+before_vram = 0x15186794
+text = "{ extern void conker_draw_note(uint8_t*, recomp_context*, int); conker_draw_note(rdram, ctx, 8); }"
+
+[[patches.hook]]
+func = "func_150195A0"
+before_vram = 0x150195A0
+text = "{ extern void conker_draw_note(uint8_t*, recomp_context*, int); conker_draw_note(rdram, ctx, 9); }"
+
+[[patches.hook]]
+func = "func_15019CC8"
+before_vram = 0x15019CC8
+text = "{ extern void conker_draw_note(uint8_t*, recomp_context*, int); conker_draw_note(rdram, ctx, 10); }"

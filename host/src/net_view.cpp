@@ -37,6 +37,31 @@
 
 #include "conker.hpp"
 
+// (possess70) a diagnostic: the drawing functions' calls this frame (conker.toml's conker_draw_note hooks), each with where in the list it
+// starts, to find what draws R-Look's reticle (DE 80089EB8 before its picture)
+struct DrawNote { int which; uint32_t a0, a1, a2, a3, target, view, stack10, stack18; bool extra; };
+static std::vector<DrawNote> draw_notes;
+
+extern "C" void conker_draw_note(uint8_t* rdram, recomp_context* ctx, int which) {
+    if (!conker::netsession::active() || draw_notes.size() >= 30000) {
+        return;
+    }
+    DrawNote n{};
+    n.which = which;
+    n.a0 = (uint32_t)ctx->r4;
+    n.a1 = (uint32_t)ctx->r5;
+    n.a2 = (uint32_t)ctx->r6;
+    n.a3 = (uint32_t)ctx->r7;
+    n.target = (which == 5 || which == 6) ? (uint32_t)ctx->r25 : (which == 4 || which == 7) ? (uint32_t)ctx->r2 : 0;
+    n.view = (uint32_t)MEM_W(0, (gpr)(int32_t)0x80082FA4);
+    if (which == 1) {
+        n.stack10 = (uint32_t)MEM_W(0x10, ctx->r29);
+        n.stack18 = (uint32_t)MEM_W(0x18, ctx->r29);
+    }
+    n.extra = conker::possess_test::drawing_extra_view();
+    draw_notes.push_back(n);
+}
+
 // (possess61) after a look's command dump, the next frame's drawing of each character for each camera logged (conker_player_visibility)
 static int char_draw_log_frames = 0;
 static int char_draw_logged = 0;
@@ -599,6 +624,52 @@ namespace {
                     }
                 }
                 conker::netsession::log("[net view] look dump ends");
+                // (possess70) the reticle's DE 80089EB8: the drawing calls just before each one in the list; and every call of the extra
+                // view's (the 5th player's machine), or of this machine's camera's 3D pass, from func_150195A0 on
+                {
+                    const auto name = [](int which) {
+                        static const char* const names[] = { "?", "object 1502CCFC", "attached 15035FE8", "characters 1502BAD0", "layer item (setup)",
+                            "layer item", "layer item", "layer item (end)", "shadow 15186794", "3D pass 150195A0", "second pass 15019CC8" };
+                        return (which >= 0 && which <= 10) ? names[which] : "?";
+                    };
+                    const auto note_line = [&](const char* tag, const DrawNote& n) {
+                        char text[220];
+                        std::snprintf(text, sizeof(text), "[net view] draw %s: %s at %08X a1 %08X a2 %08X a3 %08X target %08X view %u sp10 %08X sp18 %08X%s", tag,
+                            name(n.which), n.a0, n.a1, n.a2, n.a3, n.target, n.view, n.stack10, n.stack18, n.extra ? " (extra view)" : "");
+                        conker::netsession::log(text);
+                    };
+                    int hits = 0;
+                    for (uint32_t a = start; a + 8 <= end && hits < 4; a += 8) {
+                        if ((uint32_t)MEM_W(0, (gpr)(int32_t)a) == 0xDE000000u && (uint32_t)MEM_W(4, (gpr)(int32_t)a) == 0x80089EB8u) {
+                            hits++;
+                            char text[120];
+                            std::snprintf(text, sizeof(text), "[net view] draw: the reticle's DE 80089EB8 at %08X", a);
+                            conker::netsession::log(text);
+                            int shown = 0;
+                            for (size_t i = draw_notes.size(); i-- > 0 && shown < 8;) {
+                                if (draw_notes[i].a0 <= a && draw_notes[i].a0 + 0x4000u > a) {
+                                    note_line("before it", draw_notes[i]);
+                                    shown++;
+                                }
+                            }
+                        }
+                    }
+                    if (hits == 0) {
+                        conker::netsession::log("[net view] draw: no DE 80089EB8 in the list");
+                    }
+                    int listed = 0;
+                    bool in_view = false;
+                    for (const DrawNote& n : draw_notes) {
+                        const bool mine = conker::possess_test::fifth_split_view(rdram) ? n.extra : (!n.extra && (int)n.a1 == local);
+                        if (n.which == 9 || n.which == 10) {
+                            in_view = mine;
+                        }
+                        if (in_view && listed < 160 && n.which != 9) {
+                            note_line("in this view", n);
+                            listed++;
+                        }
+                    }
+                }
                 char_draw_log_frames = 2;
                 char_draw_logged = 0;
             }
@@ -1816,6 +1887,7 @@ void conker::netview::frame_begin(uint8_t* rdram) {
     if (char_draw_log_frames > 0) {
         char_draw_log_frames--;   // (possess61: set as a look's dump ends, so the frame after it is logged)
     }
+    draw_notes.clear();   // (possess70)
     (void)rdram;
     if (conker::netsession::active()) {
         conker::netsession::watch_poll("dlb", 0);
