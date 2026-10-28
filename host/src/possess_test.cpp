@@ -2196,16 +2196,14 @@ namespace {
             *ctx = saved;
             if (pause_here) {
                 // (possess62) and the menu's text once more after the pause screen (its QUIT and CONT. were still missing over it), for the
-                // last flush
-                conker::netmenu::fifth_pictures(rdram, true);
+                // last flush. (possess71: without the pause screen's pictures set aside put back first, fifth_pictures: those were the game's
+                // loads of this frame, which the extra view's memory doesn't have, so the stick's picture between QUIT and CONT. flickered
+                // to garbage; the flush loads what it needs itself.)
                 conker::netmenu::fifth_pause_text(rdram, ctx);
                 *ctx = saved;
             }
             list = call_list(rdram, ctx, func_15043384, list, 0);
             *ctx = saved;
-            if (pause_here) {
-                conker::netmenu::fifth_pictures(rdram, false);
-            }
             MEM_W(0, (gpr)(int32_t)view_now) = was_view;
         } else {
             // (possess49) the 5th player's pause menu open: the pause screen as the game drew it this frame, under this view (its overlay's
