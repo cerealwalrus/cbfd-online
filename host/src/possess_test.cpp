@@ -3607,13 +3607,27 @@ extern "C" void conker_possess_icon(uint8_t* rdram, recomp_context* ctx, int whe
 }
 
 extern "C" void conker_possess_icon_texture(uint8_t* rdram, recomp_context* ctx) {
+    // (possess56) while the 5th player plays as the game's own player (fifth_map), that controller's P icon (sprites 0x894 to 0x897, P1 to
+    // P4: the HUD's, the score table's) is its P5 one, whatever draws it: nobody else plays with that controller in the match
+    if (!p5_drawing && p5_have && fifth_mapped(rdram) && (uint32_t)ctx->r20 == 0x894u + (MEM_BU(0, (gpr)(int32_t)fifth_map) & 3u) &&
+        (uint32_t)ctx->r9 != 0x80000000u) {
+        static uint32_t told = 0;
+        if (told++ < 3) {
+            log("f=%u the P%d icon (sprite %X) drawn as the P5 one: the 5th player plays with that controller", (unsigned)frames,
+                (int)(MEM_BU(0, (gpr)(int32_t)fifth_map) & 3u) + 1, (unsigned)(uint32_t)ctx->r20);
+        }
+        p5_drawing = true;
+    }
     if (!p5_drawing) {
         return;
     }
     p5_drawing = false;
     const uint32_t texture = (uint32_t)ctx->r9;
-    if ((uint32_t)ctx->r20 != p4_sprite || texture == 0x80000000u) {
+    if (texture == 0x80000000u) {
         return;
+    }
+    if ((uint32_t)ctx->r20 != p4_sprite && !p5_have) {
+        return;   // (made from the P4 icon's texture: only once the P4 icon itself has been loaded here)
     }
     const uint32_t from = texture < 0x00800000u ? texture | 0x80000000u : texture;
     if ((from >> 24) != 0x80 || (from & 0x7FFFFFu) > 0x800000u - 0x1000u) {
