@@ -1630,13 +1630,6 @@ uint32_t conker::possess_test::fifth_second_pass() {
 // (possess80) where this frame's extra view's commands begin in the frame's list, on the machine that shows it (0: not drawn this frame)
 namespace {
     uint32_t fifth_view_at = 0;
-    uint32_t fifth_fx_from = 0, fifth_fx_to = 0;   // (possess90) the 5th player's screen effects' commands this frame (func_15180580's)
-}
-
-// (possess90) where this frame's 5th player's screen effects (func_15180580's: the iris, a hit's flash...) are in the list (0: none)
-void conker::possess_test::fifth_effects(uint32_t& from, uint32_t& to) {
-    from = fifth_fx_from;
-    to = fifth_fx_to;
 }
 
 uint32_t conker::possess_test::fifth_view_start() {
@@ -2043,6 +2036,7 @@ namespace {
         struct Body { uint32_t at, end, command; int parent; };
         std::vector<Body> bodies;
         uint32_t commands = 0, textures = 0, branches = 0;
+        uint32_t bogus_cimgs = 0, stale_branches = 0;   // (possess92 diagnostics)
         std::vector<std::pair<uint32_t, uint32_t>> cimgs;   // (possess42) the color images its commands set (address, bytes)
         uint32_t timg_at = 0, timg_w1 = 0, timg_siz = 0, timg_width = 0;
         int timg_body = -1;
@@ -2131,7 +2125,13 @@ namespace {
                         const uint32_t image = resolve(w1, &segment);
                         const uint32_t width = (w0 & 0xFFFu) + 1u, siz = (w0 >> 19) & 3u;
                         const uint32_t row = siz == 0 ? (width + 1u) / 2u : width << (siz - 1u);
-                        cimgs.push_back({ image, width >= 32 ? row * 240u : row });
+                        // (possess92) only a real one: the RDP's images start on 64 bytes and are at most 1024 across (possess86's logs had
+                        // one at 801BB9AD, 1.8 MB "of it" over the heap: a walk through what wasn't a list, below)
+                        if ((image & 0x3Fu) == 0 && width <= 1024u) {
+                            cimgs.push_back({ image, width >= 32 ? row * 240u : row });
+                        } else {
+                            bogus_cimgs++;
+                        }
                         break;
                     }
                     case 0xF0:   // G_LOADTLUT
@@ -2142,9 +2142,16 @@ namespace {
                         e1_w1 = w1;
                         break;
                     case 0x04:   // G_BRANCH_Z
-                        if (e1_at != 0) {
+                        // (possess92) its list is the G_RDPHALF_1 just before it, no other: a texture rectangle's own G_RDPHALF_1 (its s and
+                        // t) was taken for one when a G_BRANCH_Z came later (the 5th player's iris, then the objects drawn over its view),
+                        // followed into what wasn't a list (a 1.8 MB "color image" over the heap: what the view drew from there left as the
+                        // game's), and the rectangle's s and t pointed at a copy of "the list": the iris's pictures drawn from anywhere in
+                        // their texture, black blocks and stripes over the 5th player's view as it died
+                        if (e1_at != 0 && e1_at + 8u == at) {
                             branches++;
                             child(e1_at, e1_w1, body, depth);
+                        } else if (e1_at != 0) {
+                            stale_branches++;
                         }
                         e1_at = 0;
                         break;
@@ -2323,16 +2330,11 @@ namespace {
         list = (uint32_t)ctx->r2;
         *ctx = saved;
         for (auto fn : { func_1517F4D8, func_1517F3A0, func_15180580 }) {
-            const uint32_t fn_from = list;
             ctx->r4 = (gpr)(int32_t)list;
             ctx->r5 = 0;
             fn(rdram, ctx);
             list = (uint32_t)ctx->r2;
             *ctx = saved;
-            if (fn == func_15180580 && list > fn_from) {   // (possess90) the screen's effects (the iris among them): for net_view.cpp
-                fifth_fx_from = fn_from;
-                fifth_fx_to = list;
-            }
         }
         if ((MEM_HU(0, (gpr)(int32_t)0x800D18A0) & 1u) != 0 || (MEM_HU(0, (gpr)(int32_t)0x800D18A2) & 1u) != 0) {
             ctx->r4 = (gpr)(int32_t)list;
@@ -2735,7 +2737,6 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
 static void conker_possess_view_local_body(uint8_t* rdram, recomp_context* ctx) {
     second_pass_at = 0;   // (possess61: this frame's, once the view's second pass begins)
     fifth_view_at = 0;    // (possess80)
-    fifth_fx_from = fifth_fx_to = 0;   // (possess90)
     if (!local_view_wanted(rdram)) {
         return;
     }
@@ -2995,6 +2996,14 @@ static void conker_possess_view_local_body(uint8_t* rdram, recomp_context* ctx) 
         }
     }
     walker.run(list_before, 0, list, -1);
+    {   // (possess92 diagnostics)
+        static uint32_t told = 0;
+        if ((walker.bogus_cimgs != 0 || walker.stale_branches != 0) && told < 30) {
+            told++;
+            log("f=%u [walk] the view's commands: %u G_BRANCH_Z with no G_RDPHALF_1 just before (not followed), %u color images that can't be one (left out)",
+                (unsigned)frames, (unsigned)walker.stale_branches, (unsigned)walker.bogus_cimgs);
+        }
+    }
     // (possess42) the buffers the RDP draws into, as textures the view draws from: left as they are (see rdp_buffers)
     std::vector<std::pair<uint32_t, uint32_t>> rdp = rdp_buffers(rdram);
     rdp.insert(rdp.end(), walker.cimgs.begin(), walker.cimgs.end());
