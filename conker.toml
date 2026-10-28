@@ -1369,6 +1369,29 @@ func = "func_151EC648"
 before_vram = 0x151ECDA0
 text = "{ extern void conker_possess_join_fifth(uint8_t*, recomp_context*, int); conker_possess_join_fifth(rdram, ctx, 1); }"
 
+# possess50: the P5 column's label a P5 icon in the look of the P1 to P4 ones (host/src/possess_test.cpp, host/src/p5_icon.hpp): its
+# text entry noted as it's queued (func_151EC648, after 0x151ECFB0's func_15042D94), drawn as the P4 icon's sprite (func_15043384, an
+# icon's func_151ED430 at 0x150438C4) with our texture, made from the P4's, in place of the P4's (func_151ED430, its texture loaded).
+[[patches.hook]]
+func = "func_151EC648"
+before_vram = 0x151ECFB8
+text = "{ extern void conker_possess_join_label(uint8_t*, recomp_context*); conker_possess_join_label(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_15043384"
+before_vram = 0x150438C4
+text = "{ extern void conker_possess_icon(uint8_t*, recomp_context*, int); conker_possess_icon(rdram, ctx, 0); }"
+
+[[patches.hook]]
+func = "func_15043384"
+before_vram = 0x150438CC
+text = "{ extern void conker_possess_icon(uint8_t*, recomp_context*, int); conker_possess_icon(rdram, ctx, 1); }"
+
+[[patches.hook]]
+func = "func_151ED430"
+before_vram = 0x151ED5F4
+text = "{ extern void conker_possess_icon_texture(uint8_t*, recomp_context*); conker_possess_icon_texture(rdram, ctx); }"
+
 [[patches.hook]]
 func = "func_151E2834"
 before_vram = 0x151E2E6C

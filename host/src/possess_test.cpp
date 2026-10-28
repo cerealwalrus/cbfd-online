@@ -53,6 +53,7 @@
 #include "recomp.h"
 
 #include "conker.hpp"
+#include "p5_icon.hpp"
 #include "ultramodern/ultramodern.hpp"
 
 // (possess44) ultramodern's (input.cpp): a controller's stick as the game gets it, from the input's x and y, the same on every machine
@@ -3461,6 +3462,92 @@ extern "C" void conker_possess_join_fifth(uint8_t* rdram, recomp_context* ctx, i
         ctx->r17 = (gpr)extra;
         fifth_now = false;
     }
+}
+
+// The P5 column's label: the game's is text "#" and the column's number, an icon of D_800859E0's (#1 to #4 the P1 to P4 icons, sprites
+// 0x894 to 0x897; its #5 is another, 0x87B). Ours, a P5 in their look, is made from the P4 icon (p5_icon.hpp) and drawn in the label's
+// place: func_151EC648, after 0x151ECFB0 (the label queued, conker_possess_join_label), notes the text's entry; func_15043384, before and
+// after 0x150438C4 (an icon drawn, conker_possess_icon), has that entry's drawn as sprite 0x897; and func_151ED430, before 0x151ED5F4
+// (the sprite's texture loaded, conker_possess_icon_texture), has ours drawn instead, put in our memory (0x80FDE000) each time. All of
+// it is the same on every machine (the character select is drawn by the game's own frame on each), and nothing of the game's is kept:
+// the texture is made from the game's own.
+namespace {
+    constexpr uint32_t text_tail = 0x800CBD68;      // the queued text's last entry (func_15042ECC)
+    constexpr uint32_t icon_entry_5 = 0x80085A00;   // D_800859E0's #5
+    constexpr uint32_t icon_sprite = 0x80090060;    // D_80090060: the sprite func_15043384 draws an icon as (its id first)
+    constexpr uint32_t p4_sprite = 0x897;
+    constexpr uint32_t p5_texture = 0x80FDE000;     // ours: the P5 icon's texture (32 x 32 RGBA32, 0x1000)
+    uint32_t p5_label = 0;                          // the P5 label's text entry, queued this frame
+    bool p5_drawing = false;                        // its icon being drawn
+    uint32_t p5_made[conker::p5icon::size * conker::p5icon::size];
+    bool p5_have = false;
+}
+
+extern "C" void conker_possess_join_label(uint8_t* rdram, recomp_context* ctx) {
+    p5_label = 0;
+    if (!five_columns() || (int32_t)ctx->r16 != extra + 1) {
+        return;
+    }
+    const uint32_t entry = (uint32_t)MEM_W(0, (gpr)(int32_t)text_tail);
+    if ((entry >> 24) == 0x80 && (entry & 0x7FFFFFu) < 0x800000u - 0x5Cu && MEM_BU(0xD, (gpr)(int32_t)entry) == (uint8_t)(extra + 1)) {
+        p5_label = entry;
+    }
+}
+
+extern "C" void conker_possess_icon(uint8_t* rdram, recomp_context* ctx, int where) {
+    if (where != 0) {
+        p5_drawing = false;
+        return;
+    }
+    p5_drawing = false;
+    if (p5_label == 0 || (uint32_t)ctx->r16 != p5_label || (uint32_t)ctx->r17 != icon_entry_5 ||
+        MEM_BU(0xD, (gpr)(int32_t)p5_label) != (uint8_t)(extra + 1)) {
+        return;
+    }
+    p5_label = 0;
+    MEM_W(0, (gpr)(int32_t)icon_sprite) = (int32_t)p4_sprite;
+    p5_drawing = true;
+}
+
+extern "C" void conker_possess_icon_texture(uint8_t* rdram, recomp_context* ctx) {
+    if (!p5_drawing) {
+        return;
+    }
+    p5_drawing = false;
+    const uint32_t texture = (uint32_t)ctx->r9;
+    if ((uint32_t)ctx->r20 != p4_sprite || texture == 0x80000000u) {
+        return;
+    }
+    const uint32_t from = texture < 0x00800000u ? texture | 0x80000000u : texture;
+    if ((from >> 24) != 0x80 || (from & 0x7FFFFFu) > 0x800000u - 0x1000u) {
+        static bool told = false;
+        if (!told) {
+            told = true;
+            log("f=%u [join] the P4 icon's texture at %08X: not one we can read, the P5 label left as the P4's", (unsigned)conker::netsession::frame(),
+                (unsigned)texture);
+        }
+        return;
+    }
+    constexpr int n = conker::p5icon::size;
+    if (!p5_have) {
+        uint32_t p4[n * n];
+        for (int y = 0; y < n; y++) {
+            for (int x = 0; x < n; x++) {
+                const int sx = x ^ ((y & 1) ? 2 : 0);   // the texture's odd rows are kept swizzled, for the RDP's TMEM
+                p4[y * n + x] = (uint32_t)MEM_W(4 * (y * n + sx), (gpr)(int32_t)from);
+            }
+        }
+        conker::p5icon::make(p4, p5_made);
+        p5_have = true;
+        log("f=%u [join] the P5 icon made from the P4's (its texture at %08X)", (unsigned)conker::netsession::frame(), (unsigned)texture);
+    }
+    for (int y = 0; y < n; y++) {
+        for (int x = 0; x < n; x++) {
+            const int sx = x ^ ((y & 1) ? 2 : 0);
+            MEM_W(4 * (y * n + sx), (gpr)(int32_t)p5_texture) = (int32_t)p5_made[y * n + x];
+        }
+    }
+    ctx->r9 = (gpr)(int32_t)(texture < 0x00800000u ? p5_texture & 0x7FFFFFFFu : p5_texture);
 }
 
 // func_151E2834, 0x151E2E6C (each character's kind made, D_80087270): the 5th player's, the one it picked, where the mode lets the players
