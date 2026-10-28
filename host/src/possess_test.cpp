@@ -142,6 +142,41 @@ namespace {
     bool list_has_fifth(uint8_t* rdram) {
         return fifth_at(rdram) >= 0;
     }
+    // (possess55) With fewer than 4 players in a match the 5th player plays as one of the game's own players: the camera, the views and
+    // the HUD the game has tie a player's index to its character's (func_150054C4 makes camera k for character k), so its own
+    // character can't come earlier than 5th through the extra camera. Its entry in the list is then a free controller's (one whose port
+    // nobody plays in), right after the players, one more player on the screen (D_8008FE40), and that controller's input is the 5th
+    // player's (net_session.cpp, conker::possess_test::fifth_port): the game's own player, its camera, view, HUD and pause menu. Kept in
+    // ours (+0 0x80 and the controller, +1 its place in the list), the same on every machine, until the menus come back to the list
+    // (fifth_unmap: the entry and the extra player taken out again, so the character select is as the players left it).
+    constexpr uint32_t fifth_map = 0x80FD0A30;
+    constexpr uint32_t screen_players = 0x8008FE40;   // D_8008FE40: the players
+    bool fifth_mapped(uint8_t* rdram) {
+        return (MEM_BU(0, (gpr)(int32_t)fifth_map) & 0x80) != 0;
+    }
+    void log(const char* format, ...);
+    void fifth_unmap(uint8_t* rdram, const char* where) {
+        if (!fifth_mapped(rdram)) {
+            return;
+        }
+        const int port = MEM_BU(0, (gpr)(int32_t)fifth_map) & 3;
+        const int place = MEM_BU(1, (gpr)(int32_t)fifth_map);
+        MEM_B(0, (gpr)(int32_t)fifth_map) = 0;
+        const int players = (int)(int8_t)MEM_B(0, (gpr)(int32_t)screen_players);
+        if (place >= 1 && place < 16 && place < players && (int8_t)MEM_B(0, (gpr)(int32_t)(match_list + (uint32_t)place)) == (int8_t)port) {
+            for (uint32_t i = (uint32_t)place; i < 15; i++) {
+                MEM_B(0, (gpr)(int32_t)(match_list + i)) = MEM_B(0, (gpr)(int32_t)(match_list + i + 1));
+                MEM_B(0, (gpr)(int32_t)(match_teams + i)) = MEM_B(0, (gpr)(int32_t)(match_teams + i + 1));
+            }
+            MEM_B(0, (gpr)(int32_t)(match_list + 15u)) = -1;
+            MEM_B(0, (gpr)(int32_t)(match_teams + 15u)) = 0;
+            MEM_B(0, (gpr)(int32_t)screen_players) = (int8_t)(players - 1);
+            log("(online) %s: the 5th player's entry (controller %d, player %d) taken out of the list again", where, port + 1, place + 1);
+        } else {
+            log("(online) %s: the 5th player's entry (controller %d, player %d) not in the list as it was left: the list left as it is", where,
+                port + 1, place + 1);
+        }
+    }
     // the character the extra camera plays, from the list (online, a match of 5 players), else character 5
     void fifth_character_now(uint8_t* rdram) {
         const int at = online5() ? fifth_at(rdram) : -1;
@@ -714,7 +749,7 @@ namespace {
         }
         frames++;
         online_match_frames++;
-        fifth_character_now(rdram);   // (possess54)
+        fifth_character_now(rdram);   // (possess55)
         uint16_t buttons = 0;
         float x = 0.0f, y = 0.0f;
         const bool here = conker::netsession::fifth_input(&buttons, &x, &y);
@@ -728,6 +763,15 @@ namespace {
             return;
         }
         if (!extra_played) {
+            if (fifth_mapped(rdram)) {
+                // (possess55) it plays as the game's own player: nothing of the extra camera's
+                if (mine && !online_told_playing && online_match_frames > 30) {
+                    online_told_playing = true;
+                    log("f=%u (online) the 5th player plays as player %d, the game's own way (controller %d)", (unsigned)frames,
+                        MEM_BU(1, (gpr)(int32_t)fifth_map) + 1, (MEM_BU(0, (gpr)(int32_t)fifth_map) & 3) + 1);
+                }
+                return;
+            }
             if (!(extra_ready || extra_wanted || extra_possible(rdram))) {
                 if (mine && !online_told_no_bot && online_match_frames > 150) {
                     online_told_no_bot = true;
@@ -3339,6 +3383,7 @@ bool conker::possess_test::fifth_joined(uint8_t* rdram) {
 // them, as it makes a column's character; the same on every machine, and with a resync's state).
 extern "C" void conker_possess_join_places(uint8_t* rdram, recomp_context* ctx) {
     (void)ctx;
+    fifth_unmap(rdram, "the character select");   // (possess55)
     const bool want = five_columns();
     const bool moved = MEM_BU(3, (gpr)(int32_t)join_state) != 0;
     if (want && join_logged < 3) {
@@ -3653,6 +3698,21 @@ namespace {
     }
 }
 
+int conker::possess_test::fifth_port(const uint8_t* ram) {
+    // (possess55, see fifth_map) lock-free: net_session.cpp asks with its lock held
+    if (ram == nullptr) {
+        return -1;
+    }
+    const uint8_t b = ram[(fifth_map ^ 3u) - 0x80000000u];
+    return (b & 0x80) != 0 ? (int)(b & 3) : -1;
+}
+
+// (possess55) func_151E1744's start (the teams screen's frame): the 5th player's entry taken out (fifth_unmap), as the screen has its own
+extern "C" void conker_possess_teams_start(uint8_t* rdram, recomp_context* ctx) {
+    (void)ctx;
+    fifth_unmap(rdram, "the teams screen");
+}
+
 bool conker::possess_test::fifth_on_teams(uint8_t* rdram) {
     return online5() && fifth_is_joined(rdram) && teams_mode_ok(rdram);
 }
@@ -3753,7 +3813,8 @@ extern "C" void conker_possess_teams(uint8_t* rdram, recomp_context* ctx, int wh
 // pick (a mode without teams: its row of characters), as the players' are made from theirs.
 extern "C" void conker_possess_join_kind(uint8_t* rdram, recomp_context* ctx) {
     (void)ctx;
-    const int at = fifth_at(rdram);   // (possess54: wherever the list has it)
+    // (possess55: wherever the list has it, or the place of its controller's entry, playing as the game's own player)
+    const int at = fifth_mapped(rdram) ? (int)MEM_BU(1, (gpr)(int32_t)fifth_map) : fifth_at(rdram);
     if (!online5() || !fifth_is_joined(rdram) || at < 1) {
         return;
     }
@@ -3776,6 +3837,7 @@ extern "C" void conker_possess_list(uint8_t* rdram, recomp_context* ctx) {
     if (!online5()) {
         return;
     }
+    fifth_unmap(rdram, "the match's setup");   // (possess55: a restart's list, its entry from the last match)
     int8_t list[16], team[16], list_was[16], team_was[16];
     for (uint32_t i = 0; i < 16; i++) {
         list[i] = list_was[i] = (int8_t)MEM_B(0, (gpr)(int32_t)(match_list + i));
@@ -3809,12 +3871,32 @@ extern "C" void conker_possess_list(uint8_t* rdram, recomp_context* ctx) {
     const char* what = !in_input ? "the 5th player not in the frame's input: no character for it" :
         "the 5th player hasn't joined on the character select: no character for it";
     int taken = 0;
-    // (possess54) its place: right after the players (with 4 players entry 4, character 5, as ever; with fewer, earlier: no computer players
-    // needed before it), the computer players after it
+    // (possess54) its place: right after the players, the computer players after it. With 4 players entry 4, character 5, through the
+    // extra camera as ever; with fewer, a free controller's entry, the game's own player (see fifth_map)
     const int place = players;
+    int port = -1;
+    if (place < 4) {
+        bool used[4] = {};
+        for (int i = 0; i < players && i < 16; i++) {
+            if (list[i] >= 0 && list[i] < 4) {
+                used[list[i]] = true;
+            }
+        }
+        for (int k = 1; k < 4 && port < 0; k++) {
+            bool k_plugged = false;
+            uint16_t k_buttons = 0;
+            float k_x = 0.0f, k_y = 0.0f;
+            const bool k_in = conker::netsession::input(k, &k_plugged, &k_buttons, &k_x, &k_y) && k_plugged;
+            if (!used[k] && !k_in) {
+                port = k;
+            }
+        }
+    }
     if (here) {
         if (count < 1 || place < 1) {
             what = "no players in the list: no character for the 5th player";
+        } else if (place < 4 && port < 0) {
+            what = "fewer than 4 players and no free controller: no character for the 5th player";
         } else {
             // room for it: the last computer players taken off, past the mode's most less one
             while (count >= most && count > place && list[count - 1] == -2) {
@@ -3836,10 +3918,17 @@ extern "C" void conker_possess_list(uint8_t* rdram, recomp_context* ctx) {
                     list[j] = list[j - 1];
                     team[j] = team[j - 1];
                 }
-                list[place] = fifth_entry;
+                list[place] = port >= 0 ? (int8_t)port : fifth_entry;
                 team[place] = chosen;
                 count++;
-                what = "the 5th player's own character right after the players";
+                if (port >= 0) {
+                    MEM_B(0, (gpr)(int32_t)screen_players) = (int8_t)(players + 1);
+                    MEM_B(0, (gpr)(int32_t)fifth_map) = (int8_t)(0x80 | port);
+                    MEM_B(1, (gpr)(int32_t)fifth_map) = (int8_t)place;
+                    what = "the 5th player as the game's own player right after the players (a free controller's entry, its input the 5th player's)";
+                } else {
+                    what = "the 5th player's own character right after the players, through the extra camera";
+                }
             }
         }
     }

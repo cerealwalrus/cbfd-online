@@ -2379,8 +2379,22 @@ int conker::netsession::port_of_player(int player) {
     return player < n ? (int)list[player] : -1;
 }
 
+namespace {
+    // (possess55) the controller this machine's player plays with: its slot's, or on the 5th player's machine, while it plays as the game's
+    // own player (possess_test.cpp's fifth_port), that controller
+    int my_port() {
+        if (my_slot == 4 && ram != nullptr && players_expected >= 5) {
+            const int port = conker::possess_test::fifth_port(ram);
+            if (port >= 0 && port < 4) {
+                return port;
+            }
+        }
+        return my_slot;
+    }
+}
+
 int conker::netsession::local_player() {
-    return player_of_port(my_slot);
+    return player_of_port(my_port());
 }
 
 namespace {
@@ -3129,8 +3143,10 @@ void conker::netsession::on_port_read(int port) {
             const char* text = std::getenv("CONKER_POSSESS_PAUSE");
             return text != nullptr && std::string(text) == "0";
         }();
-        const bool fifth_menu = !fifth_menu_off && my_slot == 4 && players_expected >= 5 && conker::possess_test::fifth_playing();
-        if (!open && !allow_pause && plugged && in_match && (my_slot < 4 || fifth_menu) && rd8(0x800E0B94u) == 0 && start && !was_start) {
+        // (possess55: the 5th player playing as the game's own player has that player's menu, my_port)
+        const int own_port = my_port();
+        const bool fifth_menu = !fifth_menu_off && my_slot == 4 && own_port == 4 && players_expected >= 5 && conker::possess_test::fifth_playing();
+        if (!open && !allow_pause && plugged && in_match && (own_port < 4 || fifth_menu) && rd8(0x800E0B94u) == 0 && start && !was_start) {
             // a player slot nobody plays in: the menu reads its input from there
             int slot = -1;
             for (int s = 3; s >= 0 && !fifth_menu; s--) {
@@ -3146,7 +3162,7 @@ void conker::netsession::on_port_read(int port) {
             }
             else if (slot < 0) {
                 // all four players are in: the menu reads this player's own slot, put back as it was right after (net_menu.cpp)
-                slot = my_slot;
+                slot = own_port;
                 conker::netmenu::set_borrowed(true);
                 if (!warned) {
                     warned = true;
@@ -3584,6 +3600,17 @@ void conker::netsession::on_port_read(int port) {
             waited_ms / (double)std::max<uint64_t>(waited_frames, 1), (unsigned long long)stalls, (unsigned long long)desyncs);
     }
     current = ready[f];
+    // (possess55) a match of 5 players with fewer than 4 of the game's own players: the 5th player plays as a free controller's player
+    // (possess_test.cpp's conker_possess_list, fifth_port), so that controller's input is the 5th player's, slot 5's, each frame (its
+    // sounds' handles and its menu's leave stay slot 5's alone). From the game's memory: the same on every machine.
+    if (ram != nullptr && players_expected >= 5) {
+        const int port = conker::possess_test::fifth_port(ram);
+        if (port >= 0 && port < 4) {
+            current.p[port] = current.p[4];
+            current.p[port].ended = {};
+            current.p[port].leave = PlayerInput::Leave{};
+        }
+    }
     if (current.snap != 0) {
         hook_reset_frame = f + 1;
         on_snap_order(f, current.snap);

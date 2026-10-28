@@ -440,6 +440,9 @@ namespace conker {
         // (possess51) the 5th player is on the teams screen as a player (it has joined, in a mode whose screen can have it): the screen's
         // limits count it (mp_characters.cpp)
         bool fifth_on_teams(uint8_t* rdram);
+        // (possess55, online, 5 players, fewer than 4 of the game's own in the match) the controller (0 to 3) the 5th player plays as, its
+        // input the 5th player's; -1 if none. Lock-free, from the game's memory (net_session.cpp asks with its lock held)
+        int fifth_port(const uint8_t* ram);
         // (online resyncs, save_states.cpp) whether a state can be taken now (not between a frame's start and its extra camera's
         // view), and what of the extra camera is kept outside the game's memory, added to a state and put back with it
         bool net_state_ready();

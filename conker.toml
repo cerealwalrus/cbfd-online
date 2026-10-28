@@ -3361,3 +3361,10 @@ text = "{ extern void conker_possess_teams(uint8_t*, recomp_context*, int); conk
 func = "func_151E1744"
 before_vram = 0x151E1D74
 text = "{ extern void conker_team_bots(uint8_t*, recomp_context*); conker_team_bots(rdram, ctx); }"
+
+# possess55: online, the 5th player playing as the game's own player in a match with fewer than 4 of them (host/src/possess_test.cpp,
+# fifth_map): its entry taken out of the list again as the teams screen's frame starts (as the character select's and a match's setup).
+[[patches.hook]]
+func = "func_151E1744"
+before_vram = 0x151E1744
+text = "{ extern void conker_possess_teams_start(uint8_t*, recomp_context*); conker_possess_teams_start(rdram, ctx); }"
