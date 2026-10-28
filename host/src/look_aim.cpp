@@ -826,30 +826,9 @@ extern "C" int conker_steady_ease(uint8_t* rdram, recomp_context* ctx) {
     return 1;
 }
 
-// (possess102) func_15122440, 0x15122534: the angle the camera's eye is raised by, about to be the character's ground slope ($f6, its
-// +0xB8) plus a little ($f2). The eye is built from it (its height over the look-at point, the sine of it at the camera's distance), so
-// on a ramp the eye sat lower going up (108 over Conker in possess101's [look-slope] lines, 115.8 on the flat, the look's pitch still)
-// and higher going down (122.4): the crosshair tilted with the ramp. With Aiming: Steady Camera, in R-Look's second stage, the slope is
-// left out (as on flat ground), so only the aim tilts the view. $s0 the camera.
-extern "C" void conker_steady_slope(uint8_t* rdram, recomp_context* ctx) {
-    if (!steady_camera(rdram, ctx->r16)) {
-        return;
-    }
-    static uint32_t told = 0;
-    if (ctx->f6.fl != 0.0f && told < 20 && conker::netsession::active()) {
-        told++;
-        char line[120];
-        std::snprintf(line, sizeof(line), "[look-slope] f=%u Steady Camera: the ground's slope %.2f left out of the eye's angle (camera %d)",
-            conker::netsession::frame(), ctx->f6.fl, (int)MEM_BU(0x23D, ctx->r16));
-        conker::netsession::log(line);
-    }
-    ctx->f6.fl = 0.0f;
-}
 #else
 extern "C" int conker_steady_ease(uint8_t*, recomp_context*) {
     return 0;
-}
-extern "C" void conker_steady_slope(uint8_t*, recomp_context*) {
 }
 #endif
 
@@ -1083,6 +1062,22 @@ extern "C" void conker_look_view(uint8_t* rdram, recomp_context* ctx) {
                 read_float(rdram, camera, 0x2E0), read_float(rdram, camera, 0x2E4), read_float(rdram, camera, 0x2E8));
             conker::netsession::log(line);
         }
+    }
+    // (possess103) Aiming: Steady Camera: the view's eye at the height the aim alone gives it. possess102's [look-slope] lines (the eye and the
+    // look-at point eased at once since possess101): the look-at point stayed 106.5 over Conker, but the eye's height over it went with the
+    // ground (on flat ground the view looked down by 0.81 of the look's pitch, 13.5 over the look-at point at 10.39 degrees and 93 across;
+    // up a ramp 7 lower, the view tilted up; down one 7 higher, tilted down; standing on the ramp too), the game's camera placing its eye
+    // by the ground somewhere not found yet. Here the view's eye (its y as the view has it, +0x2F0; the camera's own left to the game) is put
+    // where flat ground has it: over the look-at point by its distance across times the tangent of 0.81 of the look's pitch. Only the aim
+    // tilts the view then; Conker's height moves it up and down whole. Every machine alike for every player's camera (det_math).
+    if (player >= 0 && steady_camera(rdram, camera)) {
+        const float vex = read_float(rdram, camera, 0x2EC), vez = read_float(rdram, camera, 0x2F8 + 8);
+        const float vax = read_float(rdram, camera, 0x2E0), vay = read_float(rdram, camera, 0x2E4), vaz = read_float(rdram, camera, 0x2E8);
+        const float across = std::sqrt((vax - vex) * (vax - vex) + (vaz - vez) * (vaz - vez));
+        const float look_pitch = read_float(rdram, camera + 0x740, current_pitch);
+        constexpr float flat_view_share = 0.81f, steady_degrees = 3.14159265358979f / 180.0f;
+        const float lift = across * conker::det::tan(flat_view_share * look_pitch * steady_degrees);
+        write_float(rdram, camera, 0x2F0, vay + lift);
     }
     if (!swap_state(player)) {
         return;
