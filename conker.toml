@@ -381,6 +381,13 @@ func = "func_15095B08"
 before_vram = 0x15095C84
 text = "{ extern void conker_widen_piece_cull_right(uint8_t*, recomp_context*); conker_widen_piece_cull_right(rdram, ctx); }"
 
+# Aiming: Steady Camera (possess101, host/src/look_aim.cpp): the game's easing of a value toward a target, at its start; in R-Look with
+# the setting on, the camera's eye and look-at point take their target at once.
+[[patches.hook]]
+func = "func_150495B0"
+before_vram = 0x150495B0
+text = "{ extern int conker_steady_ease(uint8_t*, recomp_context*); if (conker_steady_ease(rdram, ctx) != 0) { return; } }"
+
 [[patches.hook]]
 func = "func_15130A9C"
 before_vram = 0x15131168

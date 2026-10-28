@@ -241,6 +241,7 @@ namespace {
         const std::string stick_camera = "stick_free_camera";
         const std::string camera_fov = "camera_field_of_view_degrees";
         const std::string aim_swap_sticks = "aim_swap_sticks";
+        const std::string aim_steady_camera = "aim_steady_camera";   // (possess101)
         const std::string aim_lock_on = "aim_lock_on";
     }
 
@@ -311,6 +312,13 @@ namespace {
 // The Camera tab, its settings in alphabetical order (possess65).
 void conker::look_aim::add_camera_options(recomp::config::Config& config) {
     // (possess65) in alphabetical order
+    // (possess101)
+    config.add_enum_option(options::aim_steady_camera, "Aiming: Steady Camera",
+        "Stops the camera moving on its own while you hold R. In the original game the camera eases after Conker as he moves "
+        "while you aim, trailing a little behind him: walking tilts and swings the view, up a ramp it tilts the crosshair up and "
+        "down a ramp down, until you stop. <recomp-color primary>On</recomp-color>: the camera stays locked to Conker, and only your "
+        "aim turns it. <recomp-color primary>Off</recomp-color> matches the original game. Online it is each player's own setting.",
+        toggle, Toggle::Off);
     config.add_enum_option(options::aim_swap_sticks, "Aiming: Swap Sticks",
         "Controls aiming like a third-person shooter: while you aim, the right stick aims and the left stick moves, as "
         "the C-buttons do (e.g. the shotgun, the slingshot, the sniper scope, R-Look), in single player, and online with a gamepad (the SMG, the M4...). "
@@ -779,6 +787,50 @@ extern "C" void conker_shotgun_laser_walk(uint8_t* rdram, recomp_context* ctx) {
 // standing still). Its distance and height stay, and so does the eye.
 extern std::atomic<int> walk_dx[aim_players], walk_dy[aim_players];
 
+#if defined(CONKER_RT64)
+// (possess101) Aiming: Steady Camera, for a camera: R-Look's second stage, Conker's, and the setting on for its player (online the
+// frame's input, a bit of that player's look flags, so every machine goes by the same; offline this machine's setting).
+static bool steady_camera(uint8_t* rdram, gpr camera) {
+    const gpr walker = (gpr)(int32_t)MEM_W(0x3D0, camera);
+    if (MEM_H(0x73C, camera) != 2 || ((uint32_t)walker & 0xFF000000u) != 0x80000000u) {
+        return false;
+    }
+    if (conker::netsession::active()) {
+        return (conker::netsession::look_flags((int)MEM_BU(0x23D, camera)) & 8u) != 0;
+    }
+    return option<Toggle>(options::aim_steady_camera) == Toggle::On;
+}
+
+// (possess101) func_150495B0, at its start: the game's easing of one value toward a target ($a0 the value, $a1 the target, $a2 its
+// speed), which the cameras follow Conker by: the eye (+0x2F8, +0x2FC, +0x300 of the camera) and the point the look-at point is
+// worked out from (+0x2BC, +0x2C0, +0x2C4). With Aiming: Steady Camera, in R-Look's second stage, those take their target at once (as
+// the function does itself when it would pass it: the value the target, its speed 0), so the camera moves with Conker and nothing
+// else (possess97's [look-slope] lines: on a ramp the eye 16 behind his height, the look-at point 9, the aim tilted 4.4 degrees).
+// Every camera of the look records (D_800DBFF0, 0x9A0 each), from the game's memory on every machine. (An int: the hook is C.)
+extern "C" int conker_steady_ease(uint8_t* rdram, recomp_context* ctx) {
+    const uint32_t value = (uint32_t)ctx->r4;
+    const uint32_t looks = (uint32_t)MEM_W(0, (gpr)(int32_t)0x800DBFF0);
+    if ((looks >> 24) != 0x80 || value < looks + 0x2BCu || value > looks + (uint32_t)aim_players * 0x9A0u) {
+        return 0;
+    }
+    const uint32_t record = (value - looks) / 0x9A0u, field = (value - looks) % 0x9A0u;
+    const bool position = field == 0x2F8u || field == 0x2FCu || field == 0x300u || field == 0x2BCu || field == 0x2C0u || field == 0x2C4u;
+    if (!position || record >= (uint32_t)aim_players) {
+        return 0;
+    }
+    if (!steady_camera(rdram, (gpr)(int32_t)(looks + record * 0x9A0u))) {
+        return 0;
+    }
+    MEM_W(0, ctx->r4) = (int32_t)(uint32_t)ctx->r5;
+    MEM_W(0, ctx->r6) = 0;
+    return 1;
+}
+#else
+extern "C" int conker_steady_ease(uint8_t*, recomp_context*) {
+    return 0;
+}
+#endif
+
 extern "C" void conker_look_view(uint8_t* rdram, recomp_context* ctx) {
 #if defined(CONKER_RT64)
     const gpr camera = ctx->r16;
@@ -888,7 +940,7 @@ extern "C" void conker_look_view(uint8_t* rdram, recomp_context* ctx) {
             lift.step = -1;
         } else {
             lift.stage_two_frames++;
-            if (lift.step < 0 && lift.stage_two_frames <= 3 && lift.have_last) {
+            if (lift.step < 0 && lift.stage_two_frames <= 3 && lift.have_last && !steady_camera(rdram, camera)) {   // (possess101: not with Steady Camera)
                 const float jump = raw_height - lift.last_height;
                 if (jump > 6.5f && jump < 10.0f) {
                     lift.step = 0;
@@ -949,7 +1001,12 @@ extern "C" void conker_look_view(uint8_t* rdram, recomp_context* ctx) {
             const gpr slope_conker = (gpr)(int32_t)MEM_W(0x3D0, camera);
             if (stage == 2 && ((uint32_t)slope_conker & 0xFF000000u) == 0x80000000u) {
                 const float cy = read_float(rdram, slope_conker, 0x18);
-                if (slope_have && std::fabs(cy - slope_last_y) > 0.3f && frames_logged >= 45 && slope_lines < 1500) {
+                const float cx = read_float(rdram, slope_conker, 0x14), cz = read_float(rdram, slope_conker, 0x1C);
+                static float slope_last_x = 0.0f, slope_last_z = 0.0f;
+                const bool moved = std::fabs(cy - slope_last_y) > 0.3f || std::fabs(cx - slope_last_x) > 0.3f || std::fabs(cz - slope_last_z) > 0.3f;
+                slope_last_x = cx;
+                slope_last_z = cz;
+                if (slope_have && moved && frames_logged >= 45 && slope_lines < 1500) {
                     slope_lines++;
                     const float ex = read_float(rdram, camera, 0x2F8), ey = read_float(rdram, camera, 0x2FC), ez = read_float(rdram, camera, 0x300);
                     const float ax = read_float(rdram, camera, 0x2E0), ay = read_float(rdram, camera, 0x2E4), az = read_float(rdram, camera, 0x2E8);
@@ -958,9 +1015,10 @@ extern "C" void conker_look_view(uint8_t* rdram, recomp_context* ctx) {
                     const gpr t0s = camera + 0x740;
                     char line[300];
                     std::snprintf(line, sizeof(line), "[look-slope] f=%u conker y %.1f (%+.1f) look-at y %.1f eye y %.1f, %.0f across: the view's pitch %.1f, "
-                        "the look's %.2f (target %.2f), aim %d",
+                        "the look's %.2f (target %.2f), aim %d; from Conker: eye %.1f %.1f %.1f, look-at %.1f %.1f %.1f",
                         conker::netsession::frame(), cy, cy - slope_last_y, ay, ey, across, view_pitch, read_float(rdram, t0s, current_pitch),
-                        read_float(rdram, t0s, target_pitch), ((uint32_t)MEM_W(0x3D4, camera) & 0xFF000000u) == 0x80000000u ? (int)MEM_H(0x12, (gpr)(int32_t)MEM_W(0x3D4, camera)) : 0);
+                        read_float(rdram, t0s, target_pitch), ((uint32_t)MEM_W(0x3D4, camera) & 0xFF000000u) == 0x80000000u ? (int)MEM_H(0x12, (gpr)(int32_t)MEM_W(0x3D4, camera)) : 0,
+                        ex - cx, ey - cy, ez - cz, ax - cx, ay - cy, az - cz);
                     conker::netsession::log(line);
                 }
                 slope_last_y = cy;
@@ -1361,7 +1419,7 @@ namespace {
     // look_flag): online they were this machine's for every player, so a player whose settings differed from the other
     // machine's (Stick: Aiming Response Direct here, Smooth there) aimed differently on each machine: aiming the tommy gun
     // (whose look the SMG's and the M4's fix-ups don't cover) the games drifted apart every second (0.9.46 test).
-    constexpr uint8_t look_turn_x = 1, look_turn_y = 2, look_direct = 4;
+    constexpr uint8_t look_turn_x = 1, look_turn_y = 2, look_direct = 4, look_steady = 8;   // (look_steady: possess101, Aiming: Steady Camera)
 
     // Whether the look mode's camera's player has the bit: online from the frame's agreed input (that player's own settings),
     // offline this machine's.
@@ -1384,7 +1442,8 @@ namespace {
 uint8_t conker::look_aim::sampled_look_flags() {
 #if defined(CONKER_RT64)
     return (uint8_t)((own_turn_stick_x() ? look_turn_x : 0) | (own_turn_stick_y() ? look_turn_y : 0) |
-        (option<Response>(options::stick_response) == Response::Direct ? look_direct : 0));
+        (option<Response>(options::stick_response) == Response::Direct ? look_direct : 0) |
+        (option<Toggle>(options::aim_steady_camera) == Toggle::On ? look_steady : 0));
 #else
     return 0;
 #endif
