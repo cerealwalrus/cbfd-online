@@ -3121,17 +3121,30 @@ void conker::netsession::on_port_read(int port) {
         }
         // (not once the match is over: 800E0B94 is 0 all through a match and 6/7/3 on the screens after it, which the game runs with
         // player 1's controller; the pause menu opened over them took that controller away in the 0.9.4 test)
-        // (possess-test: not for the 5th player, who has none of the game's controllers for its pause screen, nor a view the game draws)
-        if (!open && !allow_pause && plugged && in_match && my_slot < 4 && rd8(0x800E0B94u) == 0 && start && !was_start) {
+        // (possess49: the 5th player's too, on its machine: its menu reads the game's 4th slot, its own input there while the menu runs and
+        // the slot's own put back right after, whoever plays in it; the pause screen and the menu's text are drawn in the 5th player's
+        // HUD over its view, net_menu.cpp)
+        // (the session's lock is held here: the session's own state, and the 5th player's state without it) (CONKER_POSSESS_PAUSE=0: none)
+        static const bool fifth_menu_off = []() {
+            const char* text = std::getenv("CONKER_POSSESS_PAUSE");
+            return text != nullptr && std::string(text) == "0";
+        }();
+        const bool fifth_menu = !fifth_menu_off && my_slot == 4 && players_expected >= 5 && conker::possess_test::fifth_playing();
+        if (!open && !allow_pause && plugged && in_match && (my_slot < 4 || fifth_menu) && rd8(0x800E0B94u) == 0 && start && !was_start) {
             // a player slot nobody plays in: the menu reads its input from there
             int slot = -1;
-            for (int s = 3; s >= 0; s--) {
+            for (int s = 3; s >= 0 && !fifth_menu; s--) {
                 if (s >= players_expected) {
                     slot = s;
                     break;
                 }
             }
-            if (slot < 0) {
+            if (fifth_menu) {
+                slot = 3;
+                conker::netmenu::set_borrowed(true);
+                log_line("[menu] the 5th player's pause menu reads player slot 4 (its own input there while the menu runs, put back after)");
+            }
+            else if (slot < 0) {
                 // all four players are in: the menu reads this player's own slot, put back as it was right after (net_menu.cpp)
                 slot = my_slot;
                 conker::netmenu::set_borrowed(true);

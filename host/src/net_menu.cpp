@@ -29,6 +29,7 @@
 
 namespace {
     std::atomic<bool> menu_open = false;
+    std::atomic<uint32_t> menu_opens{ 0 };   // (possess49) each time the menu opens, one more
     std::atomic<uint32_t> input_buttons = 0;
     std::atomic<int> input_x = 0;
     std::atomic<int> input_y = 0;
@@ -55,6 +56,9 @@ void conker::netmenu::set_borrowed(bool value) {
 }
 
 void conker::netmenu::set_open(bool open) {
+    if (open && !menu_open.load()) {
+        menu_opens++;
+    }
     menu_open = open;
 }
 
@@ -155,10 +159,23 @@ namespace {
     }
 }
 
+namespace {
+    // (possess49) the 5th player's machine (its player the match's 5th, through the extra camera): the pause screen is drawn as the
+    // game draws its own (its sprites, loaded as it opens and let go as it closes, and its counters go on from frame to frame there, as
+    // on the 4 players' machines), and its commands are copied into the 5th player's HUD over its view (possess_test.cpp's fifth_hud),
+    // which draws no pause screen of its own: what it draws is put back as the frame ends
+    bool fifth_machine() {
+        return conker::netsession::active() && conker::possess_test::online_view_here();
+    }
+    bool pause_screen_here() {
+        return !fifth_machine() || !conker::possess_test::drawing_extra_view();
+    }
+}
+
 // (0.10.75) the pause screen's two functions begin (where 0: func_151EB06C, 1: func_151DDC20) and end (2, 3)
 extern "C" void conker_pause_bounds(uint8_t* rdram, recomp_context* ctx, int where) {
     (void)ctx;
-    const bool on = conker::netsession::active() && menu_open.load();
+    const bool on = conker::netsession::active() && menu_open.load() && (where != 0 || pause_screen_here());
     const bool before = in_pause_screen.load() || in_pause_menu.load();
     switch (where) {
         case 0: in_pause_screen = on; break;
@@ -190,11 +207,167 @@ extern "C" int conker_pause_sound(uint8_t* rdram, recomp_context* ctx) {
 
 namespace {
     void note_pause_drawn();
+
+    // (possess49) The 5th player's pause menu. Its machine draws the game's view under the 5th player's (its HUD over it, fifth_hud).
+    // The pause screen's text, which the game queues as its update runs the menu (func_151DDC20: CONT, QUIT, the stick) and as its
+    // frame draws the pause screen (the overlay, func_15019E60 up to its text's flush: the score table), is drawn by the game's flush
+    // under that view: so it's noted as it's queued (func_15042D94 and func_15042E3C queue text at a place or the last one, func_150432FC
+    // sets the place, func_1504332C the colour) and queued again for the HUD's flush (fifth_hud, its memory put back after), the menu's
+    // first. The text's state (D_800CBD60 on: colours, place, the kind of text, its scale; not +4 and +8, the queue's ends) as each began,
+    // for it to start from.
+    struct PauseText {
+        int which;
+        uint32_t a[4];
+        uint32_t words[16];   // the text's arguments, as func_15042ECC reads them
+    };
+    struct NotedText {
+        std::vector<PauseText> calls;
+        uint8_t state[0x24] = {};
+        uint32_t opening = 0xFFFFFFFFu;   // the menu's opening it was noted in (menu_opens then)
+    };
+    NotedText noting_menu, shown_menu, noting_overlay, shown_overlay;
+    NotedText* noting = nullptr;
+    constexpr uint32_t text_state = 0x800CBD60u;
+    bool text_state_byte(uint32_t i) {
+        return i < 4 || i >= 0xC;   // (not the queue's two ends, +4 and +8)
+    }
+
+    void noting_begin(uint8_t* rdram, NotedText& into) {
+        into.calls.clear();
+        for (uint32_t i = 0; i < sizeof(into.state); i++) {
+            into.state[i] = (uint8_t)MEM_BU(0, (gpr)(int32_t)(text_state + i));
+        }
+        noting = &into;
+    }
+
+    void noting_end(NotedText& from, NotedText& shown) {
+        if (noting != &from) {
+            return;
+        }
+        noting = nullptr;
+        shown.calls = from.calls;
+        std::memcpy(shown.state, from.state, sizeof(shown.state));
+        shown.opening = menu_opens.load();
+    }
+}
+
+// (possess49) func_15042D94 (0), func_15042E3C (1), func_150432FC (2) and func_1504332C (3) begin ($sp the caller's): noted while the
+// 5th player's machine runs its pause menu, or draws its pause screen.
+extern "C" void conker_pause_text_note(uint8_t* rdram, recomp_context* ctx, int which) {
+    if (noting == nullptr || noting->calls.size() >= 160) {
+        return;
+    }
+    PauseText call{};
+    call.which = which;
+    call.a[0] = (uint32_t)ctx->r4;
+    call.a[1] = (uint32_t)ctx->r5;
+    call.a[2] = (uint32_t)ctx->r6;
+    call.a[3] = (uint32_t)ctx->r7;
+    if (which == 0) {
+        for (uint32_t i = 0; i < 16; i++) {
+            call.words[i] = (uint32_t)MEM_W(0x10 + 4 * i, ctx->r29);
+        }
+    } else if (which == 1) {
+        call.words[0] = call.a[1];
+        call.words[1] = call.a[2];
+        call.words[2] = call.a[3];
+        for (uint32_t i = 3; i < 16; i++) {
+            call.words[i] = (uint32_t)MEM_W(0x10 + 4 * (i - 3), ctx->r29);
+        }
+    }
+    noting->calls.push_back(call);
+}
+
+void conker::netmenu::fifth_overlay_noting(uint8_t* rdram, bool on) {
+    if (on) {
+        if (menu_open.load() && fifth_machine()) {
+            noting_begin(rdram, noting_overlay);
+        }
+    } else {
+        noting_end(noting_overlay, shown_overlay);
+    }
+}
+
+extern "C" void func_15042ECC(uint8_t* rdram, recomp_context* ctx);
+
+namespace {
+    uint32_t requeue(uint8_t* rdram, recomp_context* ctx, const NotedText& noted) {
+        if (noted.calls.empty() || noted.opening != menu_opens.load()) {
+            return 0;
+        }
+        const recomp_context saved = *ctx;
+        uint8_t was[0x24];
+        for (uint32_t i = 0; i < sizeof(was); i++) {
+            was[i] = (uint8_t)MEM_BU(0, (gpr)(int32_t)(text_state + i));
+            if (text_state_byte(i)) {
+                MEM_B(0, (gpr)(int32_t)(text_state + i)) = (int8_t)noted.state[i];
+            }
+        }
+        // the arguments below the stack's top, and the call's own room below them
+        const gpr words_at = ADD32(saved.r29, -0x100);
+        uint32_t queued = 0;
+        for (const PauseText& call : noted.calls) {
+            switch (call.which) {
+                case 0:
+                case 1: {
+                    if (call.which == 0) {
+                        MEM_B(0, (gpr)(int32_t)(text_state + 0x14u)) = (int8_t)(call.a[2] & 0xFFu);
+                        MEM_H(0, (gpr)(int32_t)(text_state + 0x10u)) = (int16_t)(call.a[0] & 0xFFFFu);
+                        MEM_H(0, (gpr)(int32_t)(text_state + 0x12u)) = (int16_t)(call.a[1] & 0xFFFFu);
+                    }
+                    for (uint32_t i = 0; i < 16; i++) {
+                        MEM_W(4 * i, words_at) = (int32_t)call.words[i];
+                    }
+                    ctx->r29 = ADD32(saved.r29, -0x140);
+                    ctx->r4 = (gpr)(int32_t)(call.which == 0 ? call.a[3] : call.a[0]);
+                    ctx->r5 = words_at;
+                    func_15042ECC(rdram, ctx);
+                    *ctx = saved;
+                    queued++;
+                    break;
+                }
+                case 2:
+                    MEM_H(0, (gpr)(int32_t)(text_state + 0x10u)) = (int16_t)(call.a[0] & 0xFFFFu);
+                    MEM_H(0, (gpr)(int32_t)(text_state + 0x12u)) = (int16_t)(call.a[1] & 0xFFFFu);
+                    break;
+                case 3:
+                    for (uint32_t i = 0; i < 4; i++) {
+                        MEM_B(0, (gpr)(int32_t)(text_state + i)) = (int8_t)(call.a[i] & 0xFFu);
+                    }
+                    break;
+                default:
+                    break;
+            }
+        }
+        for (uint32_t i = 0; i < sizeof(was); i++) {
+            if (text_state_byte(i)) {
+                MEM_B(0, (gpr)(int32_t)(text_state + i)) = (int8_t)was[i];
+            }
+        }
+        return queued;
+    }
+}
+
+void conker::netmenu::fifth_pause_text(uint8_t* rdram, recomp_context* ctx) {
+    if (!menu_open.load() || !fifth_machine()) {
+        return;
+    }
+    const uint32_t menu_texts = requeue(rdram, ctx, shown_menu);
+    const uint32_t overlay_texts = requeue(rdram, ctx, shown_overlay);
+    static uint32_t told = 0;
+    if (told++ < 3) {
+        char line[200];
+        std::snprintf(line, sizeof(line), "[menu] the 5th player's pause menu: its text queued again for its HUD (%u of the menu's, %u of the pause screen's)",
+            (unsigned)menu_texts, (unsigned)overlay_texts);
+        conker::netsession::log(line);
+    }
 }
 
 extern "C" void conker_net_pause_hook(uint8_t* rdram, recomp_context* ctx, int which) {
     if (which == 7) {
         conker_pause_bounds(rdram, ctx, 3);   // (0.10.75: func_151DDC20's end)
+        // (possess49) the 5th player's machine: the menu's text this frame, for its HUD
+        noting_end(noting_menu, shown_menu);
     }
     if (!menu_open) {
         if (which == 7) {
@@ -211,6 +384,11 @@ extern "C" void conker_net_pause_hook(uint8_t* rdram, recomp_context* ctx, int w
         if (!((which == 4 || which == 5 || which == 6) && coop_pause_screen())) {
             return;
         }
+    }
+    // (possess49) on the 5th player's machine the pause screen is the game's own drawing's (copied over the 5th player's view from
+    // there), not drawn again in the 5th player's HUD
+    if ((which == 1 || which == 2) && !pause_screen_here()) {
+        return;
     }
     if (which == 1) {
         ctx->r13 = 1;
@@ -238,6 +416,10 @@ extern "C" void conker_net_pause_hook(uint8_t* rdram, recomp_context* ctx, int w
     } else if (which == 3) {
         ctx->r24 = 1;
         note_pause_drawn();   // (0.10.88, 0.10.89: the buttons drawn at this game frame)
+        // (possess49) the 5th player's machine: the menu's text from here to its end noted, for its HUD
+        if (fifth_machine()) {
+            noting_begin(rdram, noting_menu);
+        }
         const int slot = input_slot;
         // the player slot the menu listens to, with this player's controller in it (D_800BE930: each slot's buttons, 2
         // bytes; D_800BE918: 6 bytes, the stick at +2 and +3)

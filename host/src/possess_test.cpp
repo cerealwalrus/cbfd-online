@@ -157,8 +157,11 @@ namespace {
         {0x80089570, 0x4, true},   // 4
         {0x80089580, 0x4, true},   // 5
         {0x800BE2B0, 0x4, true},   // 6
-        {0x800BE6C0, 0x4, false},   // 7
-        {0x800BE6D0, 0x4, false},   // 8
+    // (possess49) 7, 8 and 33 always on: the camera's update writes them by its index (func_1501B320 from func_15128CB0: its yaw and pitch
+    // eased, and the direction it looks, for its view's lighting), so the extra camera's went past their 4: 7's into 8's first, 8's into
+    // the controllers' timer (D_800BE6E0), 33's over D_800DCD3C
+        {0x800BE6C0, 0x4, true},   // 7
+        {0x800BE6D0, 0x4, true},   // 8
         {0x800BE710, 0x2, true},   // 9
         {0x800CC5D4, 0x4, false},   // 10
         {0x800D18A4, 0x1, false},   // 11
@@ -183,7 +186,7 @@ namespace {
         {0x800DC0C0, 0x4C, true},   // 30
         {0x800DC200, 0x20, true},   // 31
         {0x800DC2C0, 0x68, true},   // 32
-        {0x800DCD30, 0x3, false},   // 33
+        {0x800DCD30, 0x3, true},   // 33 (possess49: always, above)
         {0x800DCDE0, 0x18, true},   // 34
     // (possess45) 35 to 50 always on: a warp's tables (func_15172CA8, func_15172D80) and the HUD's (its fades, a hit's flash of colour,
     // its screen effects: func_1517EE40, func_1517F488, func_15181D00 and the like), which the game writes while the match runs by the
@@ -710,7 +713,12 @@ namespace {
                     online_told_no_bot = true;
                     // (possess47) the 5th player plays its own character, the list's entry 4 (conker_possess_list), made as the match was set up
                     const int count = (int)(int8_t)MEM_B(0, (gpr)(int32_t)0x8008FD8C);
-                    if (list_has_fifth(rdram)) {
+                    if (!conker::possess_test::fifth_joined(rdram)) {
+                        // (possess49) it joins on the character select, as players 2 to 4 do
+                        log("f=%u (online) the 5th player hasn't joined on the character select: no character of its own in this match",
+                            (unsigned)frames);
+                        conker::notices::show("Player 5: press Start on the character select (the P5 column) to play the next match", true);
+                    } else if (list_has_fifth(rdram)) {
                         log("f=%u (online) the 5th player's character %d isn't there to play (in the match %d, its camera %08X)", (unsigned)frames, extra,
                             (int)in_match(rdram, extra), (unsigned)word(rdram, character(extra) + 0x318));
                         conker::notices::show("Player 5's character couldn't be set up in this match: it plays from the next", true);
@@ -1060,6 +1068,47 @@ extern "C" void func_151239CC(uint8_t* rdram, recomp_context* ctx);
 extern "C" void func_15122C5C(uint8_t* rdram, recomp_context* ctx);
 extern "C" void func_15123934(uint8_t* rdram, recomp_context* ctx);
 extern "C" void func_1512C490(uint8_t* rdram, recomp_context* ctx);
+extern "C" void guMtxL2F(uint8_t* rdram, recomp_context* ctx);
+extern "C" void func_150A7A48(uint8_t* rdram, recomp_context* ctx);
+
+// (possess49) The extra camera's view matrix by its view's projection, as the game makes its views' each frame before the cameras run
+// (func_1510B690, views 0 to D_80082FA0: D_800D9D10[k] = the camera's view matrix, D_800DC2A0[buffer] + 0x40 k, by the view's
+// projection, +0x100 + 0x40 buffer of its record, both as floats), in slot 4 of D_800D9D10 (ours, slot4 table 18). A camera looks for
+// what stands between it and its character by where its look-at point falls in its view (func_1512AD54: func_1501A764 projects it with
+// D_800D9D10): the extra camera's slot was never made, all zeros, so the point came out as not a number, the depth row (func_1512B1B8)
+// was scanned from the view's left edge against a depth of -2^31, every sample counted as something in front, and the camera swung
+// aside to see past it, always the same way, until the game's pull back behind the character held it about 125 degrees round. It
+// showed whenever the game had the camera to itself (after R-Look, until the right stick turned it again), two frames after the look
+// (its +0x5FC). The same on every machine: the game's own memory, as the extra camera runs.
+namespace {
+    constexpr uint32_t view_records = 0x800BE628;        // D_800BE628: the views' records, 0x180 each (room for 5)
+    constexpr uint32_t view_projected = 0x800D9D10;      // D_800D9D10: each view's, 0x40 (slot4 table 18)
+    constexpr uint32_t view_scratch = 0x80FD0C00;        // ours: the camera's view matrix and the projection, as floats (0x40 each)
+
+    void extra_view_projection(uint8_t* rdram, recomp_context* ctx) {
+        const uint32_t out = shadow_of(view_projected);
+        const uint32_t buffer = MEM_BU(0, (gpr)(int32_t)matrix_buffer) & 1u;
+        const uint32_t block = (uint32_t)MEM_W(4 * buffer, (gpr)(int32_t)matrices);
+        const uint32_t records = (uint32_t)MEM_W(0, (gpr)(int32_t)view_records);
+        if (out == 0 || (block >> 24) != 0x80 || (records >> 24) != 0x80) {
+            return;
+        }
+        const recomp_context saved = *ctx;
+        ctx->r4 = (gpr)(int32_t)view_scratch;
+        ctx->r5 = (gpr)(int32_t)(block + 0x40u * (uint32_t)extra);
+        guMtxL2F(rdram, ctx);
+        *ctx = saved;
+        ctx->r4 = (gpr)(int32_t)(view_scratch + 0x40u);
+        ctx->r5 = (gpr)(int32_t)(records + 0x180u * (uint32_t)extra + 0x100u + 0x40u * buffer);
+        guMtxL2F(rdram, ctx);
+        *ctx = saved;
+        ctx->r4 = (gpr)(int32_t)view_scratch;
+        ctx->r5 = (gpr)(int32_t)(view_scratch + 0x40u);
+        ctx->r6 = (gpr)(int32_t)out;
+        func_150A7A48(rdram, ctx);
+        *ctx = saved;
+    }
+}
 
 // func_15005290, 0x15005318: $s0 the cameras to make blocks for (players).
 extern "C" void conker_possess_cameras_alloc(uint8_t* rdram, recomp_context* ctx) {
@@ -1150,9 +1199,11 @@ extern "C" void conker_possess_camera_frame(uint8_t* rdram, recomp_context* ctx)
             extra_wanted = extra_shown = false;
             return;
         }
+        // (possess49) its row of depths (what's in front, func_1512B1B8) as "nothing in front" (0xFFFC, as render_fixes.cpp's
+        // conker_depth_row_neutral leaves the game's), and no further than ours has room for (extra_record follows at 0x800)
         const uint32_t width = (uint32_t)MEM_W(0, (gpr)(int32_t)frame_width);
-        for (uint32_t i = 0; i < 2 * width && i < 0x4000; i++) {
-            MEM_B(i, (gpr)(int32_t)extra_buffer) = 0;
+        for (uint32_t i = 0; i + 1 < 2 * width && i < 0x800; i += 2) {
+            MEM_H(i, (gpr)(int32_t)extra_buffer) = (int16_t)(uint16_t)0xFFFCu;
         }
         slot4_reset(rdram);
         slot4_on = true;
@@ -1178,6 +1229,20 @@ extern "C" void conker_possess_camera_frame(uint8_t* rdram, recomp_context* ctx)
         }
         set_word(rdram, character(extra) + 0x318, camera);
         camera_follow(rdram, camera, extra);
+    }
+    // (possess49) its view's projected view matrix, as the game's views have theirs made before their cameras run
+    extra_view_projection(rdram, ctx);
+    *ctx = saved;
+    {
+        static uint32_t told = 0;
+        if (told < 2 || (frames % 1800) == 0) {
+            told++;
+            const uint32_t m = shadow_of(view_projected);
+            log("f=%u the extra camera's view matrix by its projection (ours, D_800D9D10's slot 4): %08X %08X %08X %08X / %08X %08X %08X %08X",
+                (unsigned)frames, (unsigned)MEM_W(0x00, (gpr)(int32_t)m), (unsigned)MEM_W(0x04, (gpr)(int32_t)m), (unsigned)MEM_W(0x08, (gpr)(int32_t)m),
+                (unsigned)MEM_W(0x0C, (gpr)(int32_t)m), (unsigned)MEM_W(0x30, (gpr)(int32_t)m), (unsigned)MEM_W(0x34, (gpr)(int32_t)m),
+                (unsigned)MEM_W(0x38, (gpr)(int32_t)m), (unsigned)MEM_W(0x3C, (gpr)(int32_t)m));
+        }
     }
     // as func_15122AE0 runs each of its cameras
     MEM_W(0x7B4, (gpr)(int32_t)camera) = MEM_W(0x7B4, (gpr)(int32_t)base);
@@ -1238,11 +1303,15 @@ extern "C" void conker_possess_camera_frame(uint8_t* rdram, recomp_context* ctx)
             const float lx = position(rdram, camera, 0x2BC), ly = position(rdram, camera, 0x2C0), lz = position(rdram, camera, 0x2C4);
             const float px = position(rdram, camera, 0x2A4), py = position(rdram, camera, 0x2A8), pz = position(rdram, camera, 0x2AC);
             const float d = std::sqrt((ex - lx) * (ex - lx) + (ey - ly) * (ey - ly) + (ez - lz) * (ez - lz));
+            // (possess49) and its look past what's in front (+0x3EC the swing, the look-at point as its view sees it: D_800DC1F0/F4/F8)
             log("f=%u [cam] %s: eye %.0f %.0f %.0f (wanted %.0f %.0f %.0f), looks at %.0f %.0f %.0f (%.0f away), pivot %.0f %.0f %.0f; +374 %.1f "
-                "+344 %.1f; index %u; brain+197 %u, character's camera %08X", (unsigned)frames, extra_played ? "played" : "shown", ex, ey, ez,
+                "+344 %.1f; index %u; brain+197 %u, character's camera %08X; swing %.1f (+5FC %d), look-at on screen %.1f %.1f %.1f",
+                (unsigned)frames, extra_played ? "played" : "shown", ex, ey, ez,
                 position(rdram, camera, 0x2F8), position(rdram, camera, 0x2FC), position(rdram, camera, 0x300), lx, ly, lz, d, px, py, pz,
                 position(rdram, camera, 0x374), position(rdram, camera, 0x344), (unsigned)MEM_BU(0x23D, (gpr)(int32_t)camera),
-                (unsigned)MEM_BU(0x197, (gpr)(int32_t)brain_of(rdram, extra)), (unsigned)word(rdram, character(extra) + 0x318));
+                (unsigned)MEM_BU(0x197, (gpr)(int32_t)brain_of(rdram, extra)), (unsigned)word(rdram, character(extra) + 0x318),
+                position(rdram, camera, 0x3EC), (int)MEM_H(0x5FC, (gpr)(int32_t)camera), position(rdram, 0x800DC1F0u, 0),
+                position(rdram, 0x800DC1F4u, 0), position(rdram, 0x800DC1F8u, 0));
         }
     }
     static uint32_t logged = 0;
@@ -1983,6 +2052,9 @@ namespace {
     }
 
     uint32_t fifth_huds = 0;
+    // (possess49) the 5th player's machine, its pause menu open: where this frame's overlay (func_15019E60 as the game's frame calls it,
+    // the pause screen in it) put its commands, up to its text's flush
+    uint32_t overlay_start = 0, overlay_mid = 0, overlay_frame = 0xFFFFFFFFu;
 
     // the HUD's commands after `list` (the view's), the new end
     uint32_t fifth_hud(uint8_t* rdram, recomp_context* ctx, uint32_t list) {
@@ -2013,10 +2085,32 @@ namespace {
         MEM_W(0, (gpr)(int32_t)view_now) = 0;
         list = call_list(rdram, ctx, func_150198FC, list, 0);
         *ctx = saved;
-        list = call_list(rdram, ctx, func_15019E60, list, 0);
-        *ctx = saved;
-        list = call_list(rdram, ctx, func_15019BB8, list, 0);
-        *ctx = saved;
+        // (possess49) the 5th player's pause menu open: the pause screen as the game drew it this frame, under this view (its overlay's
+        // commands, func_15019E60 up to its text's flush: conker_possess_overlay), copied here; its text (the menu's, queued as the game's
+        // update ran it, and the score table's, queued as the overlay drew it: both drawn by the game's flush under this view) queued
+        // again (net_menu.cpp) and drawn over it by the flush; and, as the game's pause has it, no view's own HUD over the pause screen
+        const bool pause_open = conker::netsession::active() && conker::netmenu::is_open() && overlay_frame == frames && overlay_mid > overlay_start &&
+            overlay_mid - overlay_start <= 0x10000u && in_rdram(overlay_start);
+        if (pause_open) {
+            for (uint32_t at = overlay_start; at < overlay_mid; at += 4) {
+                MEM_W(0, (gpr)(int32_t)list) = MEM_W(0, (gpr)(int32_t)at);
+                list += 4;
+            }
+            static uint32_t told = 0;
+            if (told++ < 3) {
+                log("f=%u the 5th player's pause screen: the game's (%u commands at %08X) copied over its view", (unsigned)frames,
+                    (unsigned)((overlay_mid - overlay_start) / 8), (unsigned)overlay_start);
+            }
+            conker::netmenu::fifth_pause_text(rdram, ctx);
+            *ctx = saved;
+            list = call_list(rdram, ctx, func_15043384, list, 0);
+            *ctx = saved;
+        } else {
+            list = call_list(rdram, ctx, func_15019E60, list, 0);
+            *ctx = saved;
+            list = call_list(rdram, ctx, func_15019BB8, list, 0);
+            *ctx = saved;
+        }
         list = call_list(rdram, ctx, func_151E84B0, list, 0);
         *ctx = saved;
         list = call_list(rdram, ctx, func_15043384, list, 0);
@@ -2032,6 +2126,24 @@ namespace {
                 (unsigned)((list - before) / 8));
         }
         return list;
+    }
+}
+
+// (possess49) func_15019E60 (the frame's overlay: the HUD over the views, the pause screen in it, then the text's flush) begins (0: $a0
+// the list) and is about to flush its text (1: $v0 the list): the game's own call (not fifth_hud's), on the 5th player's machine with
+// its pause menu open, for fifth_hud to copy the pause screen over the 5th player's view.
+extern "C" void conker_possess_overlay(uint8_t* rdram, recomp_context* ctx, int where) {
+    if (extra_view_now || !conker::netmenu::is_open() || !conker::netsession::active() || !conker::possess_test::online_view_here()) {
+        return;
+    }
+    if (where == 0) {
+        overlay_start = (uint32_t)ctx->r4;
+        overlay_mid = 0;
+        overlay_frame = frames;
+        conker::netmenu::fifth_overlay_noting(rdram, true);
+    } else if (overlay_frame == frames) {
+        overlay_mid = (uint32_t)ctx->r2;
+        conker::netmenu::fifth_overlay_noting(rdram, false);
     }
 }
 
@@ -3006,6 +3118,10 @@ bool conker::possess_test::online_view_here() {
     return extra_ready && extra_played && online5() && conker::netsession::local_slot() == extra;
 }
 
+bool conker::possess_test::fifth_playing() {
+    return extra_ready && extra_played;
+}
+
 // (possess47) The 5th player's own character. func_151E2834 sets a multiplayer match up from its list of characters (the menus' Start, a
 // restart, playing again): it counts them (D_8008FD8C) and the arena makes character k from entry k (func_15082A44, which gives a computer
 // player's, -2, its AI). Before the list is counted (0x151E2914), entry 4 is made the 5th player's: -3, the computer players moved up after
@@ -3094,6 +3210,279 @@ namespace {
     }
 }
 
+// (possess49) The 5th player on the character select (the join screen: func_151E0B70 runs it each frame, func_151EC648's case 4 draws
+// it). The game has a column for each of its 4 controllers: "P1" to "P4", Start's sprite and "press start" while the controller hasn't
+// joined, and once it has, the character it picked standing over its column. Controllers 2 to 4 join and leave with Start, and pick a
+// character with the stick where the mode lets the players pick one (D_800E0B8C); D_8008FE44 has the joined controllers in order,
+// D_800E0B90 their characters, D_800E0C88 each column's fade. Online, in a match of 5 players, a 5th column (P5) works the same way from
+// the 5th player's input (the frame's, the same on every machine). Its state is kept in ours (join_state, which goes with a resync's
+// state): Start joins or leaves, and the stick or the D-pad picks a character. The 5 columns are drawn 56 apart from x 36, centred like
+// the game's 4 (72 apart from 40), and the places the characters stand (D_800AB940, 4 of them) move to match. The match is set up with
+// the 5th player's character only once it has joined (conker_possess_list), with the character it picked where the mode lets the
+// players pick (conker_possess_join_kind), and the menus leave room for it only then (mp_characters.cpp, fifth_joined).
+// (Its character isn't drawn over its column yet: the character select's scene has places for the 4 controllers' characters. The scene's
+// places are logged for it.)
+namespace {
+    constexpr uint32_t join_state = 0x80FD0A00;
+    // +0 joined, +1 its character, +2 its column's fade (as D_800E0C88's: 255 "press start", 0 joined), +3 the places moved,
+    // +4 its buttons the frame before (a halfword), +6 its stick's x the frame before, +7 the stick's hold (as gGameState+0x36's),
+    // +8 the places as the game has them (4 x 8)
+    constexpr uint32_t places_table = 0x800AB940;    // D_800AB940: where each column's character stands: x, y, z (halfwords), a byte
+    constexpr uint32_t join_next = 0x800E0A96;       // D_800E0A96: the screen to go to (-1: this one stays)
+    constexpr uint32_t join_picking = 0x800E0B8C;    // D_800E0B8C: the players pick their characters here (1)
+    constexpr uint32_t picks_default = 0x8008FEC4;   // a mode's row of 4 bytes: each controller's character as it joins
+    constexpr uint32_t picks_allowed = 0x8008FEA4;   // a mode's row: the characters it lets the players pick (bits)
+    constexpr uint32_t unlocked = 0x800E9D00;        // D_800E9D00: the characters won (more of them to pick)
+    constexpr uint32_t character_kinds = 0x800AB57C; // 8 bytes a character to pick: +6 its kind (D_80087270's)
+    constexpr uint32_t frame_step = 0x800BE9E4;      // D_800BE9E4: the frame's length
+    constexpr int pick_count = 22;                   // the characters to pick from (0 to 21)
+    constexpr int columns_x = 36, columns_step = 56;
+    constexpr uint16_t d_left = 0x0200, d_right = 0x0100;
+    uint32_t join_logged = 0;
+
+    bool five_columns() {
+        return online5();
+    }
+
+    bool fifth_is_joined(uint8_t* rdram) {
+        return MEM_BU(0, (gpr)(int32_t)join_state) != 0;
+    }
+
+    // The characters the mode lets the players pick (as func_151E0B70 works them out: the row's bits, more for the characters won), and
+    // the row (under 0: a mode with teams, every character, nothing picked here).
+    uint32_t picks_mask(uint8_t* rdram, int* row) {
+        int table = 0;
+        *row = -1;
+        if (!mode_tables(rdram, &table) || table >= 0 || table < -16) {
+            return 0xFFFFFFFFu;
+        }
+        *row = -1 - table;
+        uint32_t mask = word(rdram, picks_allowed + 4u * (uint32_t)*row);
+        const uint32_t won = word(rdram, unlocked);
+        if (won & 0x20u) mask |= 0x8000u;
+        if (won & 0x10u) mask |= 0x10000u;
+        if (won & 0x40u) mask |= 0x30u;
+        if (won & 0x80u) mask |= 0x43C0u;
+        if (won & 0x100u) mask |= 0xE0800u;
+        if (won & 0x10000u) mask |= 0xAu;
+        if (won & 0x20000u) mask |= 0x300000u;
+        return mask;
+    }
+
+    // from character c, the next one the mask lets be picked in direction dir (as func_151E0B70 steps them)
+    int next_pick(int c, int dir, uint32_t mask) {
+        for (int i = 0; i < pick_count; i++) {
+            c += dir;
+            if (c >= pick_count) {
+                c = 0;
+            } else if (c < 0) {
+                c = pick_count - 1;
+            }
+            if ((mask >> c) & 1u) {
+                return c;
+            }
+        }
+        return c;
+    }
+
+    // (logged for the 5th column's character to come) the character select scene's places: D_800D20FC's records (0x30 each, D_800D2100 of
+    // them): +0x28 the id (the controllers' characters 0x10 to 0x13), +4 the kind, +6 x, y, z
+    void log_join_scene(uint8_t* rdram) {
+        const uint32_t records = word(rdram, 0x800D20FCu);
+        const int count = (int)MEM_BU(0, (gpr)(int32_t)0x800D2100);
+        std::string out;
+        for (int i = 0; i < count && i < 64 && (records >> 24) == 0x80; i++) {
+            const uint32_t r = records + (uint32_t)i * 0x30u;
+            char piece[64];
+            std::snprintf(piece, sizeof(piece), " %d:id %02X kind %02X at %d %d %d", i, (unsigned)MEM_BU(0x28, (gpr)(int32_t)r),
+                (unsigned)MEM_BU(4, (gpr)(int32_t)r), (int)MEM_H(6, (gpr)(int32_t)r), (int)MEM_H(8, (gpr)(int32_t)r), (int)MEM_H(0xA, (gpr)(int32_t)r));
+            if (out.size() < 2000) {
+                out += piece;
+            }
+        }
+        log("f=%u [join] the character select's scene: %d places at %08X:%s", (unsigned)conker::netsession::frame(), count, (unsigned)records,
+            out.c_str());
+    }
+}
+
+bool conker::possess_test::fifth_joined(uint8_t* rdram) {
+    return online5() && fifth_is_joined(rdram);
+}
+
+// func_151E0B70's start (conker.toml): the places the characters stand, for 5 columns or as the game has them (only func_151E7F60 reads
+// them, as it makes a column's character; the same on every machine, and with a resync's state).
+extern "C" void conker_possess_join_places(uint8_t* rdram, recomp_context* ctx) {
+    (void)ctx;
+    const bool want = five_columns();
+    const bool moved = MEM_BU(3, (gpr)(int32_t)join_state) != 0;
+    if (want && join_logged < 3) {
+        join_logged++;
+        log_join_scene(rdram);
+    }
+    if (want == moved) {
+        return;
+    }
+    if (want) {
+        for (uint32_t i = 0; i < 32; i += 4) {
+            MEM_W(8 + i, (gpr)(int32_t)join_state) = MEM_W(i, (gpr)(int32_t)places_table);
+        }
+        // column j's place: along the line from the first's to the 4th's, where its middle is (x 36 + 56j) of the 4 columns' (40 + 72k)
+        std::string out;
+        for (int j = 0; j < 4; j++) {
+            const int32_t along = columns_x + columns_step * j - 0x28;   // over 72 a column, 3 columns from the first to the 4th: / 216
+            for (int axis = 0; axis < 3; axis++) {
+                const int32_t first = MEM_H(8 + 2 * axis, (gpr)(int32_t)join_state);
+                const int32_t last = MEM_H(8 + 24 + 2 * axis, (gpr)(int32_t)join_state);
+                const int32_t num = (last - first) * along;
+                const int32_t step = num >= 0 ? (num + 108) / 216 : -((-num + 108) / 216);
+                MEM_H(8u * (uint32_t)j + 2u * (uint32_t)axis, (gpr)(int32_t)places_table) = (int16_t)(first + step);
+            }
+            char piece[80];
+            std::snprintf(piece, sizeof(piece), " %d: %d %d %d -> %d %d %d", j, (int)MEM_H(8 + 8 * j, (gpr)(int32_t)join_state),
+                (int)MEM_H(10 + 8 * j, (gpr)(int32_t)join_state), (int)MEM_H(12 + 8 * j, (gpr)(int32_t)join_state),
+                (int)MEM_H(8 * j, (gpr)(int32_t)places_table), (int)MEM_H(2 + 8 * j, (gpr)(int32_t)places_table),
+                (int)MEM_H(4 + 8 * j, (gpr)(int32_t)places_table));
+            out += piece;
+        }
+        MEM_B(3, (gpr)(int32_t)join_state) = 1;
+        log("f=%u [join] the character select's columns: 5, the characters' places moved:%s", (unsigned)conker::netsession::frame(), out.c_str());
+    } else {
+        for (uint32_t i = 0; i < 32; i += 4) {
+            MEM_W(i, (gpr)(int32_t)places_table) = MEM_W(8 + i, (gpr)(int32_t)join_state);
+        }
+        MEM_B(3, (gpr)(int32_t)join_state) = 0;
+        log("f=%u [join] the character select's columns: the game's 4 again", (unsigned)conker::netsession::frame());
+    }
+}
+
+// func_151E0B70, 0x151E1200 (its frame done, the screen staying: $sp + 0x54 its fade, 255 up): the 5th player's Start and stick, as
+// controllers 2 to 4 have theirs there.
+extern "C" void conker_possess_join(uint8_t* rdram, recomp_context* ctx) {
+    if (!five_columns()) {
+        return;
+    }
+    const gpr state = (gpr)(int32_t)join_state;
+    const uint32_t sp = (uint32_t)ctx->r29;
+    bool plugged = false;
+    uint16_t buttons = 0;
+    float x = 0.0f, y = 0.0f;
+    if (!(conker::netsession::input(extra, &plugged, &buttons, &x, &y) && plugged)) {
+        buttons = 0;
+        x = y = 0.0f;
+    }
+    const uint16_t before = MEM_HU(4, state);
+    const uint16_t pressed = (uint16_t)(buttons & ~before);
+    MEM_H(4, state) = (int16_t)buttons;
+    const bool up = MEM_W(0x54, (gpr)(int32_t)sp) == 0xFF;
+    int row = -1;
+    const uint32_t mask = picks_mask(rdram, &row);
+    if (up && (pressed & button_start) != 0) {
+        if (fifth_is_joined(rdram)) {
+            MEM_B(0, state) = 0;
+            log("f=%u [join] the 5th player leaves", (unsigned)conker::netsession::frame());
+        } else {
+            // its first character: as a controller's (the mode's row, the 4th's and on), or its number with teams
+            int c = extra;
+            if (row >= 0) {
+                c = next_pick((int)(int8_t)MEM_B(0, (gpr)(int32_t)(picks_default + 4u * (uint32_t)row + 3u)), 1, mask);
+            }
+            MEM_B(0, state) = 1;
+            MEM_B(1, state) = (int8_t)c;
+            log("f=%u [join] the 5th player joins (character %d)", (unsigned)conker::netsession::frame(), c);
+        }
+    }
+    // the stick as the game's menus take a controller's (func_151DE8F0): past 50 either way from under it, or held there a while
+    int8_t sx = 0, sy = 0;
+    convert_to_n64_range(x, y, sx, sy);
+    const int8_t was = MEM_B(6, state);
+    int dir = 0;
+    if (was >= -49 && sx < -49) {
+        dir = -1;
+    } else if (was < 50 && sx >= 50) {
+        dir = 1;
+    }
+    MEM_B(6, state) = sx;
+    if (sx >= -49 && sx < 50) {
+        MEM_B(7, state) = 0;
+    } else {
+        const int32_t held = (int32_t)MEM_BU(7, state) + MEM_W(0, (gpr)(int32_t)frame_step);
+        if (held >= 51) {
+            MEM_B(7, state) = 40;
+            MEM_B(6, state) = 0;
+        } else {
+            MEM_B(7, state) = (int8_t)held;
+        }
+    }
+    if ((pressed & d_left) != 0) {
+        dir = -1;
+    } else if ((pressed & d_right) != 0) {
+        dir = 1;
+    }
+    if (dir != 0 && fifth_is_joined(rdram) && MEM_BU(0, (gpr)(int32_t)join_picking) != 0 && row >= 0) {
+        const int was_c = (int)(int8_t)MEM_B(1, state);
+        const int c = next_pick(was_c >= 0 && was_c < pick_count ? was_c : 0, dir, mask);
+        MEM_B(1, state) = (int8_t)c;
+        log("f=%u [join] the 5th player picks character %d", (unsigned)conker::netsession::frame(), c);
+    }
+}
+
+// func_151EC648, case 4 (the character select drawn): 0x151ECCBC, its columns (5); 0x151ECCD8, each column's x ($s5) and the 5th's fade
+// ($s6, ours); 0x151ECD1C (0) and 0x151ECDA0 (1): the 5th column joined or not as ours has it ($a2, the fade's way; $s2 no entry of
+// D_8008FE44's), past the characters' making ($s1 0 there, as column 1's: its character isn't made here).
+extern "C" void conker_possess_join_columns(uint8_t* rdram, recomp_context* ctx) {
+    if (five_columns()) {
+        MEM_B(0xF7, ctx->r29) = 5;
+    }
+}
+
+extern "C" void conker_possess_join_column(uint8_t* rdram, recomp_context* ctx) {
+    if (!five_columns() || MEM_BU(0xF7, ctx->r29) != 5) {
+        return;
+    }
+    const int column = (int)(int32_t)ctx->r17;
+    ctx->r21 = (gpr)(int32_t)(columns_x + columns_step * column);
+    if (column == extra) {
+        ctx->r22 = (gpr)(int32_t)(join_state + 2u);
+    }
+}
+
+extern "C" void conker_possess_join_fifth(uint8_t* rdram, recomp_context* ctx, int where) {
+    static bool fifth_now = false;
+    if (where == 0) {
+        fifth_now = false;
+        if (!five_columns() || MEM_BU(0xF7, ctx->r29) != 5 || (int32_t)ctx->r17 != extra) {
+            return;
+        }
+        ctx->r18 = (gpr)(int32_t)-1;
+        ctx->r6 = fifth_is_joined(rdram) ? (gpr)(int32_t)-1 : (gpr)1;
+        ctx->r17 = 0;
+        fifth_now = true;
+    } else if (fifth_now) {
+        ctx->r17 = (gpr)extra;
+        fifth_now = false;
+    }
+}
+
+// func_151E2834, 0x151E2E6C (each character's kind made, D_80087270): the 5th player's, the one it picked, where the mode lets the players
+// pick (a mode without teams: its row of characters), as the players' are made from theirs.
+extern "C" void conker_possess_join_kind(uint8_t* rdram, recomp_context* ctx) {
+    (void)ctx;
+    if (!online5() || !fifth_is_joined(rdram) || (int8_t)MEM_B(0, (gpr)(int32_t)(match_list + (uint32_t)extra)) != fifth_entry) {
+        return;
+    }
+    int row = -1;
+    (void)picks_mask(rdram, &row);
+    const int c = (int)(int8_t)MEM_B(1, (gpr)(int32_t)join_state);
+    if (row < 0 || c < 0 || c >= pick_count) {
+        return;
+    }
+    const uint8_t kind = MEM_BU(6, (gpr)(int32_t)(character_kinds + 8u * (uint32_t)c));
+    const uint8_t was = MEM_BU(0, (gpr)(int32_t)(0x80087270u + (uint32_t)extra));
+    MEM_B(0, (gpr)(int32_t)(0x80087270u + (uint32_t)extra)) = (int8_t)kind;
+    log("f=%u [join] the 5th player's character %d: kind %u (the setup's %u)", (unsigned)conker::netsession::frame(), c, (unsigned)kind,
+        (unsigned)was);
+}
+
 // func_151E2834, before 0x151E2914 (conker.toml).
 extern "C" void conker_possess_list(uint8_t* rdram, recomp_context* ctx) {
     (void)ctx;
@@ -3108,7 +3497,10 @@ extern "C" void conker_possess_list(uint8_t* rdram, recomp_context* ctx) {
     bool plugged = false;
     uint16_t buttons = 0;
     float x = 0.0f, y = 0.0f;
-    const bool here = conker::netsession::input(extra, &plugged, &buttons, &x, &y) && plugged;
+    // (possess49) and only once it has joined on the character select (conker_possess_join)
+    const bool in_input = conker::netsession::input(extra, &plugged, &buttons, &x, &y) && plugged;
+    const bool joined = fifth_is_joined(rdram);
+    const bool here = in_input && joined;
     // the 5th player's entry (a restart's, playing again's, or one the menus left where they made the list over) taken out first, the
     // entries after it moved down, and put back below: so it's always entry 4, after 4 characters, whatever the menus did
     for (int i = 15; i >= 0; i--) {
@@ -3127,7 +3519,8 @@ extern "C" void conker_possess_list(uint8_t* rdram, recomp_context* ctx) {
         count++;
     }
     const int most = mode_most(rdram, players);
-    const char* what = "the 5th player not in the frame's input: no character for it";
+    const char* what = !in_input ? "the 5th player not in the frame's input: no character for it" :
+        "the 5th player hasn't joined on the character select: no character for it";
     int taken = 0;
     if (here) {
         if (count < extra) {
@@ -3174,7 +3567,7 @@ extern "C" void conker_possess_list(uint8_t* rdram, recomp_context* ctx) {
         }
     }
     log("f=%u (online) the match is set up: %s (the 5th player %s; %d characters, the mode's most %d%s); entries (controller/team):%s ->%s",
-        (unsigned)conker::netsession::frame(), what, here ? "in" : "not in", count, most,
+        (unsigned)conker::netsession::frame(), what, here ? "in" : (in_input ? "in the input, not joined" : "not in"), count, most,
         taken > 0 ? (taken == 1 ? ", a computer player taken off" : ", computer players taken off") : "", was_text, now_text);
     const std::string line = std::string("[possess] the match is set up: ") + what;
     conker::netsession::log(line.c_str());

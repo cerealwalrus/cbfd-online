@@ -272,6 +272,12 @@ namespace conker {
         // (0.10.75) the game thread is in the pause screen's drawing (func_151EB06C, func_151DDC20) with this machine's menu open: what
         // it does there is this machine's alone (heap_watch.cpp gives its allocations a pool of their own; its sounds aren't played)
         bool local_pause_drawing();
+        // (possess49) the 5th player's machine, its pause menu open: the menu's text this frame (CONT, QUIT and the rest, queued as the
+        // game's update runs it), queued again for the 5th player's HUD over its view (possess_test.cpp's fifth_hud), before its flush
+        void fifth_pause_text(uint8_t* rdram, recomp_context* ctx);
+        // (possess49) the game's overlay (the pause screen) begins (on) and is about to flush its text (off), on the 5th player's machine
+        // with its pause menu open: the text the pause screen queues meanwhile noted, for fifth_pause_text
+        void fifth_overlay_noting(uint8_t* rdram, bool on);
     }
 
     // notices.cpp: a line in the top-left corner for a few seconds, one at a time (an unlock, a save state's
@@ -425,6 +431,12 @@ namespace conker {
         bool online_extra_camera();
         // (online, 5 players) this machine shows the extra camera's view: the 5th player's machine, once that camera plays
         bool online_view_here();
+        // (possess49) the extra camera is made and the 5th player plays character 5 through it: online_view_here's own part, without the
+        // session's lock (for net_session.cpp's code that holds it; that code checks the session and the slot itself)
+        bool fifth_playing();
+        // (possess49, online, 5 players) the 5th player has joined on the character select (its P5 column): the match is set up with a
+        // character of its own, and the menus leave room for it
+        bool fifth_joined(uint8_t* rdram);
         // (online resyncs, save_states.cpp) whether a state can be taken now (not between a frame's start and its extra camera's
         // view), and what of the extra camera is kept outside the game's memory, added to a state and put back with it
         bool net_state_ready();

@@ -115,7 +115,8 @@ namespace {
     // (possess47) online, a match of 5 players (the possess test's): one character place less than the mode has, the 5th player's own
     // character's (possess_test.cpp's conker_possess_list puts it in the list as the match is set up), so the computer players never
     // take it and the characters never pass the mode's most: the war's 12 are the 4 players, the 5th and 7 computer players. Never under
-    // the players, nor under 2 (the match's setup makes the room there, taking a computer player off).
+    // the players, nor under 2 (the match's setup makes the room there, taking a computer player off). (possess49) Once the 5th player
+    // has joined on the character select (its P5 column, possess_test.cpp): without it the menus are the game's.
     int fifth_place(int most, int humans) {
         if (most <= 2) {
             return most;
@@ -130,7 +131,7 @@ extern "C" void conker_team_caps(uint8_t* rdram, recomp_context* ctx) {
         return;
     }
     const int humans = humans_now(rdram);
-    const bool five = conker::netsession::five_players();   // (possess47: see fifth_place)
+    const bool five = conker::possess_test::fifth_joined(rdram);   // (possess47: see fifth_place; possess49: once the 5th player has joined)
     if (humans < 2 && !five) {   // (0.10.91: two players as well, with the computer players conker_bots_most lets them have)
         return;
     }
@@ -160,7 +161,7 @@ extern "C" void conker_team_trim(uint8_t* rdram, recomp_context* ctx) {
         return;
     }
     const int humans = humans_now(rdram);
-    const bool five = conker::netsession::five_players();   // (possess47: see fifth_place)
+    const bool five = conker::possess_test::fifth_joined(rdram);   // (possess47: see fifth_place; possess49: once the 5th player has joined)
     if (humans < 2 && !five) {   // (0.10.91: two players as well, with the computer players conker_bots_most lets them have)
         return;
     }
@@ -243,7 +244,7 @@ extern "C" void conker_bots_most(uint8_t* rdram, recomp_context* ctx) {
         return;
     }
     const int humans = (int)(int32_t)ctx->r5;
-    const bool five = conker::netsession::five_players();   // (possess47: see fifth_place)
+    const bool five = conker::possess_test::fifth_joined(rdram);   // (possess47: see fifth_place; possess49: once the 5th player has joined)
     // (0.10.91: with two players too: the war's row gives two players four computer players, three and four players eight)
     if (humans < 2 && !five) {
         return;

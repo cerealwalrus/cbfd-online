@@ -1112,6 +1112,41 @@ func = "func_10010F30"
 before_vram = 0x10010F30
 text = "{ extern int conker_pause_sound(uint8_t*, recomp_context*); if (conker_pause_sound(rdram, ctx)) { return; } }"
 
+# possess49: the 5th player's pause menu, its text noted as the game's update queues it (func_15042D94 and func_15042E3C queue text,
+# func_150432FC sets its place, func_1504332C its colour), to be queued again for the 5th player's HUD over its view (host/src/net_menu.cpp,
+# conker_pause_text_note and conker::netmenu::fifth_pause_text).
+[[patches.hook]]
+func = "func_15042D94"
+before_vram = 0x15042D94
+text = "{ extern void conker_pause_text_note(uint8_t*, recomp_context*, int); conker_pause_text_note(rdram, ctx, 0); }"
+
+[[patches.hook]]
+func = "func_15042E3C"
+before_vram = 0x15042E3C
+text = "{ extern void conker_pause_text_note(uint8_t*, recomp_context*, int); conker_pause_text_note(rdram, ctx, 1); }"
+
+[[patches.hook]]
+func = "func_150432FC"
+before_vram = 0x150432FC
+text = "{ extern void conker_pause_text_note(uint8_t*, recomp_context*, int); conker_pause_text_note(rdram, ctx, 2); }"
+
+[[patches.hook]]
+func = "func_1504332C"
+before_vram = 0x1504332C
+text = "{ extern void conker_pause_text_note(uint8_t*, recomp_context*, int); conker_pause_text_note(rdram, ctx, 3); }"
+
+# possess49: the 5th player's pause screen, drawn by the game's frame (func_15019E60, the overlay over the views): where its commands
+# start and where its text's flush begins, to be copied over the 5th player's view (host/src/possess_test.cpp, conker_possess_overlay).
+[[patches.hook]]
+func = "func_15019E60"
+before_vram = 0x15019E60
+text = "{ extern void conker_possess_overlay(uint8_t*, recomp_context*, int); conker_possess_overlay(rdram, ctx, 0); }"
+
+[[patches.hook]]
+func = "func_15019E60"
+before_vram = 0x15019F08
+text = "{ extern void conker_possess_overlay(uint8_t*, recomp_context*, int); conker_possess_overlay(rdram, ctx, 1); }"
+
 # Online (host/src/heap_watch.cpp): the game's heap is only the game thread's, the same on every machine, and doesn't run out.
 # func_10003C6C (allocate) begins: the audio cache's, the streamed sounds' and other threads' allocations come from a pool of their own.
 [[patches.hook]]
@@ -1299,6 +1334,45 @@ text = "{ extern int conker_coop_start(uint8_t*, recomp_context*); if (conker_co
 func = "func_151E2834"
 before_vram = 0x151E2914
 text = "{ extern void conker_possess_list(uint8_t*, recomp_context*); conker_possess_list(rdram, ctx); }"
+
+# possess-test (possess49): online, a match of 5 players: the 5th player on the character select, a 5th column (P5) worked from its
+# input as controllers 2 to 4 have theirs (host/src/possess_test.cpp): the characters' places for 5 columns (func_151E0B70's start), its
+# Start and stick (0x151E1200, the frame done), the 5 columns drawn (func_151EC648's case 4: their number, each one's x and the 5th's
+# fade, the 5th joined or not as it has), and the character it picked made its kind as the match is set up (func_151E2834, 0x151E2E6C).
+[[patches.hook]]
+func = "func_151E0B70"
+before_vram = 0x151E0B70
+text = "{ extern void conker_possess_join_places(uint8_t*, recomp_context*); conker_possess_join_places(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_151E0B70"
+before_vram = 0x151E1200
+text = "{ extern void conker_possess_join(uint8_t*, recomp_context*); conker_possess_join(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_151EC648"
+before_vram = 0x151ECCBC
+text = "{ extern void conker_possess_join_columns(uint8_t*, recomp_context*); conker_possess_join_columns(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_151EC648"
+before_vram = 0x151ECCD8
+text = "{ extern void conker_possess_join_column(uint8_t*, recomp_context*); conker_possess_join_column(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_151EC648"
+before_vram = 0x151ECD1C
+text = "{ extern void conker_possess_join_fifth(uint8_t*, recomp_context*, int); conker_possess_join_fifth(rdram, ctx, 0); }"
+
+[[patches.hook]]
+func = "func_151EC648"
+before_vram = 0x151ECDA0
+text = "{ extern void conker_possess_join_fifth(uint8_t*, recomp_context*, int); conker_possess_join_fifth(rdram, ctx, 1); }"
+
+[[patches.hook]]
+func = "func_151E2834"
+before_vram = 0x151E2E6C
+text = "{ extern void conker_possess_join_kind(uint8_t*, recomp_context*); conker_possess_join_kind(rdram, ctx); }"
 
 # 0.10.63: co-op, a player down waits until everyone is down, then the stage restarts for all (host/src/net_menu.cpp,
 # conker_coop_continue / conker_coop_out).
