@@ -2117,6 +2117,16 @@ namespace {
             list = (uint32_t)ctx->r2;
             *ctx = saved;
         }
+        // (possess73) the objects place what they draw by the view's record (D_800BE628, 0x180 each): view 5's is the full screen's
+        // with a split screen, so the reticle came out twice the size, low on the screen (possess72's test). For their drawing it is
+        // given view 1's (the part of the screen the 5th player's view is drawn in, as player 1's reticle is placed in its own), put
+        // back after: the online view then places it as player 1's machine places player 1's.
+        uint8_t kept_record[0x180];
+        const bool records_ok = (view_records_now >> 24) == 0x80 && (view_records_now & 0x7FFFFFu) + 5u * 0x180u < 0x800000u;
+        if (records_ok) {
+            std::memcpy(kept_record, rdram + (view_records_now + 4u * 0x180u - 0x80000000u), sizeof(kept_record));
+            std::memcpy(rdram + (view_records_now + 4u * 0x180u - 0x80000000u), rdram + (view_records_now - 0x80000000u), sizeof(kept_record));
+        }
         for (int part = 0; part < 2; part++) {
             ctx->r4 = (gpr)(int32_t)list;
             ctx->r5 = 4;
@@ -2125,6 +2135,9 @@ namespace {
             func_151674F8(rdram, ctx);
             list = (uint32_t)ctx->r2;
             *ctx = saved;
+        }
+        if (records_ok) {
+            std::memcpy(rdram + (view_records_now + 4u * 0x180u - 0x80000000u), kept_record, sizeof(kept_record));
         }
         return list;
     }
