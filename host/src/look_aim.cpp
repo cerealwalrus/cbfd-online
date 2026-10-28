@@ -345,11 +345,7 @@ void conker::look_aim::add_camera_options(recomp::config::Config& config) {
         "Back to normal once you stop aiming. <recomp-color primary>Off</recomp-color> matches the original game, where "
         "the stick aims and the C-buttons move.",
         toggle, Toggle::Off);
-    config.add_enum_option(options::aim_lock_on, "Aiming: Lock-On",
-        "Whether aiming locks on to enemies, as with the shotgun once the zombies come: the game turns your aim (and the "
-        "camera with it) toward one, whatever the stick does. <recomp-color primary>On</recomp-color> matches the "
-        "original game. Off leaves the aim to you.",
-        toggle, Toggle::On);
+    // (possess64) Aiming: Lock-On taken out of the launcher for now: the lock-on is off for everyone, online or not (conker_aim_lock_on)
 }
 
 // The Mouse & Gyro tab. The sensitivities are RecompFrontend's options (same ids, so saved values carry
@@ -435,14 +431,10 @@ bool conker::look_aim::mouse_turns_camera() {
 // reads as clear, and the stick turns the aim as when there's no target.
 extern "C" void conker_aim_lock_on(uint8_t* rdram, recomp_context* ctx) {
 #if defined(CONKER_RT64)
-    // (online every machine has to do the same for every player: the lock-on is the game's own there, as it is with the setting On;
-    // the setting is for single player)
-    if (conker::netsession::active()) {
-        return;
-    }
-    if (option_config(options::aim_lock_on) != nullptr && option<Toggle>(options::aim_lock_on) == Toggle::Off) {
-        ctx->r9 = 0;
-    }
+    // (possess64) off for everyone, online or not, the setting gone from the launcher for now: every machine reads the flag as clear for
+    // every player, so they all do the same
+    (void)rdram;
+    ctx->r9 = 0;
 #endif
 }
 
