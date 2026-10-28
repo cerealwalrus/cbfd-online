@@ -2498,6 +2498,65 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
         std::memcpy(rdram + (views - 0x80000000u), rdram + (views + (uint32_t)extra * 0x180u - 0x80000000u), 0x180);
     }
     std::memcpy(rdram + (mats - 0x80000000u), rdram + (mats + (uint32_t)extra * 0x40u - 0x80000000u), 0x40);
+    // (possess81) the view's matrix (its eye, worked out from the matrix) against the camera's own eye (+0x2EC): logged when they part,
+    // and a frame whose matrix's eye jumps away (60 or more from the frame before's) while the camera's own eye stays (under 20) is drawn
+    // with the frame before's matrix instead, for that one frame (the 5th player's view showed a frame from low by the floor, the helmet
+    // below, in R-Look). CONKER_POSSESS_HOLDVIEW=0: never.
+    if (view_shown_here()) {
+        static const bool hold_on = []() { const char* t = std::getenv("CONKER_POSSESS_HOLDVIEW"); return t == nullptr || std::string(t) != "0"; }();
+        static uint8_t good[0x40] = {};
+        static bool have_good = false, held_last = false;
+        static float good_eye[3] = {}, good_cam[3] = {};
+        static uint32_t parted_logged = 0, held_logged = 0;
+        auto element = [&](uint32_t m, int i, int j) {
+            const uint32_t k = (uint32_t)(i * 4 + j) * 2u;
+            const int32_t v = (int32_t)(((uint32_t)(uint16_t)MEM_H(k, (gpr)(int32_t)m) << 16) | (uint32_t)(uint16_t)MEM_H(0x20 + k, (gpr)(int32_t)m));
+            return (float)v / 65536.0f;
+        };
+        auto matrix_eye = [&](uint32_t m, float* out) {
+            for (int k = 0; k < 3; k++) {
+                out[k] = -(element(m, 3, 0) * element(m, k, 0) + element(m, 3, 1) * element(m, k, 1) + element(m, 3, 2) * element(m, k, 2));
+            }
+        };
+        auto distance = [](const float* a, const float* b) {
+            const float dx = a[0] - b[0], dy = a[1] - b[1], dz = a[2] - b[2];
+            return std::sqrt(dx * dx + dy * dy + dz * dz);
+        };
+        float m_eye[3], cam[3];
+        matrix_eye(mats, m_eye);
+        for (int i = 0; i < 3; i++) {
+            const uint32_t w = (uint32_t)MEM_W(0x2EC + 4 * i, (gpr)(int32_t)base);
+            std::memcpy(&cam[i], &w, 4);
+        }
+        const float parted = distance(m_eye, cam);
+        if (parted > 40.0f && parted_logged < 80) {
+            parted_logged++;
+            log("f=%u (possess81) the extra view's matrix has its eye %.0f from the camera's (matrix %.0f %.0f %.0f, camera %.0f %.0f %.0f; look kind %02X stage %d)",
+                (unsigned)frames, parted, m_eye[0], m_eye[1], m_eye[2], cam[0], cam[1], cam[2], (unsigned)MEM_BU(0x23E, (gpr)(int32_t)base),
+                (int)MEM_H(0x73C, (gpr)(int32_t)base));
+        }
+        bool hold = false;
+        if (have_good && !held_last) {
+            const float jumped = distance(m_eye, good_eye), moved = distance(cam, good_cam);
+            hold = jumped >= 60.0f && moved < 20.0f;
+            if (hold && held_logged < 80) {
+                held_logged++;
+                log("f=%u (possess81) the extra view's matrix's eye jumped %.0f (the camera's own moved %.0f; look kind %02X stage %d): the frame before's used%s",
+                    (unsigned)frames, jumped, moved, (unsigned)MEM_BU(0x23E, (gpr)(int32_t)base), (int)MEM_H(0x73C, (gpr)(int32_t)base),
+                    hold_on ? "" : " (not: CONKER_POSSESS_HOLDVIEW=0)");
+            }
+        }
+        if (hold && hold_on) {
+            std::memcpy(rdram + (mats - 0x80000000u), good, 0x40);
+            held_last = true;
+        } else {
+            std::memcpy(good, rdram + (mats - 0x80000000u), 0x40);
+            std::memcpy(good_eye, m_eye, sizeof(good_eye));
+            std::memcpy(good_cam, cam, sizeof(good_cam));
+            have_good = true;
+            held_last = false;
+        }
+    }
     // (possess33) played or not, the extra character drawn as the bot it is while only shown (its brain's AI flag, +0x84; the game's memory
     // is put back after): shown, it's drawn; played (+0x84 0, a player's), it wasn't, with its fade, hidden bits and render item the same
     if (extra_played) {
