@@ -2021,6 +2021,28 @@ namespace {
         }
     }
 
+    // (possess96) The words after an RT64 extended GBI command's first, which RT64 reads as that command's own (rt64_gbi_extended.cpp)
+    uint32_t extended_words(uint32_t ex) {
+        switch (ex) {
+            case 0x000002u:   // G_EX_TEXRECT_V1
+            case 0x000008u:   // G_EX_SETSCISSORALIGN_V1
+                return 2;
+            case 0x000003u:   // G_EX_FILLRECT_V1
+            case 0x000004u:   // G_EX_SETVIEWPORT_V1
+            case 0x000005u:   // G_EX_SETSCISSOR_V1
+            case 0x000006u:   // G_EX_SETRECTALIGN_V1
+            case 0x000007u:   // G_EX_SETVIEWPORTALIGN_V1
+            case 0x00000Cu:   // G_EX_MATRIXGROUP_V1
+            case 0x000013u:   // G_EX_EDITGROUPBYADDRESS_V1
+            case 0x000014u:   // G_EX_VERTEX_V1
+            case 0x000030u:   // G_EX_MATRIX_FLOAT_V1
+            case 0x000031u:   // G_EX_SETVERTEXSEGMENT_V1
+                return 1;
+            default:
+                return 0;
+        }
+    }
+
     // The display list's commands from `from` (an RDRAM address), following calls, jumps and branches: every piece of memory they
     // name (with the command that names it), each list they call (its stretch, and the command that calls it), and where each
     // segment was set. (possess24) Texture images (G_SETTIMG, sized by the load after it), G_BRANCH_Z's lists, and the lists'
@@ -2054,6 +2076,19 @@ namespace {
         uint32_t lit[2] = { 0, 0 }, texgen[2] = { 0, 0 };
         uint32_t timg_at = 0, timg_w1 = 0, timg_siz = 0, timg_width = 0;
         int timg_body = -1;
+        // (possess96) RT64's own commands among the game's, read as RT64 reads them: its extended GBI's (widescreen.cpp's sprites,
+        // net_view.cpp's and cutscene_aspect.cpp's rectangles, interpolation.cpp's matrix groups), whose words after their first are
+        // the command's parameters (extended_words), and G_TEXRECT's two G_RDPHALF words after it. Counted: the words possess95's walk
+        // took for commands of their own (color images, vertex loads, others it acts on), and the jumps to lists of ours past the
+        // game's memory (widescreen.cpp's iris), with those that jump back into the view's commands.
+        uint8_t* ours = nullptr;   // the memory past the game's (RT64 reads it, to 16 MB): the live one, for walks that may go there
+        bool in_detour = false;
+        uint32_t detour_back = 0;
+        uint32_t texrects = 0, extended = 0, extended_rects = 0, misread_cimgs = 0, misread_vertices = 0, misread_others = 0;
+        uint32_t detours = 0, detours_back = 0;
+        uint32_t cmd_word(uint32_t a) const {
+            return ((a - 0x80000000u) < game_size || ours == nullptr) ? mem_word(rdram, a) : mem_word(ours, a);
+        }
         uint32_t resolve(uint32_t a, int* segment) const {
             const uint32_t s = (a >> 24) & 0xFF;
             if (s < 16) {
@@ -2122,10 +2157,11 @@ namespace {
                 return true;
             };
             while (commands < 400000) {
-                if ((at & 7u) != 0 || at < 0x80000000u || at >= 0x80000000u + game_size || (stop != 0 && at >= stop)) {
+                const uint32_t mem_end = (in_detour && ours != nullptr) ? 0x81000000u : 0x80000000u + game_size;   // (possess96)
+                if ((at & 7u) != 0 || at < 0x80000000u || at >= mem_end || (stop != 0 && at >= stop)) {
                     return at;
                 }
-                const uint32_t w0 = mem_word(rdram, at), w1 = mem_word(rdram, at + 4);
+                const uint32_t w0 = cmd_word(at), w1 = cmd_word(at + 4);
                 commands++;
                 if (body < 0) {
                     top_now = at;
@@ -2268,18 +2304,76 @@ namespace {
                         }
                         e1_at = 0;
                         break;
-                    case 0xDE:   // G_DL: a call (or a jump); (possess94) DE000000 or DE010000, nothing else
+                    case 0xDE: {   // G_DL: a call (or a jump); (possess94) DE000000 or DE010000, nothing else
                         if ((w0 & 0x00FEFFFFu) != 0) {
                             if (give_up(at)) {
                                 return at;
                             }
                             break;
                         }
+                        const bool jump = ((w0 >> 16) & 0xFFu) != 0;
+                        // (possess96) A jump from the view's own commands to a list of ours past the game's memory: widescreen.cpp's iris (the
+                        // game's first command of it made a jump to ours, which jumps back past the rest of the game's). Its commands are walked
+                        // as the view's own (what they draw from copied; they themselves pointed where they are, ours isn't put back), and the
+                        // walk goes on where it jumps back to. possess95's walk ended at the jump (no list of the game's there), so while the
+                        // iris was drawn nothing the rest of the view's commands drew from was copied: the iris's texture, the HUD over it.
+                        if (jump && body < 0 && ours != nullptr) {
+                            int segment = -1;
+                            const uint32_t target = resolve(w1, &segment);
+                            if (in_detour && (target - 0x80000000u) < game_size) {
+                                detour_back = target;
+                                return at + 8;
+                            }
+                            if (!in_detour && (target - 0x80000000u) >= game_size && target < 0x81000000u) {
+                                in_detour = true;
+                                detour_back = 0;
+                                run(target, depth + 1, target + 0x4000u, -1);
+                                in_detour = false;
+                                detours++;
+                                const uint32_t back = detour_back;
+                                detour_back = 0;
+                                if (back > at && (stop == 0 || back < stop) && ((back - at) & 7u) == 0) {
+                                    detours_back++;
+                                    at = back;
+                                    continue;
+                                }
+                                return at + 8;
+                            }
+                        }
                         child(at, w1, body, depth);
-                        if (((w0 >> 16) & 0xFFu) != 0) {
+                        if (jump) {
                             return at + 8;
                         }
                         break;
+                    }
+                    case 0xE4:   // G_TEXRECT, G_TEXRECTFLIP (possess96): RT64 takes the two commands after it as the rectangle's texture start
+                    case 0xE5:   // and steps (their second words), whatever their first: neither is a command of its own
+                        texrects++;
+                        e1_at = 0;
+                        at += 16;
+                        break;
+                    case 0x64: {   // (possess96) RT64's extended GBI (enabled by its hook, an E0): the words after the command's first are its own
+                        const uint32_t ex = w0 & 0x00FFFFFFu;
+                        const uint32_t words = extended_words(ex);
+                        extended++;
+                        if (ex == 0x000002u) {
+                            extended_rects++;
+                        }
+                        for (uint32_t k = 1; k <= words; k++) {
+                            const uint32_t op = cmd_word(at + 8u * k) >> 24;
+                            if (op == 0xFF) {
+                                misread_cimgs++;
+                            } else if (op == 0x01) {
+                                misread_vertices++;
+                            } else if (op == 0x04 || op == 0xD9 || op == 0xDA || op == 0xDB || op == 0xDC || op == 0xDE || op == 0xDF || op == 0xE1 ||
+                                    op == 0xE4 || op == 0xE5 || op == 0xED || op == 0xF0 || op == 0xF3 || op == 0xF4 || op == 0xFD) {
+                                misread_others++;
+                            }
+                        }
+                        e1_at = 0;
+                        at += 8u * words;
+                        break;
+                    }
                     case 0xDF:   // G_ENDDL
                         return at + 8;
                     default:
@@ -3162,6 +3256,7 @@ static void conker_possess_view_local_body(uint8_t* rdram, recomp_context* ctx) 
     // command of the new ones, directly; one of a list they call, through the segment a new command set); what can't be is kept
     // in the game's memory for the frame and put back at the next one's start
     ListWalk walker{ rdram };
+    walker.ours = rdram;   // (possess96)
     // the segments as the frame's list set them before (its top level, from its start)
     const uint32_t start = mem_word(rdram, list_start + 4 * buffer);
     for (uint32_t a = start; in_rdram(a) && a + 8 <= list_before && a - start < 0x80000; a += 8) {
@@ -3177,6 +3272,7 @@ static void conker_possess_view_local_body(uint8_t* rdram, recomp_context* ctx) 
     {
         ListWalk before{ local_copy.data() };
         before.light = true;
+        before.ours = rdram;   // (possess96: the game's views' irises, lists of ours, as RT64 reads them)
         if (in_rdram(start) && start <= list_before && list_before - start < 0x100000u) {
             before.run(start, 0, list_before, -1);
             std::string out;
@@ -3211,6 +3307,25 @@ static void conker_possess_view_local_body(uint8_t* rdram, recomp_context* ctx) 
             log("f=%u [walk] lit vertex loads: %u before the microcode switch (%u with texture generation), %u after it (%u); %u little color images",
                 (unsigned)frames, (unsigned)walker.lit[0], (unsigned)walker.texgen[0], (unsigned)walker.lit[1], (unsigned)walker.texgen[1],
                 (unsigned)walker.small_cimgs);
+        }
+    }
+    {   // (possess96 diagnostics) RT64's own commands in the view's (its extended GBI's, G_TEXRECT's), and what possess95's walk took in their
+        // words for commands of their own. The game's screen-space sprites (an explosion's, a death's blood: widescreen.cpp makes each an
+        // extended rectangle, its corners signed) had their corners and texture steps read as color images (a corner past the screen's
+        // left edge) and vertex loads (64 to 128 pixels in, or a texture start 8 to 16 texels in): what such a "load" named, changed by the
+        // view's passes, was copied to ours and the sprite's corners or steps pointed at the copy, the sprite drawn across the screen with
+        // its texture repeated over it (possess95's logs: vertex loads from the frame's buffers as the 5th player died). Black and red
+        // shapes over the 5th player's view as it was blown up or shot dead, for the first half second (its blood).
+        static uint32_t told = 0, told_detours = 0xFFFFFFFFu;
+        const uint32_t misread = walker.misread_cimgs + walker.misread_vertices + walker.misread_others;
+        if (((misread != 0 && drawn_burst > 0) || walker.detours != told_detours || local_views % 600 == 0) && told < 100) {
+            told++;
+            told_detours = walker.detours;
+            log("f=%u [walk] RT64's own commands in the view's: %u texture rectangles, %u of its extended GBI (%u rectangles), in whose words "
+                "possess95's walk read %u color images, %u vertex loads, %u others; %u jumps to lists of ours (%u back into the view's commands)",
+                (unsigned)frames, (unsigned)walker.texrects, (unsigned)walker.extended, (unsigned)walker.extended_rects,
+                (unsigned)walker.misread_cimgs, (unsigned)walker.misread_vertices, (unsigned)walker.misread_others,
+                (unsigned)walker.detours, (unsigned)walker.detours_back);
         }
     }
     // (possess94) the lists that aren't (ListWalk's give_up), and those called from one
