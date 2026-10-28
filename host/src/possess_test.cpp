@@ -2467,30 +2467,34 @@ namespace {
                 MEM_B(b, (gpr)(int32_t)t.base) = MEM_B(b, (gpr)(int32_t)shadow);
             }
         }
-        // (possess88) the 5th player's iris (its character dies as a player's now) closing on its character as its view shows it: the match
-        // worked the centre out for view 5 (func_1517F814: the full screen's record), and the HUD is drawn in view 1's place (net_view.cpp
-        // makes it full screen): worked out again here for view 1, with the extra camera's projected view in view 1's (put back with the rest)
+        // (possess89) the iris's centre as the match worked it out (func_1517F814 from func_1507C8FC, for view 1's part of the screen:
+        // conker_possess_iris_view), kept to the last good one should it be no number (possess88 worked it out again here, from the
+        // character's pose as the view's passes had left it: some frames had none, and the iris was drawn about nowhere, the screen
+        // black or in black blocks for a frame)
         if (MEM_BU(0, (gpr)(int32_t)0x800DDE20u) != 0) {
-            const uint32_t ours_projected = shadow_of(0x800D9D10u);
-            for (uint32_t b = 0; b < 0x40; b += 4) {
-                MEM_W(b, (gpr)(int32_t)0x800D9D10u) = MEM_W(b, (gpr)(int32_t)ours_projected);
+            static uint32_t last_good[2] = { 0, 0 };
+            static bool have_good = false;
+            uint32_t words[2];
+            bool good = true;
+            for (int w = 0; w < 2; w++) {
+                words[w] = (uint32_t)MEM_W(4 * w, (gpr)(int32_t)0x800DDDE8u);
+                float f;
+                std::memcpy(&f, &words[w], 4);
+                good = good && std::isfinite(f) && std::fabs(f) < 4096.0f;
             }
-            const uint32_t sp = (uint32_t)saved.r29 - 0x60u;
-            ctx->r29 = (gpr)(int32_t)sp;
-            ctx->r4 = (gpr)(int32_t)character(ch5);
-            ctx->r5 = (gpr)(int32_t)(sp + 0x30u);
-            ctx->r6 = (gpr)(int32_t)(sp + 0x34u);
-            ctx->r7 = (gpr)(int32_t)(sp + 0x38u);
-            func_1507E1D0(rdram, ctx);
-            *ctx = saved;
-            ctx->r29 = (gpr)(int32_t)sp;
-            ctx->r4 = 0;
-            ctx->r5 = (gpr)MEM_W(0x30, (gpr)(int32_t)sp);
-            ctx->r6 = (gpr)MEM_W(0x34, (gpr)(int32_t)sp);
-            ctx->r7 = (gpr)MEM_W(0x38, (gpr)(int32_t)sp);
-            MEM_W(0x10, (gpr)(int32_t)sp) = 0;
-            func_1517F814(rdram, ctx);
-            *ctx = saved;
+            if (good) {
+                last_good[0] = words[0];
+                last_good[1] = words[1];
+                have_good = true;
+            } else {
+                static uint32_t told = 0;
+                if (told++ < 20) {
+                    log("f=%u [death] the 5th player's iris's centre %08X %08X is no number: %s", (unsigned)frames, (unsigned)words[0],
+                        (unsigned)words[1], have_good ? "the last good one" : "the view's corner");
+                }
+                MEM_W(0, (gpr)(int32_t)0x800DDDE8u) = have_good ? (int32_t)last_good[0] : 0;
+                MEM_W(4, (gpr)(int32_t)0x800DDDE8u) = have_good ? (int32_t)last_good[1] : 0;
+            }
         }
         const int32_t was_last = MEM_W(0, (gpr)(int32_t)last_player);
         const int8_t was_humans = MEM_B(0, (gpr)(int32_t)humans_now);
@@ -2616,6 +2620,7 @@ void conker_possess_fifth_death_screen(uint8_t* rdram, recomp_context* ctx) {
     static constexpr uint32_t tables[][2] = {
         { 0x800DDDC8u, 4 }, { 0x800DDDD8u, 4 }, { 0x800DDDE8u, 8 }, { 0x800DDE20u, 1 }, { 0x800DDE3Cu, 1 },
         { 0x800DDD70u, 1 }, { 0x800DDD74u, 1 }, { 0x800DDD80u, 2 },
+        { 0x800D9D10u, 0x40 },   // (possess89) its projected view, for func_1517F814 there
     };
     auto swap_all = [&]() {
         for (const auto& t : tables) {
@@ -2647,6 +2652,20 @@ void conker_possess_fifth_death_screen(uint8_t* rdram, recomp_context* ctx) {
         told++;
         log("f=%u [death] the 5th player's death screen stepped as a player's: its state %u -> %u", (unsigned)frames, (unsigned)state_before,
             (unsigned)state_after);
+    }
+}
+
+// (possess89) func_1517F814 works out the iris's centre for a player's view (where its character is on the screen, from the view's record
+// at D_800BE628 + 0x180 a view and its projected view, D_800D9D10), from func_1507C8FC each frame. For the 5th player's (view 5, the
+// full screen's record) the record is view 1's with a split screen: its HUD is drawn in view 1's part of the screen (fifth_hud), the
+// iris with it. $v1 the record (after it's worked out, 0x1517F8B8, and where the two ways meet, 0x1517F93C), $a0 the view.
+extern "C" void conker_possess_iris_view(uint8_t* rdram, gpr* record, gpr view) {
+    if (hooks_off() || !extra_ready || !extra_played || (int32_t)view != ch5 || !fifth_split(rdram)) {
+        return;
+    }
+    const uint32_t records = (uint32_t)MEM_W(0, (gpr)(int32_t)view_records);
+    if ((uint32_t)*record == records + 0x180u * (uint32_t)view) {
+        *record = (gpr)(int32_t)records;
     }
 }
 

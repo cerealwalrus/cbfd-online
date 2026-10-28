@@ -3458,3 +3458,15 @@ text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(r
 func = "func_1517F814"
 before_vram = 0x1517F9D8
 text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 0, 46); }"
+
+# possess89: the 5th player's iris's centre worked out for view 1's part of the screen, where its HUD is drawn (host/src/possess_test.cpp,
+# conker_possess_iris_view): func_1517F814's view record, once it's worked out on each of its two ways.
+[[patches.hook]]
+func = "func_1517F814"
+before_vram = 0x1517F8B8
+text = "{ extern void conker_possess_iris_view(uint8_t*, gpr*, gpr); conker_possess_iris_view(rdram, &ctx->r3, ctx->r4); }"
+
+[[patches.hook]]
+func = "func_1517F814"
+before_vram = 0x1517F93C
+text = "{ extern void conker_possess_iris_view(uint8_t*, gpr*, gpr); conker_possess_iris_view(rdram, &ctx->r3, ctx->r4); }"
