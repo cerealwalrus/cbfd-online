@@ -1522,6 +1522,19 @@ namespace {
                         }
                     }
                 }
+                // (possess90) the 5th player's screen effects (the iris: black fills around a circle of pictures, sized each frame) are
+                // its part of the screen's, as a whole: stretched over the view with it, each piece, as the 3D is. Taken for the HUD's
+                // pieces one by one, some went to the corners, some to the middle or hidden, by their size and place: the iris came out
+                // as black blocks and stripes over the view for a few frames each time the 5th player died.
+                uint32_t fx_from = 0, fx_to = 0;
+                conker::possess_test::fifth_effects(fx_from, fx_to);
+                const bool fifth_fx = fifth_from != 0 && fx_from != 0 && address >= fx_from && address < fx_to;
+                if (fifth_fx) {
+                    hide = false;
+                    dx = dy = 0;
+                    stretch = true;
+                    kind_name = "the 5th player's screen effect";
+                }
                 if (log_it && rects_logged < 60) {
                     char line[140];
                     std::snprintf(line, sizeof(line), "[net view]   HUD rect %08X: %08X %08X (centre %g,%g) %s", address, w0, w1, cx, cy, kind_name);
@@ -1541,6 +1554,15 @@ namespace {
                     const int32_t b0 = std::clamp(map_y(yl), 0, 0xFFF), b1 = std::clamp(map_y(yh), 0, 0xFFF);
                     MEM_W(0, (gpr)(int32_t)address) = (int32_t)((w0 & ~0xFFFFFFu) | ((uint32_t)a0 << 12) | (uint32_t)b0);
                     MEM_W(4, (gpr)(int32_t)address) = (int32_t)((w1 & ~0xFFFFFFu) | ((uint32_t)a1 << 12) | (uint32_t)b1);
+                    // (possess90) a picture's steps through its texture with it (G_RDPHALF_2 after the rectangle: s and t a pixel, s5.10)
+                    if (fifth_fx && (op == 0xE4 || op == 0xE5) && address + 24 <= range.to &&
+                            ((uint32_t)MEM_W(16, (gpr)(int32_t)address) >> 24) == 0xF1u) {
+                        const uint32_t steps = (uint32_t)MEM_W(20, (gpr)(int32_t)address);
+                        const int32_t ds = (int32_t)std::lround((float)(int16_t)(steps >> 16) / std::max(0.01f, sx));
+                        const int32_t dt = (int32_t)std::lround((float)(int16_t)(steps & 0xFFFFu) / std::max(0.01f, sy));
+                        MEM_W(20, (gpr)(int32_t)address) = (int32_t)((((uint32_t)std::clamp(ds, -32768, 32767) & 0xFFFFu) << 16) |
+                            ((uint32_t)std::clamp(dt, -32768, 32767) & 0xFFFFu));
+                    }
                     static int stretch_logged = 0;
                     if (stretch_logged < 20) {
                         stretch_logged++;

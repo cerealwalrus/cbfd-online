@@ -1630,6 +1630,13 @@ uint32_t conker::possess_test::fifth_second_pass() {
 // (possess80) where this frame's extra view's commands begin in the frame's list, on the machine that shows it (0: not drawn this frame)
 namespace {
     uint32_t fifth_view_at = 0;
+    uint32_t fifth_fx_from = 0, fifth_fx_to = 0;   // (possess90) the 5th player's screen effects' commands this frame (func_15180580's)
+}
+
+// (possess90) where this frame's 5th player's screen effects (func_15180580's: the iris, a hit's flash...) are in the list (0: none)
+void conker::possess_test::fifth_effects(uint32_t& from, uint32_t& to) {
+    from = fifth_fx_from;
+    to = fifth_fx_to;
 }
 
 uint32_t conker::possess_test::fifth_view_start() {
@@ -2316,11 +2323,16 @@ namespace {
         list = (uint32_t)ctx->r2;
         *ctx = saved;
         for (auto fn : { func_1517F4D8, func_1517F3A0, func_15180580 }) {
+            const uint32_t fn_from = list;
             ctx->r4 = (gpr)(int32_t)list;
             ctx->r5 = 0;
             fn(rdram, ctx);
             list = (uint32_t)ctx->r2;
             *ctx = saved;
+            if (fn == func_15180580 && list > fn_from) {   // (possess90) the screen's effects (the iris among them): for net_view.cpp
+                fifth_fx_from = fn_from;
+                fifth_fx_to = list;
+            }
         }
         if ((MEM_HU(0, (gpr)(int32_t)0x800D18A0) & 1u) != 0 || (MEM_HU(0, (gpr)(int32_t)0x800D18A2) & 1u) != 0) {
             ctx->r4 = (gpr)(int32_t)list;
@@ -2723,6 +2735,7 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
 static void conker_possess_view_local_body(uint8_t* rdram, recomp_context* ctx) {
     second_pass_at = 0;   // (possess61: this frame's, once the view's second pass begins)
     fifth_view_at = 0;    // (possess80)
+    fifth_fx_from = fifth_fx_to = 0;   // (possess90)
     if (!local_view_wanted(rdram)) {
         return;
     }
