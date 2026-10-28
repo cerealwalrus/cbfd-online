@@ -42,7 +42,26 @@
 struct DrawNote { int which; uint32_t a0, a1, a2, a3, target, view, stack10, stack18; bool extra; };
 static std::vector<DrawNote> draw_notes;
 
+// (possess78) func_1502C974 draws a character faded (R-Look: the game fades the aiming player's own character, its +0x7) only for the
+// camera that's the character's own (+0x127); for any other camera it's drawn whole (if its +0x318's +0x2C is 0x100). The extra camera's
+// view is drawn as camera 0, player 1's: so the 5th player's own character was drawn whole in its own R-Look (in front of the view, dark
+// and blocky as it faded), and player 1's faded out of the 5th player's view whenever player 1 aimed. For that comparison alone, in the
+// extra view, the 5th player's character is given camera 0 as its own and player 1's another (+0x127), put back as soon as the
+// character's drawing starts (func_1502CCFC's entry, conker_draw_note) or at the next character.
+namespace {
+    uint32_t owner_swapped_at = 0;
+    uint8_t owner_was = 0;
+
+    void put_owner_back(uint8_t* rdram) {
+        if (owner_swapped_at != 0) {
+            MEM_B(0x127, (gpr)(int32_t)owner_swapped_at) = (int8_t)owner_was;
+            owner_swapped_at = 0;
+        }
+    }
+}
+
 extern "C" void conker_draw_note(uint8_t* rdram, recomp_context* ctx, int which) {
+    put_owner_back(rdram);
     if (!conker::netsession::active() || draw_notes.size() >= 30000) {
         return;
     }
@@ -2244,7 +2263,45 @@ extern "C" void conker_player_visibility(uint8_t* rdram, recomp_context* ctx, in
             }
         }
     }
-    if (keep_cull || object >= (uint32_t)std::clamp(players, 1, 4) || camera >= 4 || object == camera || !conker::netsession::active()) {
+    put_owner_back(rdram);
+    // (possess78) the extra camera's view (drawn as camera 0): the 5th player's camera, not player 1's (see put_owner_back)
+    const bool extra_view0 = camera == 0 && conker::possess_test::drawing_extra_view();
+    if (extra_view0 && object < 25) {
+        const uint32_t obj_at = 0x800CC2D0u + object * 0x32Cu;
+        const bool own = (int)object == conker::possess_test::fifth_object();
+        if (which == 3) {
+            const uint8_t owner = MEM_BU(0x127, (gpr)(int32_t)obj_at);
+            if (own || owner == 0) {
+                owner_swapped_at = obj_at;
+                owner_was = owner;
+                MEM_B(0x127, (gpr)(int32_t)obj_at) = (int8_t)(own ? 0x00 : 0xFE);
+                static int told = 0;
+                if (told < 6 && own && (uint32_t)ctx->r2 < 0xFFu) {
+                    told++;
+                    char line[160];
+                    std::snprintf(line, sizeof(line), "[net view] f=%u the 5th player's own character in its view at %u of 255 (its own camera %u taken as camera 0)",
+                        (unsigned)conker::netsession::frame(), (unsigned)ctx->r2, (unsigned)owner);
+                    conker::netsession::log(line);
+                }
+            }
+        }
+        // the game's own hiding of a character from its own camera (func_1502E4C4's end: the bit of the character's own number in +0x74,
+        // while its +0x318's +0x2C is 0x10000 or its +0x31C's +0x197 is set): for the 5th player's from the extra view
+        if (which == 0 && own) {
+            const uint32_t state = (uint32_t)MEM_W(0x318, (gpr)(int32_t)obj_at);
+            bool hide = false;
+            if ((state >> 24) == 0x80 && (state & 0xFFFFFFu) < 0x7FFFF0u) {
+                const uint32_t brain = (uint32_t)MEM_W(0x31C, (gpr)(int32_t)obj_at);
+                hide = (uint32_t)MEM_W(0x2C, (gpr)(int32_t)state) == 0x10000u ||
+                    ((brain >> 24) == 0x80 && (brain & 0xFFFFFFu) < 0x7FFF00u && MEM_BU(0x197, (gpr)(int32_t)brain) != 0);
+            }
+            if (hide) {
+                ctx->r15 = ctx->r15 | 1u;
+            }
+            return;
+        }
+    }
+    if (keep_cull || object >= (uint32_t)std::clamp(players, 1, 4) || camera >= 4 || (object == camera && !extra_view0) || !conker::netsession::active()) {
         return;
     }
     if (which == 0) {

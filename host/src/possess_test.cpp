@@ -1438,6 +1438,11 @@ namespace {
     bool extra_fades_kept = false;
 }
 
+// (possess78) the character the extra camera plays (its index among the characters), -1 without the extra camera
+int conker::possess_test::fifth_object() {
+    return extra_ready ? ch5 : -1;
+}
+
 bool conker::possess_test::drawing_extra_view() {
     return extra_view_now;
 }
