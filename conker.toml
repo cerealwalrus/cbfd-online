@@ -1,0 +1,1381 @@
+# N64Recomp configuration for Conker's Bad Fur Day (US).
+#
+# recomp/recompile.py runs it on the code unpacked from your ROM, with the functions
+# listed in recomp/conker.us.syms.toml. That file is generated from the decompilation
+# by recomp/run.sh (developers: recomp/prepare_elf.py sizes the functions, handles
+# fall-through and mid-function branch targets); see recomp/README.md.
+#
+# Memory layout:
+#   .header/.boot  rom 0x000000
+#   .init      vram 0x10001000  rom 0x001000  TLB entry 0 maps 0x10000000-0x107FFFFF
+#                                             onto physical 0-8MB, i.e. KSEG0's alias
+#   .init_data vram 0x800290D0  rom 0x0290D0
+#   .game      vram 0x15000000  rom 0x02D4B0  demand-paged: the TLB-miss handler
+#                                             (func_10005C2C) pages in 0x15000000-0x151FC000
+#   .game_data vram 0x80082B20  rom 0x2275E0  (all .game rodata/data/jump tables)
+#   .debugger  vram 0x16000000  rom 0x255880
+# All data lives in KSEG0; only code runs at TLB-mapped addresses.
+#
+# The ROM header's entrypoint is 0x80001000, the KSEG0 view of .init's first
+# function; N64Recomp renames it recomp_entrypoint.
+
+[input]
+entrypoint = 0x80001000
+symbols_file_path = "recomp/conker.us.syms.toml"
+rom_file_path = "recomp/build/conker.us.code.bin"
+output_func_path = "RecompiledFuncs"
+# Boot sets Status.FR (func_10001050: SR |= 0x24000000), and the hand-written
+# math code uses odd FPRs ($f23, $f25, ...) as independent singles.
+uses_mips3_float_mode = true
+
+[patches]
+# Low-level system code with TLB/cop0/cache instructions. None of it can run
+# under the runtime, which provides its own threads, exceptions and memory.
+stubs = [
+    # Virtual-memory paging for .game (init_5AB0.s): the TLB-miss handler, its
+    # page-in/eviction helpers, and TLB invalidation (func_100061F8).
+    "func_10005C2C",
+    "func_10005D20",
+    "func_100060F0",
+    "func_10006138",
+    "func_100061F8",
+    # Exception handling and thread dispatch (init_5AB0.s).
+    "func_100071D0",
+    "func_100071E0",
+    "func_1000777C",
+    "func_10007A38",
+    "func_10007C74",
+    "func_10007CC4",
+    "func_10007DAC",
+    "func_10007F70",
+    # Debugger: dumps all 32 TLB entries.
+    "func_16003650",
+    # Unreferenced .game copy of a Controller Pak status routine; it calls SI
+    # internals the runtime doesn't provide.
+    "func_151EF504",
+]
+
+# Boot: recomp_entrypoint clears .bss and jumps to 0x80005AB0, the KSEG0 view
+# of func_10005AB0, which writes TLB entry 0 and jumps to 0x10001050. Point the
+# first jump at the .init address and drop the TLB write so both jumps resolve
+# to recompiled functions.
+[[patches.instruction]]
+func = "recomp_entrypoint"
+vram = 0x80001024
+value = 0x3C0A1000  # lui $t2, 0x1000 (was 0x8000)
+
+[[patches.instruction]]
+func = "func_10005AB0"
+vram = 0x10005AB8
+value = 0x00000000  # nop (was mtc0 $t0, PageMask)
+
+[[patches.instruction]]
+func = "func_10005AB0"
+vram = 0x10005AC0
+value = 0x00000000  # nop (was mtc0 $t0, EntryHi)
+
+[[patches.instruction]]
+func = "func_10005AB0"
+vram = 0x10005AC8
+value = 0x00000000  # nop (was mtc0 $t0, EntryLo0)
+
+[[patches.instruction]]
+func = "func_10005AB0"
+vram = 0x10005AD4
+value = 0x00000000  # nop (was mtc0 $t0, EntryLo1)
+
+[[patches.instruction]]
+func = "func_10005AB0"
+vram = 0x10005ADC
+value = 0x00000000  # nop (was mtc0 $t0, Index)
+
+[[patches.instruction]]
+func = "func_10005AB0"
+vram = 0x10005AE4
+value = 0x00000000  # nop (was tlbwi)
+
+# func_10005B04 sets up the .game paging system: it clears Context, sets Wired,
+# and allocates the page pool and its bitmap. Keep the allocations (other code
+# uses that memory layout) and drop the cop0 writes.
+[[patches.instruction]]
+func = "func_10005B04"
+vram = 0x10005B10
+value = 0x00000000  # nop (was mtc0 $zero, Context)
+
+[[patches.instruction]]
+func = "func_10005B04"
+vram = 0x10005B18
+value = 0x00000000  # nop (was mtc0 $t0, Wired)
+
+# func_10001050 (boot init) reads and writes the Status register to set CU1/FR;
+# the runtime owns that state.
+[[patches.instruction]]
+func = "func_10001050"
+vram = 0x10001084
+value = 0x00000000  # nop (was jal __osGetSR)
+
+[[patches.instruction]]
+func = "func_10001050"
+vram = 0x1000109C
+value = 0x00000000  # nop (was jal __osSetSR)
+
+# func_100052A0 is the pre-NMI thread: on reset it stops the game threads,
+# reinitialises VI through libultra internals and stops rumble. The runtime
+# owns VI.
+[[patches.instruction]]
+func = "func_100052A0"
+vram = 0x10005328
+value = 0x00000000  # nop (was jal __osViInit)
+
+# ---------------------------------------------------------------------------
+# Direct hardware and uncached (KSEG1) accesses. The runtime maps only KSEG0
+# RDRAM, so these loads would fault. Each load becomes a nop plus a hook that
+# does the read on the host (host/src/ultra_extras.cpp).
+# ---------------------------------------------------------------------------
+
+# func_100095A0 (audio thread) reads AI_LEN_REG directly: an inlined osAiGetLength.
+# $v0 is overwritten by the next instruction, so the hook may use it.
+[[patches.instruction]]
+func = "func_100095A0"
+vram = 0x100095D0
+value = 0x00000000  # nop (was lw $v1, 4($t6): AI_LEN_REG)
+
+[[patches.hook]]
+func = "func_100095A0"
+before_vram = 0x100095D0
+text = "{ extern void osAiGetLength_recomp(uint8_t*, recomp_context*); osAiGetLength_recomp(rdram, ctx); ctx->r3 = ctx->r2; }"
+
+# func_10008CE8 (start a song on a sequence player) busy-waits for the audio thread
+# to stop the player, which on the N64 preempts it; here the loop has to yield for the
+# audio thread to run (issue #66). A hook at the head of each of its two wait loops,
+# before the n_alCSPGetState call (host/src/ultra_extras.cpp, conker_spin_wait_pass).
+[[patches.hook]]
+func = "func_10008CE8"
+before_vram = 0x10008D44
+text = "{ extern void conker_spin_wait_pass(uint8_t*, recomp_context*); conker_spin_wait_pass(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_10008CE8"
+before_vram = 0x10008D98
+text = "{ extern void conker_spin_wait_pass(uint8_t*, recomp_context*); conker_spin_wait_pass(rdram, ctx); }"
+
+# A song just started reads as stopped until the audio thread takes it up, and the music manager
+# took such a player for free while it played on (issue #66). So it reads as playing until then
+# (host/src/ultra_extras.cpp): marked when func_10008CE8 starts the song, the mark cleared when
+# func_10008F24 stops the player, and func_1000853C (a player's state) answers "playing" meanwhile.
+[[patches.hook]]
+func = "func_10008CE8"
+before_vram = 0x10008EC4
+text = "{ extern void conker_song_started(uint8_t*, recomp_context*); conker_song_started(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_1000853C"
+before_vram = 0x10008560
+text = "{ extern void conker_song_state(uint8_t*, recomp_context*); conker_song_state(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_10008F24"
+before_vram = 0x10008F24
+text = "{ extern void conker_song_stopped(uint8_t*, recomp_context*); conker_song_stopped(rdram, ctx); }"
+
+# func_1000480C: Rare's PIO copy from cartridge ROM (used by the ROM loader
+# func_10004514). It polls PI_STATUS, then reads the cartridge word by word
+# through (osRomBase | addr | 0xA0000000).
+[[patches.instruction]]
+func = "func_1000480C"
+vram = 0x1000486C
+value = 0x00001025  # move $v0, $zero (was lw $v0, 0($v1): PI_STATUS, never busy)
+
+[[patches.instruction]]
+func = "func_1000480C"
+vram = 0x100048B4
+value = 0x00000000  # nop (was lw $t8, 0($t7))
+
+[[patches.hook]]
+func = "func_1000480C"
+before_vram = 0x100048B4
+text = "{ extern int32_t conker_kseg1_read32(uint8_t*, uint32_t); ctx->r24 = conker_kseg1_read32(rdram, (uint32_t)ctx->r15); }"
+
+[[patches.instruction]]
+func = "func_1000480C"
+vram = 0x100048E4
+value = 0x00000000  # nop (was lw $t4, 0($t3))
+
+[[patches.hook]]
+func = "func_1000480C"
+before_vram = 0x100048E4
+text = "{ extern int32_t conker_kseg1_read32(uint8_t*, uint32_t); ctx->r12 = conker_kseg1_read32(rdram, (uint32_t)ctx->r11); }"
+
+[[patches.instruction]]
+func = "func_1000480C"
+vram = 0x10004924
+value = 0x00000000  # nop (was lw $t5, 0($t4))
+
+[[patches.hook]]
+func = "func_1000480C"
+before_vram = 0x10004924
+text = "{ extern int32_t conker_kseg1_read32(uint8_t*, uint32_t); ctx->r13 = conker_kseg1_read32(rdram, (uint32_t)ctx->r12); }"
+
+[[patches.instruction]]
+func = "func_1000480C"
+vram = 0x10004958
+value = 0x00000000  # nop (was lw $t2, 0($t9))
+
+[[patches.hook]]
+func = "func_1000480C"
+before_vram = 0x10004958
+text = "{ extern int32_t conker_kseg1_read32(uint8_t*, uint32_t); ctx->r10 = conker_kseg1_read32(rdram, (uint32_t)ctx->r25); }"
+
+[[patches.instruction]]
+func = "func_1000480C"
+vram = 0x10004984
+value = 0x00000000  # nop (was lw $t7, 0($t5))
+
+[[patches.hook]]
+func = "func_1000480C"
+before_vram = 0x10004984
+text = "{ extern int32_t conker_kseg1_read32(uint8_t*, uint32_t); ctx->r15 = conker_kseg1_read32(rdram, (uint32_t)ctx->r13); }"
+
+# func_15001A08: an anti-piracy check. It reads ROM word 0xD24 through KSEG1 and,
+# if that isn't 0x98CCE31A, doubles an allocation. Same PI_STATUS poll first.
+[[patches.instruction]]
+func = "func_15001A08"
+vram = 0x15001A38
+value = 0x00001025  # move $v0, $zero (was lw $v0, 0($v1): PI_STATUS)
+
+[[patches.instruction]]
+func = "func_15001A08"
+vram = 0x15001A78
+value = 0x00000000  # nop (was lw $t3, 0($t2))
+
+[[patches.hook]]
+func = "func_15001A08"
+before_vram = 0x15001A78
+text = "{ extern int32_t conker_kseg1_read32(uint8_t*, uint32_t); ctx->r11 = conker_kseg1_read32(rdram, (uint32_t)ctx->r10); }"
+
+# 0x150A6B90 builds an uncached RDRAM pointer (0xA0000000 | addr) and stores
+# through it with sd. Use the KSEG0 alias of the same memory instead. The
+# instruction is in two overlapping functions.
+[[patches.instruction]]
+func = "func_150A6860"
+vram = 0x150A6B90
+value = 0x3C098000  # lui $t1, 0x8000 (was 0xA000)
+
+[[patches.instruction]]
+func = "func_150A6A5C"
+vram = 0x150A6B90
+value = 0x3C098000  # lui $t1, 0x8000 (was 0xA000)
+
+# ---------------------------------------------------------------------------
+# Non-local exits in hand-written asm.
+# ---------------------------------------------------------------------------
+
+# func_150ADAF0 is a hand-written script interpreter. It saves its $sp in
+# D_800D3858 on entry, and its abort (func_150AE280, called from func_1509F8xx
+# inside a script callback) reloads that $sp and jumps to the interpreter's
+# epilogue (func_150AE0AC): a longjmp out of the nested calls. Recompiled, the
+# epilogue only returned from the innermost C call, and the interpreter went on
+# with its caller's registers (a crash reading 0x000000BF in func_150ADBC4, in
+# the Panther King cutscene after Hungover's opening). Do it with setjmp/longjmp
+# (host/CMakeLists.txt force-includes setjmp.h; the buffer is in ultra_extras.cpp).
+[[patches.hook]]
+func = "func_150ADAF0"
+before_vram = 0x150ADAFC
+text = "{ extern jmp_buf conker_interpreter_exit; if (setjmp(conker_interpreter_exit)) { func_150AE0AC(rdram, ctx); return; } }"
+
+[[patches.hook]]
+func = "func_150AE280"
+before_vram = 0x150AE290
+text = "{ extern jmp_buf conker_interpreter_exit; ctx->r29 = ctx->r10; longjmp(conker_interpreter_exit, 1); }"
+
+# The collision code's shared subroutine at 0x150AC1C4 returns with `jr $t0`,
+# which prepare_elf.py turns into `jr $ra` because its callers (`jal`) pass their
+# return point in $t0. func_150AC1B4 instead loads $t0 with 0x150AB6F0 and falls
+# into it: a goto to 0x150AB6F0 once the subroutine is done. Recompiled, that
+# path just returned, skipping the rest of func_150AB1F0 and its epilogue, so its
+# caller came back with $sp 0x268 bytes short and a garbage $s0 (a crash in
+# func_1512BB10 shortly after Hungover starts). Call the subroutine, then go on
+# at 0x150AB6F0.
+[[patches.hook]]
+func = "func_150AC1B4"
+before_vram = 0x150AC1C4
+text = "{ func_150AC1C4(rdram, ctx); func_150AB6F0(rdram, ctx); return; }"
+
+# func_150AC0F8 falls through func_150AC1B4 into the same code, so its body
+# holds another copy of that path (a crash walking toward Birdy).
+[[patches.hook]]
+func = "func_150AC0F8"
+before_vram = 0x150AC1C4
+text = "{ func_150AC1C4(rdram, ctx); func_150AB6F0(rdram, ctx); return; }"
+
+# ---------------------------------------------------------------------------
+# libultra state that the runtime's replacements don't set up.
+# ---------------------------------------------------------------------------
+
+# libultra's osContInit creates __osEepromTimerQ (0x80042A78, one slot); the
+# runtime's osContInit doesn't. Rare's EEPROM code (func_151DCFD8) paces its
+# accesses with one-shot timers on that queue. Uncreated, the queue counts as
+# full, no timer message ever arrives, and the game froze on a black screen at
+# the first save (the start of Hungover, after the intro cutscene). Create it
+# after func_15006234's first osContInit call, the game's only one at boot.
+[[patches.hook]]
+func = "func_15006234"
+before_vram = 0x15006288
+text = "{ extern void conker_create_eeprom_timer_queue(uint8_t*); conker_create_eeprom_timer_queue(rdram); }"
+
+# func_150FB4C0 (hand-written, drawing small coloured rectangles, for example when
+# leaving the mansion's hub) writes its display list through the uncached address
+# (| 0x20000000), which isn't mapped here. Write it through the cached one: the
+# same memory.
+[[patches.instruction]]
+func = "func_150FB4C0"
+vram = 0x150FB654
+value = 0x00000000  # nop (was or $a0, $a0, $t0: KSEG0 to KSEG1)
+
+[[patches.instruction]]
+func = "func_150FB4C0"
+vram = 0x150FB8A8
+value = 0x00000000  # nop (was xor $a0, $a0, $t0: back to KSEG0)
+
+# Widescreen: screen-space sprites (bubbles, bees, sparkles) are culled to the 4:3
+# screen and drawn with G_TEXRECT, which can't reach left of x = 0. Widen the cull
+# bounds and emit the rectangle as RT64's extended one (host/src/widescreen.cpp).
+[[patches.hook]]
+func = "func_15130A9C"
+before_vram = 0x15130CEC
+text = "{ extern void conker_widen_sprite_cull_left(uint8_t*, recomp_context*); conker_widen_sprite_cull_left(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_15130A9C"
+before_vram = 0x15130D08
+text = "{ extern void conker_widen_sprite_cull_right(uint8_t*, recomp_context*); conker_widen_sprite_cull_right(rdram, ctx); }"
+
+# The tickly bees write their depth, so the sunflower drawn after them is hidden behind a bee nearer the camera
+# (host/src/render_fixes.cpp, issue #101): func_15168118 draws a bee with func_15095760 (0x15168640, back at
+# 0x15168648), which stores its G_SETPRIMDEPTH at 0x15095878.
+[[patches.hook]]
+func = "func_15168118"
+before_vram = 0x15168640
+text = "{ extern void conker_bee_begin(uint8_t*, recomp_context*); conker_bee_begin(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_15168118"
+before_vram = 0x15168648
+text = "{ extern void conker_bee_end(uint8_t*, recomp_context*); conker_bee_end(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_15095760"
+before_vram = 0x15095878
+text = "{ extern void conker_bee_depth(uint8_t*, recomp_context*); conker_bee_depth(rdram, ctx); }"
+
+# The same for the pieces func_15095D34 draws (the tickly bees, speech bubbles; issue #101): func_15095B08
+# sets a piece's "on screen" flag only where its rectangle overlaps the camera's 4:3 bounds. At 0x15095C70
+# $f8 is the left bound, at 0x15095C84 $f10 the right one (host/src/widescreen.cpp).
+[[patches.hook]]
+func = "func_15095B08"
+before_vram = 0x15095C70
+text = "{ extern void conker_widen_piece_cull_left(uint8_t*, recomp_context*); conker_widen_piece_cull_left(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_15095B08"
+before_vram = 0x15095C84
+text = "{ extern void conker_widen_piece_cull_right(uint8_t*, recomp_context*); conker_widen_piece_cull_right(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_15130A9C"
+before_vram = 0x15131168
+text = "{ extern void conker_emit_sprite_texrect(uint8_t*, recomp_context*); conker_emit_sprite_texrect(rdram, ctx); goto L_15131360; }"
+
+[[patches.hook]]
+func = "func_15130A9C"
+before_vram = 0x15130DA0
+text = "{ extern void conker_enable_extended_gbi(uint8_t*, recomp_context*); conker_enable_extended_gbi(rdram, ctx); }"
+
+# Widescreen: the camera's frustum, which the world and its objects are culled
+# against, is built for the 4:3 view. Widen its left and right planes to the
+# window (host/src/widescreen.cpp). $s0 is the camera until the return.
+[[patches.hook]]
+func = "func_1501B22C"
+before_vram = 0x1501B308
+text = "{ extern void conker_widen_frustum(uint8_t*, recomp_context*); conker_widen_frustum(rdram, ctx); }"
+
+# Widescreen: func_151103C8 fills the camera's view with its background colour up to the scissor's
+# edge, which RT64 lines up with the window's, leaving a thin line at the right edge where nothing
+# covers it (the screens before the N64 logo). Just before the fill ($a3 its right edge), it ends a
+# pixel short (host/src/widescreen.cpp).
+[[patches.hook]]
+func = "func_151103C8"
+before_vram = 0x15110458
+text = "{ extern void conker_camera_background_fill(uint8_t*, recomp_context*); conker_camera_background_fill(rdram, ctx); }"
+
+# Camera: Field of View (host/src/field_of_view.cpp): func_1510B128 has just stored
+# the camera's horizontal and vertical fields of view ($v0 the camera, $s0 its offset);
+# the projection, frustum and culls are worked out from them after this.
+[[patches.hook]]
+func = "func_1510B128"
+before_vram = 0x1510B1A8
+text = "{ extern void conker_field_of_view(uint8_t*, recomp_context*); conker_field_of_view(rdram, ctx); }"
+
+# Widescreen: the scale the level's culls compare view-space x with is set for
+# the 4:3 view too. Widen it to the window (host/src/widescreen.cpp).
+[[patches.hook]]
+func = "updateCullScales_1510B958"
+before_vram = 0x1510B9C8
+text = "{ extern void conker_widen_cull_scale(uint8_t*, recomp_context*); conker_widen_cull_scale(rdram, ctx); }"
+
+# Widescreen: some levels' backdrop (sky and distant scenery) is a grid of cells drawn by
+# func_15110CFC, one quad (4 vertices) per cell in view, into buffers func_15000AD0
+# allocates for 448 vertices per frame (112 cells). Nothing stops it there: the 4:3 view
+# never has more cells in view, but a wide one does, and the extra quads overran the
+# next heap block, crashing the game (looking at the sky on ultrawide screens, the duct
+# tape and exploding mouse cutscenes). $s1 (the size) and $v1 (the second frame's
+# offset) are set just before 0x15000B80; give them room (host/src/widescreen.cpp).
+[[patches.hook]]
+func = "func_15000AD0"
+before_vram = 0x15000B80
+text = "{ extern void conker_widen_backdrop_buffers(uint8_t*, recomp_context*); conker_widen_backdrop_buffers(rdram, ctx); }"
+
+# Widescreen: the backdrop is drawn in sectors, only those near where the camera looks,
+# with room for the 4:3 view. Let in all the window's view can reach, looking up or down
+# too (host/src/widescreen.cpp).
+[[patches.hook]]
+func = "func_15111AF4"
+before_vram = 0x15111BC4
+text = "{ extern void conker_widen_backdrop_sectors(uint8_t*, recomp_context*); conker_widen_backdrop_sectors(rdram, ctx); }"
+
+# Widescreen: the pause menu's blurred background, a saved copy of the 4:3 frame
+# drawn as tiles, is stretched over the whole width (host/src/widescreen.cpp).
+[[patches.hook]]
+func = "func_151D5E90"
+before_vram = 0x151D5E94
+text = "{ extern void conker_frame_copy_begin(uint8_t*, recomp_context*); conker_frame_copy_begin(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_151D5E90"
+before_vram = 0x151D61A8
+text = "{ extern void conker_frame_copy_end(uint8_t*, recomp_context*); conker_frame_copy_end(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_151D6418"
+before_vram = 0x151D641C
+text = "{ extern void conker_frame_copy_begin(uint8_t*, recomp_context*); conker_frame_copy_begin(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_151D6418"
+before_vram = 0x151D66E8
+text = "{ extern void conker_frame_copy_end(uint8_t*, recomp_context*); conker_frame_copy_end(rdram, ctx); }"
+
+# Graphics: Conker's Detail: each game frame func_1502C6E8 picks every object's model by how far
+# it is from the camera; at 0x1502C92C the level is picked ($v1) and not yet compared with the
+# object's last, and Conker's is set to 0, his most detailed (host/src/model_detail.cpp).
+[[patches.hook]]
+func = "func_1502C6E8"
+before_vram = 0x1502C92C
+text = "{ extern void conker_model_detail(uint8_t*, recomp_context*); conker_model_detail(rdram, ctx); }"
+
+# Frame interpolation: each game object's drawing (func_1502CCFC) is wrapped in an
+# RT64 matrix group naming the object, so RT64 pairs its matrices with the same
+# object's last frame instead of guessing (host/src/interpolation.cpp).
+[[patches.hook]]
+func = "func_1502CCFC"
+before_vram = 0x1502CD00
+text = "{ extern void conker_object_matrix_group_begin(uint8_t*, recomp_context*); conker_object_matrix_group_begin(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_1502CCFC"
+before_vram = 0x1502D544
+text = "{ extern void conker_object_matrix_group_end(uint8_t*, recomp_context*); conker_object_matrix_group_end(rdram, ctx); }"
+
+# The same for a character's shadow (func_15186794), whose texture coordinates RT64
+# interpolates from last frame's projection.
+[[patches.hook]]
+func = "func_15186794"
+before_vram = 0x15186798
+text = "{ extern void conker_shadow_matrix_group_begin(uint8_t*, recomp_context*); conker_shadow_matrix_group_begin(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_15186794"
+before_vram = 0x151872A8
+text = "{ extern void conker_shadow_matrix_group_end(uint8_t*, recomp_context*); conker_shadow_matrix_group_end(rdram, ctx); }"
+
+# Widescreen: the circle wipe (spawn, death, level changes) is redrawn with pieces
+# that reach the window's edges (host/src/widescreen.cpp).
+[[patches.hook]]
+func = "func_15180580"
+before_vram = 0x15180584
+text = "{ extern void conker_iris_begin(uint8_t*, recomp_context*); conker_iris_begin(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_15180580"
+before_vram = 0x151814F4
+text = "{ extern void conker_iris_end(uint8_t*, recomp_context*); conker_iris_end(rdram, ctx); }"
+
+# The look mode (hold R): gyro and mouse, and smooth or direct response for each input
+# (host/src/look_aim.cpp). The first three can turn the stick's axes around, the fourth is
+# before the pitch clamp so the game's limits apply to the mouse and gyro too, and the last is
+# where both branches of the springs meet.
+[[patches.hook]]
+func = "func_15120158"
+before_vram = 0x15120A14
+text = "{ extern void conker_look_stick_yaw_a(uint8_t*, recomp_context*); conker_look_stick_yaw_a(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_15120158"
+before_vram = 0x15120A44
+text = "{ extern void conker_look_stick_yaw_b(uint8_t*, recomp_context*); conker_look_stick_yaw_b(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_15120158"
+before_vram = 0x15120A98
+text = "{ extern void conker_look_stick_pitch(uint8_t*, recomp_context*); conker_look_stick_pitch(rdram, ctx); }"
+
+# In some states (0x9, 0x15, 0x26, 0x37-0x3B, and while flag 2 of the camera's + 0x5F0 is set) the
+# look mode doesn't keep its yaw: it works it out each frame from the way Conker faces (his object's
+# + 0x7A) less an aiming angle the stick turns (a 16-bit angle at + 0x12 of the camera's + 0x3D4;
+# scaled by 0.35 on the second path). These two mark each path (0x15120908 and 0x15120978, their
+# first instruction), so the mouse and gyro turn that angle too (issue #61: the dual SMGs' aim
+# sprang back to the middle).
+[[patches.hook]]
+func = "func_15120158"
+before_vram = 0x15120908
+text = "{ extern void conker_look_yaw_from_facing(uint8_t*, recomp_context*); conker_look_yaw_from_facing(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_15120158"
+before_vram = 0x15120978
+text = "{ extern void conker_look_yaw_from_facing_scaled(uint8_t*, recomp_context*); conker_look_yaw_from_facing_scaled(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_15120158"
+before_vram = 0x15120B44
+text = "{ extern void conker_look_targets(uint8_t*, recomp_context*); conker_look_targets(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_15120158"
+before_vram = 0x15120E8C
+text = "{ extern void conker_look_currents(uint8_t*, recomp_context*); conker_look_currents(rdram, ctx); }"
+
+# The second aiming mode (func_15126378: aiming that doesn't go through the look mode, e.g. the
+# sniper scope, the magnum and throwables) reads the stick itself, into its own yaw and pitch ($t0 + 0x174 and
+# + 0x178). Every path meets at 0x15126EA0 with the turn in $f14 (yaw, subtracted) and $f12
+# (pitch, added), just before they're applied: the look mode's Invert Stick setting turns them
+# around there too (host/src/look_aim.cpp).
+[[patches.hook]]
+func = "func_15126378"
+before_vram = 0x15126EA0
+text = "{ extern void conker_aim_stick(uint8_t*, recomp_context*); conker_aim_stick(rdram, ctx); }"
+
+# Camera: Invert Turning and Turning Speed (host/src/look_aim.cpp). func_1512D390 turns the
+# follow camera with C-Left and C-Right (by default also the right stick). It stores the direction,
+# 1 or -1, at $s0 + 0x6B0 (0x1512D3E8 or 0x1512D3EC); both paths meet at 0x1512D3F0, before the
+# turn speeds up that way. The frame's turn, in degrees, is then handed to func_1508EF80 in $f18
+# while a button is held (moved to $a2 at 0x1512D4C4) and in $f4 while it glides to a stop (at
+# 0x1512D53C). Only the camera turns there, so multiplayer's strafing (the same buttons, in the
+# movement code) is left as it is.
+[[patches.hook]]
+func = "func_1512D390"
+before_vram = 0x1512D3F0
+text = "{ extern void conker_camera_turn_invert(uint8_t*, recomp_context*); conker_camera_turn_invert(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_1512D390"
+before_vram = 0x1512D4C4
+text = "{ extern void conker_camera_turn_speed_held(uint8_t*, recomp_context*); conker_camera_turn_speed_held(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_1512D390"
+before_vram = 0x1512D53C
+text = "{ extern void conker_camera_turn_speed_released(uint8_t*, recomp_context*); conker_camera_turn_speed_released(rdram, ctx); }"
+
+# Mouse camera: a free orbit camera (host/src/mouse_camera.cpp). func_1512D390 is the
+# C-buttons' turning, which runs while the follow camera does ($s0 is the camera until
+# 0x1512D54C restores it); func_1512BB10 is the camera's collision, where the orbit places
+# the eye it wants for the collision to stop at walls; func_151284C4 builds the view from
+# the eye and ends the frame's camera update ($a0 the camera in both).
+[[patches.hook]]
+func = "func_1512D390"
+before_vram = 0x1512D54C
+text = "{ extern void conker_mouse_camera_follow(uint8_t*, recomp_context*); conker_mouse_camera_follow(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_1512BB10"
+before_vram = 0x1512BB14
+text = "{ extern void conker_mouse_camera_collide(uint8_t*, recomp_context*); conker_mouse_camera_collide(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_151284C4"
+before_vram = 0x151284C8
+text = "{ extern void conker_mouse_camera(uint8_t*, recomp_context*); conker_mouse_camera(rdram, ctx); }"
+
+# 0.10.12, logging only (host/src/mouse_camera.cpp): the camera's command queue (func_1512D560 adds one: $a0 the camera, $a1 the
+# command, $a2 its argument) and the follow camera's reset (func_15127EB8, $a0 the camera), with who called them, for this
+# machine's own camera online: the 4 player game's teddies had their camera reset about every 35 frames.
+[[patches.hook]]
+func = "func_1512D560"
+before_vram = 0x1512D560
+text = "{ extern void conker_camera_command_log(uint8_t*, recomp_context*); conker_camera_command_log(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_15127EB8"
+before_vram = 0x15127EB8
+text = "{ extern void conker_camera_reset_log(uint8_t*, recomp_context*); conker_camera_reset_log(rdram, ctx); }"
+
+# Aiming: Swap Sticks with the shotgun (host/src/look_aim.cpp, issue #84): after R alone's movement in Conker's
+# state 0x3B (func_15063E84 returned, $s0 Conker), R alone shows the laser sight as R and Z do.
+[[patches.hook]]
+func = "func_15065A5C"
+before_vram = 0x15069028
+text = "{ extern void conker_shotgun_laser(uint8_t*, recomp_context*); conker_shotgun_laser(rdram, ctx); }"
+
+# And R alone's walk in state 0x3B (func_15064B94 picked 0x224 in $v1) is R and Z's (0x31B), with the gun up.
+[[patches.hook]]
+func = "func_15064B94"
+before_vram = 0x150651FC
+text = "{ extern void conker_shotgun_laser_walk(uint8_t*, recomp_context*); conker_shotgun_laser_walk(rdram, ctx); }"
+
+# Aiming: Lock-On (host/src/look_aim.cpp): func_15063A38 turns the aim by the stick, or toward an enemy
+# with func_150639BC while +0x84 of $a0's +0x31C is set ($t1, tested at 0x15063A80). With the setting
+# Off the flag reads as clear.
+[[patches.hook]]
+func = "func_15063A38"
+before_vram = 0x15063A80
+text = "{ extern void conker_aim_lock_on(uint8_t*, recomp_context*); conker_aim_lock_on(rdram, ctx); }"
+
+# Online, a gun's aim across turns 1.5 times as fast (host/src/look_aim.cpp, conker_gun_aim_turn): $t5, the
+# frame's turn, before it's added to the aim.
+[[patches.hook]]
+func = "func_15063A38"
+before_vram = 0x15063AE0
+text = "{ extern void conker_gun_aim_turn(uint8_t*, recomp_context*); conker_gun_aim_turn(rdram, ctx); }"
+
+# Online, the look mode's first stage (host/src/look_aim.cpp, conker_look_stage_one): the camera's yaw goes
+# to the aim at once, at the start of func_15120158 ($a0 the camera).
+[[patches.hook]]
+func = "func_15120158"
+before_vram = 0x15120158
+text = "{ extern void conker_look_stage_one(uint8_t*, recomp_context*); conker_look_stage_one(rdram, ctx); }"
+
+# The bank's slow motion leaps (host/src/mouse_camera.cpp, issue #85): the view's eye is raised in a leap
+# (conker_leap_view_lift, in the func_1512C490 hook below) and lowered back as func_15122C5C, the follow
+# camera's update, starts, once $s0 is the camera (0x15122C64), before it copies the view's eye back
+# into the eye wanted (conker_leap_view_restore).
+[[patches.hook]]
+func = "func_15122C5C"
+before_vram = 0x15122C6C
+text = "{ extern void conker_leap_view_restore(uint8_t*, recomp_context*); conker_leap_view_restore(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_15120158"
+before_vram = 0x1512015C
+text = "{ extern void conker_mouse_camera_look_mode(uint8_t*, recomp_context*); conker_mouse_camera_look_mode(rdram, ctx); }"
+
+# Mouse camera: func_1512C490 (in func_151284C4) has copied the look-at point and the eye into
+# the view's (+0x2E0, +0x2EC; $s0 the camera). Tilted up past where the eye stops, the view's
+# look-at point is raised to aim higher from the same eye (issue #70). While aiming with Aiming: Swap
+# Sticks, the view is turned to the aim's direction, so walking doesn't turn it (issue #84,
+# host/src/look_aim.cpp). In the bank's slow motion leaps, the view's eye is raised (issue #85).
+[[patches.hook]]
+func = "func_1512C490"
+before_vram = 0x1512C640
+text = "{ extern void conker_mouse_camera_aim(uint8_t*, recomp_context*); conker_mouse_camera_aim(rdram, ctx); extern void conker_look_view(uint8_t*, recomp_context*); conker_look_view(rdram, ctx); extern void conker_leap_view_lift(uint8_t*, recomp_context*); conker_leap_view_lift(rdram, ctx); extern void conker_view_snap_guard(uint8_t*, recomp_context*); conker_view_snap_guard(rdram, ctx); }"
+
+# Motion blur (func_151D6778, Conker drunk): a frame it's drawn in is drawn without frames between it
+# and the next, so the blur blends with a whole frame's ghost as on the N64 (host/src/widescreen.cpp,
+# issue #77).
+[[patches.hook]]
+func = "func_151D6778"
+before_vram = 0x151D677C
+text = "{ extern void conker_motion_blur(uint8_t*, recomp_context*); conker_motion_blur(rdram, ctx); }"
+
+# Clear the frame to black before drawing it. func_1510FEA0 (starts each frame's display
+# list) clears the depth buffer, then clears the colour buffer only while D_800BE635 is
+# set, and level setup (func_1501A220) clears that flag: the game relies on the level and
+# sky covering the whole screen. Where they don't, such as with the mouse camera inside or
+# under a wall, the last frame's picture stayed there and repeated (host/src/render_fixes.cpp).
+[[patches.hook]]
+func = "func_1510FEA0"
+before_vram = 0x1510FFA4
+text = "{ extern void conker_frame_clear(uint8_t*, recomp_context*); conker_frame_clear(rdram, ctx); }"
+
+# Light glows: func_151408A4 hides a glow when the depth buffer sample under its light is
+# nearer than the light, and on RT64 that sample isn't real depth. Skip the comparison
+# (host/src/render_fixes.cpp).
+[[patches.hook]]
+func = "func_151408A4"
+before_vram = 0x15140DB4
+text = "{ extern void conker_light_glow_depth(uint8_t*, recomp_context*); conker_light_glow_depth(rdram, ctx); }"
+
+# Light glows at the widescreen edges: func_151408A4 also hides a glow whose light is
+# outside the camera's 4:3 left and right bounds. Widen them like the sprite cull
+# (host/src/widescreen.cpp).
+[[patches.hook]]
+func = "func_151408A4"
+before_vram = 0x15140988
+text = "{ extern void conker_widen_light_glow_left(uint8_t*, recomp_context*); conker_widen_light_glow_left(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_151408A4"
+before_vram = 0x151409A0
+text = "{ extern void conker_widen_light_glow_right(uint8_t*, recomp_context*); conker_widen_light_glow_right(rdram, ctx); }"
+
+# TEMP-DEBUG: switches for the game's mid-frame depth-buffer copies (host/src/render_fixes.cpp).
+[[patches.hook]]
+func = "func_1510B9D0"
+before_vram = 0x1510BE18
+text = "{ extern void conker_depth_copy_camera(uint8_t*, recomp_context*); conker_depth_copy_camera(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_151742EC"
+before_vram = 0x1517432C
+text = "{ extern void conker_depth_copy_probes(uint8_t*, recomp_context*); conker_depth_copy_probes(rdram, ctx); }"
+
+# Speech bubbles past the screen's left edge (func_15095D34 draws each piece of one; issue #59). The
+# game clamps a rectangle at 0 and moves its texture on, which cut the bubble at the 4:3 edge in
+# widescreen. The piece is drawn shifted right, so nothing is clamped, then moved back as RT64's
+# extended rectangle (host/src/widescreen.cpp). Its extended GBI is enabled early in the frame, in
+# place of the pipe sync func_1501A490 writes for each camera's pass (func_15019464 at 0x150194F8,
+# $v0 just after that sync and the scissor); func_1501878C at 0x15018920 starts the frame's list.
+[[patches.hook]]
+func = "func_1501878C"
+before_vram = 0x15018920
+text = "{ extern void conker_frame_dl_begin(uint8_t*, recomp_context*); conker_frame_dl_begin(rdram, ctx); }"
+
+# Room in the frame's display lists (host/src/render_fixes.cpp, issue #98): func_15015E80 allocates
+# the two lists with half their budget again, for the frame interpolation's matrix groups and the
+# objects widescreen draws beside the 4:3 frame, and sets the limit the game stops drawing objects
+# at from the lists' own size (it took the distance between them, which can be far more). A list
+# run past its end overwrote the next heap block, and the game crashed freeing the level's blocks.
+[[patches.hook]]
+func = "func_15015E80"
+before_vram = 0x15015ED0
+text = "{ extern void conker_display_list_size_first(uint8_t*, recomp_context*); conker_display_list_size_first(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_15015E80"
+before_vram = 0x15015F00
+text = "{ extern void conker_display_list_size_second(uint8_t*, recomp_context*); conker_display_list_size_second(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_15015E80"
+before_vram = 0x15015F28
+text = "{ extern void conker_display_list_limit(uint8_t*, recomp_context*); conker_display_list_limit(rdram, ctx); }"
+
+# Cutscene Aspect Ratio at 4:3 (host/src/cutscene_aspect.cpp): at the end of the frame's display
+# list, just before func_1501878C writes its full sync ($s1 points to the list's pointer), a call to
+# a list of our own that draws black bars over the picture beyond the 4:3 frame.
+[[patches.hook]]
+func = "func_1501878C"
+before_vram = 0x15018C8C
+text = "{ extern void conker_frame_dl_end(uint8_t*, recomp_context*); conker_frame_dl_end(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_15019464"
+before_vram = 0x150194F8
+text = "{ extern void conker_camera_pass_sync(uint8_t*, recomp_context*); conker_camera_pass_sync(rdram, ctx); }"
+
+# A sprite piece under a pixel across (host/src/render_fixes.cpp): its width ($f0) and height ($f2) are
+# loaded, and are made a pixel before func_15095D34 divides by them, as a crash was.
+[[patches.hook]]
+func = "func_15095D34"
+before_vram = 0x15095D58
+text = "{ extern void conker_sprite_piece_size(uint8_t*, recomp_context*); conker_sprite_piece_size(rdram, ctx); }"
+
+# After the piece's left edge is loaded ($f12, D_800D2C78; its right edge is that plus a width),
+# and where both of its returns meet ($v0 the end of what it wrote).
+[[patches.hook]]
+func = "func_15095D34"
+before_vram = 0x15095D5C
+text = "{ extern void conker_bubble_begin(uint8_t*, recomp_context*); conker_bubble_begin(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_15095D34"
+before_vram = 0x15096294
+text = "{ extern void conker_bubble_end(uint8_t*, recomp_context*); conker_bubble_end(rdram, ctx); }"
+
+# Player 1's cash (host/src/local_achievements.cpp): the end's million unlocks What a Day, and each change is
+# logged (what the game's money piles give, for an achievement for collecting them all).
+[[patches.hook]]
+func = "func_15085710"
+before_vram = 0x15085710
+text = "{ extern void conker_stat_change(uint8_t*, recomp_context*); conker_stat_change(rdram, ctx); }"
+
+# Netplay test (host/src/netplay.cpp): who asks the game's RNG for numbers, so two runs that drift apart can
+# be told which code used it differently. Does nothing unless a netplay test is running.
+[[patches.hook]]
+func = "random_u32"
+before_vram = 0x150ADA20
+text = "{ extern void conker_netplay_rng(uint8_t*, recomp_context*); conker_netplay_rng(rdram, ctx); }"
+
+[[patches.hook]]
+func = "random_float"
+before_vram = 0x150ADA68
+text = "{ extern void conker_netplay_rng(uint8_t*, recomp_context*); conker_netplay_rng(rdram, ctx); }"
+
+# The game's sounds, the same on every machine online (host/src/net_session.cpp, "The game's sounds"): a voice that the audio
+# thread frees doesn't clear its sound slot any more (func_10017298), and "is it still playing?" (func_100173C4, at its last
+# instructions) answers from the slot.
+[[patches.hook]]
+func = "func_10017298"
+before_vram = 0x10017298
+text = "{ extern void conker_net_sound_hook(uint8_t*, recomp_context*, int); conker_net_sound_hook(rdram, ctx, 0); }"
+
+# func_10017604 (stops the sounds with some flags) goes through the list of voices in use; if that list has become a loop the game
+# thread never comes out (a freeze in a long online match): the list is checked, and cut if broken, as the function starts.
+[[patches.hook]]
+func = "func_10017604"
+before_vram = 0x10017604
+text = "{ extern void conker_net_sound_hook(uint8_t*, recomp_context*, int); conker_net_sound_hook(rdram, ctx, 2); }"
+
+[[patches.hook]]
+func = "func_100173C4"
+before_vram = 0x10017428
+text = "{ extern void conker_net_sound_hook(uint8_t*, recomp_context*, int); conker_net_sound_hook(rdram, ctx, 1); }"
+
+# Online (host/src/net_session.cpp, the sound notes): a game slot keeps its voice until the host says it ended, so the game can
+# still hand the sound player an event (a stop, ...) for a voice the audio thread has already freed; acted on, that frees it twice
+# and loops the lists of voices (a sound then plays for ever: the chainsaw). func_1001C224 (alEvtqPostEvent) drops such an event.
+[[patches.hook]]
+func = "n_alEvtqPostEvent"
+before_vram = 0x1001C224
+text = "{ extern int conker_net_sound_gate(uint8_t*, recomp_context*); if (conker_net_sound_gate(rdram, ctx)) { return; } }"
+
+# Online: func_1000F44C ("has this handle's sound started?") answers from the voice's flags, which the audio thread sets at its
+# own pace on each machine; the game's logic acts on the answer (whether to play a sound, which draws a random number), so it
+# answers from the slot alone: started while the slot has the handle and a voice.
+[[patches.hook]]
+func = "func_1000F44C"
+before_vram = 0x1000F4C8
+text = "{ extern void conker_net_sound_hook(uint8_t*, recomp_context*, int); conker_net_sound_hook(rdram, ctx, 3); }"
+
+# Online: each machine hears the game from its own player's camera (host/src/local_audio.cpp). The game still decides from its
+# own volumes whether a sound starts or stops; only the volume and pan the sound player gets are this machine's. (Sounds on
+# characters, func_10010154 / func_10010344 / func_10010FFC, are given theirs in func_10010BE8, by its return address.)
+[[patches.hook]]
+func = "func_1000F91C"
+before_vram = 0x1000F960
+text = "{ extern void conker_local_audio(uint8_t*, recomp_context*, int); conker_local_audio(rdram, ctx, 0); }"
+
+[[patches.hook]]
+func = "func_1000F9D4"
+before_vram = 0x1000FA24
+text = "{ extern void conker_local_audio(uint8_t*, recomp_context*, int); conker_local_audio(rdram, ctx, 1); }"
+
+[[patches.hook]]
+func = "func_10010E78"
+before_vram = 0x10010EBC
+text = "{ extern void conker_local_audio(uint8_t*, recomp_context*, int); conker_local_audio(rdram, ctx, 2); }"
+
+[[patches.hook]]
+func = "func_10010E78"
+before_vram = 0x10010F24
+text = "{ extern void conker_local_audio(uint8_t*, recomp_context*, int); conker_local_audio(rdram, ctx, 5); }"
+
+[[patches.hook]]
+func = "func_10011624"
+before_vram = 0x10011810
+text = "{ extern void conker_local_audio(uint8_t*, recomp_context*, int); conker_local_audio(rdram, ctx, 6); }"
+
+[[patches.hook]]
+func = "func_10011624"
+before_vram = 0x100118A8
+text = "{ extern void conker_local_audio(uint8_t*, recomp_context*, int); conker_local_audio(rdram, ctx, 7); }"
+
+[[patches.hook]]
+func = "func_10011624"
+before_vram = 0x10011970
+text = "{ extern void conker_local_audio(uint8_t*, recomp_context*, int); conker_local_audio(rdram, ctx, 8); }"
+
+[[patches.hook]]
+func = "func_10011624"
+before_vram = 0x100119A0
+text = "{ extern void conker_local_audio(uint8_t*, recomp_context*, int); conker_local_audio(rdram, ctx, 9); }"
+
+[[patches.hook]]
+func = "func_10011624"
+before_vram = 0x100119C0
+text = "{ extern void conker_local_audio(uint8_t*, recomp_context*, int); conker_local_audio(rdram, ctx, 10); }"
+
+[[patches.hook]]
+func = "func_10011624"
+before_vram = 0x100119EC
+text = "{ extern void conker_local_audio(uint8_t*, recomp_context*, int); conker_local_audio(rdram, ctx, 11); }"
+
+[[patches.hook]]
+func = "func_10011BB8"
+before_vram = 0x10011BB8
+text = "{ extern void conker_local_audio(uint8_t*, recomp_context*, int); conker_local_audio(rdram, ctx, 12); }"
+
+[[patches.hook]]
+func = "func_1001263C"
+before_vram = 0x1001263C
+text = "{ extern void conker_local_audio(uint8_t*, recomp_context*, int); conker_local_audio(rdram, ctx, 13); }"
+
+[[patches.hook]]
+func = "func_1000FA64"
+before_vram = 0x1000FA64
+text = "{ extern void conker_local_audio(uint8_t*, recomp_context*, int); conker_local_audio(rdram, ctx, 14); }"
+
+[[patches.hook]]
+func = "func_10011BB8"
+before_vram = 0x10011D10
+text = "{ extern void conker_local_audio(uint8_t*, recomp_context*, int); conker_local_audio(rdram, ctx, 15); }"
+
+[[patches.hook]]
+func = "func_10011BB8"
+before_vram = 0x10011D18
+text = "{ extern void conker_local_audio(uint8_t*, recomp_context*, int); conker_local_audio(rdram, ctx, 16); }"
+
+[[patches.hook]]
+func = "func_1000F85C"
+before_vram = 0x1000F85C
+text = "{ extern void conker_local_audio(uint8_t*, recomp_context*, int); conker_local_audio(rdram, ctx, 17); }"
+
+# Online: the music's layer played with each shot is heard from this machine's player (host/src/local_audio.cpp,
+# shot_music_send): func_151C2050 sends the music manager its volume and pan, which the split screen worked out from the
+# nearest camera or the shooter's own.
+[[patches.hook]]
+func = "func_151C2050"
+before_vram = 0x151C2050
+text = "{ extern void conker_local_audio(uint8_t*, recomp_context*, int); conker_local_audio(rdram, ctx, 22); }"
+
+# Online (host/src/local_audio.cpp): a character's new sound doesn't cut the one before it short (a footstep, the gunshot before it).
+[[patches.hook]]
+func = "func_10010BE8"
+before_vram = 0x10010C5C
+text = "{ extern void conker_local_audio(uint8_t*, recomp_context*, int); conker_local_audio(rdram, ctx, 25); }"
+
+[[patches.hook]]
+func = "func_151C2050"
+before_vram = 0x151C214C
+text = "{ extern int conker_local_audio_shot(uint8_t*, recomp_context*); if (conker_local_audio_shot(rdram, ctx)) { return; } }"
+
+[[patches.hook]]
+func = "func_151C2050"
+before_vram = 0x151C2284
+text = "{ extern void conker_local_audio(uint8_t*, recomp_context*, int); conker_local_audio(rdram, ctx, 24); }"
+
+[[patches.hook]]
+func = "func_10010BE8"
+before_vram = 0x10010E54
+text = "{ extern void conker_local_audio(uint8_t*, recomp_context*, int); conker_local_audio(rdram, ctx, 4); }"
+
+# Netplay test (host/src/netplay.cpp): the game's frame length (D_800BE9E4, from the retraces counted since the
+# last frame, i.e. from the host's real timing) is made a constant 2 while a netplay test or game runs.
+[[patches.hook]]
+func = "func_10004F00"
+before_vram = 0x10004F00
+text = "{ extern void conker_netplay_frame_delta(uint8_t*, recomp_context*); conker_netplay_frame_delta(rdram, ctx); }"
+
+# Full-screen view online (host/src/net_view.cpp). Nothing of the game's memory is changed while it runs; these
+# only note where each camera's pass (func_15019464, func_15019BB8; func_1501A490 is the setup they, and some
+# other passes, call) starts in the frame's display list, which is rewritten at its end for this machine's view.
+[[patches.hook]]
+func = "func_15019464"
+before_vram = 0x15019464
+text = "{ extern void conker_net_view_pass(uint8_t*, int, int, int); conker_net_view_pass(rdram, (int32_t)ctx->r4, (int32_t)(int16_t)ctx->r5, 1); }"
+
+[[patches.hook]]
+func = "func_15019BB8"
+before_vram = 0x15019BB8
+text = "{ extern void conker_net_view_pass(uint8_t*, int, int, int); conker_net_view_pass(rdram, (int32_t)ctx->r4, (int32_t)(int16_t)ctx->r5, 2); }"
+
+[[patches.hook]]
+func = "func_1501A490"
+before_vram = 0x1501A490
+text = "{ extern void conker_net_view_pass(uint8_t*, int, int, int); conker_net_view_pass(rdram, (int32_t)ctx->r4, (int32_t)(int16_t)ctx->r5, 0); }"
+
+# Online, the players are drawn for every camera (host/src/net_view.cpp, conker_player_visibility).
+[[patches.hook]]
+func = "func_1502C974"
+before_vram = 0x1502CA38
+text = "{ extern void conker_player_visibility(uint8_t*, recomp_context*, int); conker_player_visibility(rdram, ctx, 0); }"
+
+[[patches.hook]]
+func = "func_1502C974"
+before_vram = 0x1502CA58
+text = "{ extern void conker_player_visibility(uint8_t*, recomp_context*, int); conker_player_visibility(rdram, ctx, 1); }"
+
+[[patches.hook]]
+func = "func_1502C974"
+before_vram = 0x1502CB24
+text = "{ extern void conker_player_visibility(uint8_t*, recomp_context*, int); conker_player_visibility(rdram, ctx, 3); }"
+
+# The online pause menu (host/src/net_menu.cpp): the game's own pause screen run while the match goes on.
+[[patches.hook]]
+func = "func_151EB06C"
+before_vram = 0x151EB0CC
+text = "{ extern void conker_net_pause_hook(uint8_t*, recomp_context*, int); conker_net_pause_hook(rdram, ctx, 1); }"
+
+[[patches.hook]]
+func = "func_151EB06C"
+before_vram = 0x151EB128
+text = "{ extern void conker_net_pause_hook(uint8_t*, recomp_context*, int); conker_net_pause_hook(rdram, ctx, 2); }"
+
+[[patches.hook]]
+func = "func_151DDC20"
+before_vram = 0x151DDFD0
+text = "{ extern void conker_net_pause_hook(uint8_t*, recomp_context*, int); conker_net_pause_hook(rdram, ctx, 3); }"
+
+[[patches.hook]]
+func = "func_151DDC20"
+before_vram = 0x151DE2F0
+text = "{ extern void conker_net_pause_hook(uint8_t*, recomp_context*, int); conker_net_pause_hook(rdram, ctx, 4); }"
+
+[[patches.hook]]
+func = "func_151DDC20"
+before_vram = 0x151DE334
+text = "{ extern void conker_net_pause_hook(uint8_t*, recomp_context*, int); conker_net_pause_hook(rdram, ctx, 5); }"
+
+[[patches.hook]]
+func = "func_151DDC20"
+before_vram = 0x151DE34C
+text = "{ extern void conker_net_pause_hook(uint8_t*, recomp_context*, int); conker_net_pause_hook(rdram, ctx, 6); }"
+
+# 0.10.67: co-op, the pause screen without the chocolate bar and the lives (host/src/net_menu.cpp, conker_coop_pause_hud).
+[[patches.hook]]
+func = "func_151EB06C"
+before_vram = 0x151EB5E8
+text = "{ extern void conker_coop_pause_hud(uint8_t*, recomp_context*, int); conker_coop_pause_hud(rdram, ctx, 0); }"
+
+[[patches.hook]]
+func = "func_151EB06C"
+before_vram = 0x151EB768
+text = "{ extern void conker_coop_pause_hud(uint8_t*, recomp_context*, int); conker_coop_pause_hud(rdram, ctx, 1); }"
+
+[[patches.hook]]
+func = "func_151EB06C"
+before_vram = 0x151EB81C
+text = "{ extern void conker_coop_pause_hud(uint8_t*, recomp_context*, int); conker_coop_pause_hud(rdram, ctx, 2); }"
+
+# 0.10.68: co-op, the pause menu with a match's buttons (host/src/net_menu.cpp, conker_coop_pause_layout).
+[[patches.hook]]
+func = "func_151DDC20"
+before_vram = 0x151DDFE4
+text = "{ extern void conker_coop_pause_layout(uint8_t*, recomp_context*); conker_coop_pause_layout(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_151DDC20"
+before_vram = 0x151DE00C
+text = "{ extern void conker_coop_pause_buttons_y(uint8_t*, recomp_context*); conker_coop_pause_buttons_y(rdram, ctx); }"
+
+# 0.10.71: the pause menu's end, the borrowed player slot put back (host/src/net_menu.cpp, conker_net_pause_hook 7).
+[[patches.hook]]
+func = "func_151DDC20"
+before_vram = 0x151DE6BC
+text = "{ extern void conker_net_pause_hook(uint8_t*, recomp_context*, int); conker_net_pause_hook(rdram, ctx, 7); }"
+
+# 0.10.72: co-op, the pause screen loads nothing on the one machine whose menu is open (host/src/net_menu.cpp, conker_coop_pause_sprites).
+[[patches.hook]]
+func = "func_151EB06C"
+before_vram = 0x151EB5B0
+text = "{ extern void conker_coop_pause_sprites(uint8_t*, recomp_context*); conker_coop_pause_sprites(rdram, ctx); }"
+
+# 0.10.73: the pause menu's N without the copy protection's check (host/src/net_menu.cpp, the note at its end): straight to what a passed
+# check does.
+[[patches.hook]]
+func = "func_151DDC20"
+before_vram = 0x151DE538
+text = "{ ctx->r11 = ADD32(S32(0X8009 << 16), -0X1D4); ctx->r25 = MEM_B(ctx->r11, 0X0); goto L_151DE670; }"
+
+# 0.10.75: the pause screen's drawing on the machine whose menu is open: its bounds (host/src/net_menu.cpp, conker_pause_bounds), its
+# allocations from a pool (heap_watch.cpp), its sounds not played (conker_pause_sound).
+[[patches.hook]]
+func = "func_151EB06C"
+before_vram = 0x151EB06C
+text = "{ extern void conker_pause_bounds(uint8_t*, recomp_context*, int); conker_pause_bounds(rdram, ctx, 0); }"
+
+[[patches.hook]]
+func = "func_151EB06C"
+before_vram = 0x151EB91C
+text = "{ extern void conker_pause_bounds(uint8_t*, recomp_context*, int); conker_pause_bounds(rdram, ctx, 2); }"
+
+[[patches.hook]]
+func = "func_151DDC20"
+before_vram = 0x151DDC20
+text = "{ extern void conker_pause_bounds(uint8_t*, recomp_context*, int); conker_pause_bounds(rdram, ctx, 1); }"
+
+[[patches.hook]]
+func = "func_10010F30"
+before_vram = 0x10010F30
+text = "{ extern int conker_pause_sound(uint8_t*, recomp_context*); if (conker_pause_sound(rdram, ctx)) { return; } }"
+
+# Online (host/src/heap_watch.cpp): the game's heap is only the game thread's, the same on every machine, and doesn't run out.
+# func_10003C6C (allocate) begins: the audio cache's, the streamed sounds' and other threads' allocations come from a pool of their own.
+[[patches.hook]]
+func = "func_10003C6C"
+before_vram = 0x10003C6C
+text = "{ extern int conker_heap_alloc_begin(uint8_t*, recomp_context*); if (conker_heap_alloc_begin(rdram, ctx)) { return; } }"
+
+# 0.10.27, measuring only: func_10003C6C returns a heap block ($v0): kept with who asked, for the heap's walk (host/src/heap_watch.cpp).
+[[patches.hook]]
+func = "func_10003C6C"
+before_vram = 0x10004060
+text = "{ extern void conker_heap_alloc_end(uint8_t*, recomp_context*); conker_heap_alloc_end(rdram, ctx); }"
+
+# func_10003C6C about to stop the game (no free block big enough): the spare pool gives the memory instead.
+[[patches.hook]]
+func = "func_10003C6C"
+before_vram = 0x10003DD8
+text = "{ extern int conker_heap_failed(uint8_t*, recomp_context*); if (conker_heap_failed(rdram, ctx)) { return; } }"
+
+# func_10004074 (free) begins: a pool's block is freed there; a heap block freed from another thread waits for the game thread.
+[[patches.hook]]
+func = "func_10004074"
+before_vram = 0x10004074
+text = "{ extern int conker_heap_free(uint8_t*, recomp_context*); if (conker_heap_free(rdram, ctx)) { return; } }"
+
+# func_10004250 (frees owner 2, ages 3 and 4) and func_10004308 (frees owners 1-4) begin: the same for the spare pool's blocks.
+[[patches.hook]]
+func = "func_10004250"
+before_vram = 0x10004250
+text = "{ extern void conker_heap_age(uint8_t*, recomp_context*, int); conker_heap_age(rdram, ctx, 0); }"
+
+[[patches.hook]]
+func = "func_10004308"
+before_vram = 0x10004308
+text = "{ extern void conker_heap_age(uint8_t*, recomp_context*, int); conker_heap_age(rdram, ctx, 1); }"
+
+# Online, straight to the multiplayer menu (host/src/net_menu.cpp): the intro skipped as mods/skip_intro does, at the logos' function's
+# return and the scene loader's.
+[[patches.hook]]
+func = "func_151DE6D4"
+before_vram = 0x151DE7CC
+text = "{ extern void conker_online_boot_logos(uint8_t*, recomp_context*); conker_online_boot_logos(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_15007A70"
+before_vram = 0x15007B34
+text = "{ extern void conker_online_boot_scene(uint8_t*, recomp_context*); conker_online_boot_scene(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_151DE8F0"
+before_vram = 0x151DE8F0
+text = "{ extern void conker_online_boot_multi(uint8_t*, recomp_context*); conker_online_boot_multi(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_151DE8F0"
+before_vram = 0x151DF1B4
+text = "{ extern void conker_online_boot_black(uint8_t*, recomp_context*); conker_online_boot_black(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_151E6C1C"
+before_vram = 0x151E6C1C
+text = "{ extern void conker_online_no_back(uint8_t*, recomp_context*); conker_online_no_back(rdram, ctx); }"
+
+# 0.10.14: online, footsteps with 3 or 4 players too (host/src/local_audio.cpp, conker_net_footsteps): func_1506BF5C plays a
+# character's footstep only while D_80082FA0 (the last listener: 0 one player, 1 two) is under 2; $t4 holds it here.
+[[patches.hook]]
+func = "func_1506BF5C"
+before_vram = 0x1506C060
+text = "{ extern void conker_net_footsteps(uint8_t*, recomp_context*); conker_net_footsteps(rdram, ctx); }"
+
+# 0.10.18, logging only (host/src/mouse_camera.cpp, conker_cam_probe): the functions that set a camera's snap (+0x23C), with who called
+# them, to find what snaps the teddies' cameras in a 4 player game every 45 frames.
+[[patches.hook]]
+func = "func_150054C4"
+before_vram = 0x150054C4
+text = "{ extern void conker_cam_probe(uint8_t*, recomp_context*, int); conker_cam_probe(rdram, ctx, 1); }"
+
+[[patches.hook]]
+func = "func_15082A44"
+before_vram = 0x15082A44
+text = "{ extern void conker_cam_probe(uint8_t*, recomp_context*, int); conker_cam_probe(rdram, ctx, 2); }"
+
+[[patches.hook]]
+func = "func_15128774"
+before_vram = 0x15128774
+text = "{ extern void conker_cam_probe(uint8_t*, recomp_context*, int); conker_cam_probe(rdram, ctx, 3); }"
+
+[[patches.hook]]
+func = "func_1512D6F0"
+before_vram = 0x1512D6F0
+text = "{ extern void conker_cam_probe(uint8_t*, recomp_context*, int); conker_cam_probe(rdram, ctx, 4); }"
+
+[[patches.hook]]
+func = "func_15005C80"
+before_vram = 0x15005C80
+text = "{ extern void conker_cam_probe(uint8_t*, recomp_context*, int); conker_cam_probe(rdram, ctx, 5); }"
+
+[[patches.hook]]
+func = "func_15005E70"
+before_vram = 0x15005E70
+text = "{ extern void conker_cam_probe(uint8_t*, recomp_context*, int); conker_cam_probe(rdram, ctx, 6); }"
+
+[[patches.hook]]
+func = "func_150B67E0"
+before_vram = 0x150B67E0
+text = "{ extern void conker_cam_probe(uint8_t*, recomp_context*, int); conker_cam_probe(rdram, ctx, 7); }"
+
+[[patches.hook]]
+func = "func_15096D78"
+before_vram = 0x15096D78
+text = "{ extern void conker_cam_probe(uint8_t*, recomp_context*, int); conker_cam_probe(rdram, ctx, 8); }"
+
+[[patches.hook]]
+func = "func_1512E8E0"
+before_vram = 0x1512E8E0
+text = "{ extern void conker_cam_probe(uint8_t*, recomp_context*, int); conker_cam_probe(rdram, ctx, 9); }"
+
+
+# 0.10.21: online, the camera's depth row (camera +0x8BC, 292 samples) reads as "nothing in front" as the camera scans it for what's
+# between it and the player (func_1512B1B8, $a0 the camera; host/src/render_fixes.cpp, conker_depth_row_neutral).
+[[patches.hook]]
+func = "func_1512B1B8"
+before_vram = 0x1512B1B8
+text = "{ extern void conker_depth_row_neutral(uint8_t*, recomp_context*); conker_depth_row_neutral(rdram, ctx); }"
+
+# 0.10.23: online, with three or four players anyone may change to either team on the teams screen (host/src/mp_characters.cpp):
+# the most players on one team ($a1, loaded on both paths by here) raised to all but one ...
+[[patches.hook]]
+func = "func_151E1744"
+before_vram = 0x151E18E4
+text = "{ extern void conker_team_caps(uint8_t*, recomp_context*); conker_team_caps(rdram, ctx); }"
+
+# ... and the computer players the screen adds past the mode's most characters (three against one) taken off again ($s0 the list's length).
+[[patches.hook]]
+func = "func_151E1744"
+before_vram = 0x151E1E4C
+text = "{ extern void conker_team_trim(uint8_t*, recomp_context*); conker_team_trim(rdram, ctx); }"
+
+# 0.10.24: online, the race with up to four players (host/src/mp_characters.cpp): who may join on the character select ...
+[[patches.hook]]
+func = "func_151E0B70"
+before_vram = 0x151E0DA0
+text = "{ extern void conker_race_join(uint8_t*, recomp_context*); conker_race_join(rdram, ctx); }"
+
+# ... the select's four columns ...
+[[patches.hook]]
+func = "func_151EC648"
+before_vram = 0x151ECCA8
+text = "{ extern void conker_race_columns(uint8_t*, recomp_context*); conker_race_columns(rdram, ctx); }"
+
+# ... and the characters shown in them, at each player's own place.
+[[patches.hook]]
+func = "func_151E7F60"
+before_vram = 0x151E8004
+text = "{ extern void conker_race_places(uint8_t*, recomp_context*); conker_race_places(rdram, ctx); }"
+
+# 0.10.26: online, computer players with three or four players (host/src/mp_characters.cpp): the most characters on the screen after
+# the character select ($s4) ...
+[[patches.hook]]
+func = "func_151E1214"
+before_vram = 0x151E1350
+text = "{ extern void conker_bots_most(uint8_t*, recomp_context*); conker_bots_most(rdram, ctx); }"
+
+# ... and the teams screen's team sizes kept with three or more players ($t8, the players, as if under 3).
+[[patches.hook]]
+func = "func_151E1744"
+before_vram = 0x151E1C94
+text = "{ extern void conker_team_sizes(uint8_t*, recomp_context*); conker_team_sizes(rdram, ctx); }"
+
+# 0.10.28: co-op (host/src/net_menu.cpp, conker_coop_start): the race lobby's start, after A on BACK, goes to the campaign's stage.
+[[patches.hook]]
+func = "func_151E4314"
+before_vram = 0x151E4314
+text = "{ extern int conker_coop_start(uint8_t*, recomp_context*); if (conker_coop_start(rdram, ctx)) { return; } }"
+
+[[patches.hook]]
+func = "func_151E2834"
+before_vram = 0x151E2834
+text = "{ extern int conker_coop_start(uint8_t*, recomp_context*); if (conker_coop_start(rdram, ctx)) { return; } }"
+
+# 0.10.63: co-op, a player down waits until everyone is down, then the stage restarts for all (host/src/net_menu.cpp,
+# conker_coop_continue / conker_coop_out).
+[[patches.hook]]
+func = "func_1507C8FC"
+before_vram = 0x1507CBA0
+text = "{ extern void conker_coop_continue(uint8_t*, recomp_context*); conker_coop_continue(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_1507D4F8"
+before_vram = 0x1507D4F8
+text = "{ extern int conker_coop_out(uint8_t*, recomp_context*); if (conker_coop_out(rdram, ctx)) { return; } }"
+
+# 0.10.61: co-op, the stage's reloads keep every player (host/src/net_menu.cpp, conker_coop_scene_load).
+[[patches.hook]]
+func = "func_15007A70"
+before_vram = 0x15007A70
+text = "{ extern void conker_coop_scene_load(uint8_t*, recomp_context*); conker_coop_scene_load(rdram, ctx); }"
+
+# 0.10.60: co-op, a HUD for each player (host/src/net_menu.cpp, conker_coop_hud_update / conker_coop_hud_draw).
+[[patches.hook]]
+func = "func_15019414"
+before_vram = 0x15019414
+text = "{ extern void conker_coop_hud_update(uint8_t*, recomp_context*); conker_coop_hud_update(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_150198FC"
+before_vram = 0x15019B68
+text = "{ extern void conker_coop_hud_draw_start(uint8_t*, recomp_context*); conker_coop_hud_draw_start(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_150198FC"
+before_vram = 0x15019B70
+text = "{ extern void conker_coop_hud_draw(uint8_t*, recomp_context*); conker_coop_hud_draw(rdram, ctx); }"
+
+# 0.10.59: co-op, the zombies' "near the player" test measures to the player they're after (host/src/net_menu.cpp, conker_coop_near_test).
+[[patches.hook]]
+func = "func_150779D4"
+before_vram = 0x150779D4
+text = "{ extern void conker_coop_near_test(uint8_t*, recomp_context*, int); conker_coop_near_test(rdram, ctx, 0); }"
+
+[[patches.hook]]
+func = "func_150779D4"
+before_vram = 0x15077A88
+text = "{ extern void conker_coop_near_test(uint8_t*, recomp_context*, int); conker_coop_near_test(rdram, ctx, 1); }"
+
+[[patches.hook]]
+func = "func_150779D4"
+before_vram = 0x15077A94
+text = "{ extern void conker_coop_near_test(uint8_t*, recomp_context*, int); conker_coop_near_test(rdram, ctx, 2); }"
+
+# 0.10.52, measuring: who calls func_15063570 (the shotgun's weapon mode) in co-op (host/src/net_menu.cpp, conker_coop_who).
+[[patches.hook]]
+func = "func_15063570"
+before_vram = 0x15063570
+text = "{ extern void conker_coop_who(uint8_t*, recomp_context*); conker_coop_who(rdram, ctx); }"
+
+# 0.10.32: co-op (host/src/net_menu.cpp, conker_coop_weapon): a script's weapon for the first player's Conker, given to every player's too.
+[[patches.hook]]
+func = "func_15097A8C"
+before_vram = 0x150993E0
+text = "{ extern void conker_coop_weapon(uint8_t*, recomp_context*, int); conker_coop_weapon(rdram, ctx, 0); }"
+
+[[patches.hook]]
+func = "func_15097A8C"
+before_vram = 0x150993FC
+text = "{ extern void conker_coop_weapon(uint8_t*, recomp_context*, int); conker_coop_weapon(rdram, ctx, 1); }"
+
+[[patches.hook]]
+func = "func_15097A8C"
+before_vram = 0x1509941C
+text = "{ extern void conker_coop_weapon(uint8_t*, recomp_context*, int); conker_coop_weapon(rdram, ctx, 2); }"
+
+# 0.10.85: co-op, R-Look with no weapon out walks Conker as in the multiplayer games (host/src/net_menu.cpp,
+# conker_coop_look_strafe): $t6 holds D_800BE616 (a multiplayer game), about to be tested.
+[[patches.hook]]
+func = "func_1504CB98"
+before_vram = 0x1504DC88
+text = "{ extern void conker_coop_look_strafe(uint8_t*, recomp_context*); conker_coop_look_strafe(rdram, ctx); }"
+
+# 0.10.86: co-op, the normal camera (no weapon out) nearer Conker (host/src/net_menu.cpp, conker_coop_camera_distance):
+# func_15124B18 has set the camera's ($a0) distance from the game's table, about to return.
+[[patches.hook]]
+func = "func_15124B18"
+before_vram = 0x15124C30
+text = "{ extern void conker_coop_camera_distance(uint8_t*, recomp_context*); conker_coop_camera_distance(rdram, ctx); }"
+
+# 0.10.93: online, up to 10 characters on a team on the teams screen (host/src/mp_characters.cpp, conker_team_most): $v1 the most
+# for the team being kept in range (8, or the mode's second team's own).
+[[patches.hook]]
+func = "func_151E1744"
+before_vram = 0x151E1D40
+text = "{ extern void conker_team_most(uint8_t*, recomp_context*); conker_team_most(rdram, ctx); }"
+
+# 0.10.93: online, the teams screen's move sound only for a press that changed the teams (host/src/mp_characters.cpp,
+# conker_team_sound): $sp + 0x74 the sound, about to be played.
+[[patches.hook]]
+func = "func_151E1744"
+before_vram = 0x151E21C0
+text = "{ extern void conker_team_sound(uint8_t*, recomp_context*); conker_team_sound(rdram, ctx); }"
+
