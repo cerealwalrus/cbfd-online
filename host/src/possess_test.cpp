@@ -2740,9 +2740,31 @@ static void conker_possess_view_local_body(uint8_t* rdram, recomp_context* ctx) 
             poses_left++;
             continue;
         }
+        // (possess86) only a texture is drawn from the RDP's buffers: a matrix, vertices or a list's piece named inside one is where a
+        // color image's size was overguessed (a narrow one's rows times 240) and reaches past it. Left as they were, they were drawn from
+        // what the game's memory has back after the view (player 1's): in an explosion the view's own camera matrix, the 5th player's
+        // view drawn from player 1's camera for a frame (the explosion's sprites, worked out on the CPU, where they were).
+        const uint32_t ref_op = mem_word(rdram, r.command) >> 24;
         if (on_rdp(r.at, r.size)) {
-            rdp_left++;
-            continue;
+            if (ref_op == 0xFD) {
+                rdp_left++;
+                continue;
+            }
+            static uint32_t told_rdp = 0;
+            if (changed(r.at, r.size) && told_rdp < 30) {
+                told_rdp++;
+                std::string ranges;
+                for (size_t b = 0; b < rdp.size(); b++) {
+                    if (r.at < rdp[b].first + rdp[b].second && rdp[b].first < r.at + r.size) {
+                        char piece[80];
+                        std::snprintf(piece, sizeof(piece), " %08X+%X (%s)", (unsigned)rdp[b].first, (unsigned)rdp[b].second,
+                            b + walker.cimgs.size() >= rdp.size() ? "a color image the view's commands set" : "the game's buffers");
+                        ranges += piece;
+                    }
+                }
+                log("f=%u [rdp] a changed %02X (%08X, %u bytes, command %08X) inside:%s - copied (it was left as it was before possess86)",
+                    (unsigned)frames, (unsigned)ref_op, (unsigned)r.at, (unsigned)r.size, (unsigned)r.command, ranges.c_str());
+            }
         }
         if (changed(r.at, r.size)) {
             ref_changed[i] = 1;

@@ -445,6 +445,16 @@ namespace {
         // for a frame at a time. CONKER_POSSESS_MAINVIEW=1 leaves them shown.
         static const bool main_view_shown = []() { const char* t = SDL_getenv("CONKER_POSSESS_MAINVIEW"); return t != nullptr && std::string(t) == "1"; }();
         const uint32_t fifth_from = (!main_view_shown && conker::possess_test::fifth_split_view(rdram)) ? conker::possess_test::fifth_view_start() : 0u;
+        // (possess86 diagnostics) a frame of the 5th player's machine without its view in the list: player 1's camera's would be what's seen
+        if (!main_view_shown && fifth_from == 0 && conker::possess_test::fifth_split_view(rdram)) {
+            static uint32_t told_without = 0;
+            if (told_without++ < 40) {
+                char line[120];
+                std::snprintf(line, sizeof(line), "[net view] f=%u a frame without the 5th player's view (%u so far)", (unsigned)conker::netsession::frame(),
+                    (unsigned)told_without);
+                conker::netsession::log(line);
+            }
+        }
         int redirected = 0, shown = 0, hidden = 0, matrices = 0, fills = 0, logged = 0, rects_logged = 0, rects_moved = 0, rects_hidden = 0;
         // where this machine's camera's 3D passes and its HUD passes are (each ends where the next pass starts)
         std::vector<std::pair<uint32_t, uint32_t>> segments, hud_segments;
