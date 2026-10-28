@@ -1298,7 +1298,37 @@ namespace {
                     // 0.10.94: a piece the size of a camera's whole rectangle (the fade to black as a match ends, drawn over each camera):
                     // this machine's camera's is stretched over the full view, another camera's hidden. Moved as a corner piece, this
                     // machine's showed as a black rectangle over part of the view for the fade's first frames.
-                    if (screen_camera == local) {
+                    // (possess85) on the 5th player's machine, such a picture of the screen itself (its texture one of the RDP's own buffers,
+                    // the framebuffers or the blur's copy: the game's zoom as a player is hit or blown up, from the frame before) in the 5th
+                    // player's view: hidden. Player 1's camera's picture was in those buffers there at times (its frames showed for a frame
+                    // at a time in an explosion, player 1's view under the fire).
+                    uint32_t picture = 0;
+                    for (int t = 0; t < texture_count; t++) {
+                        if ((texture_words[t][0] >> 24) == 0xFD) {
+                            picture = texture_words[t][1];
+                        }
+                    }
+                    bool screen_picture = false;
+                    if (picture != 0 && fifth_from != 0 && address >= fifth_from) {
+                        for (const uint32_t pointer : { 0x8002AAE8u, 0x8002AAECu, 0x800BE570u }) {
+                            const uint32_t buffer = (uint32_t)MEM_W(0, (gpr)(int32_t)pointer);
+                            if ((buffer >> 24) == 0x80 && (picture | 0x80000000u) >= buffer && (picture | 0x80000000u) < buffer + 0x1ECC0u) {
+                                screen_picture = true;
+                            }
+                        }
+                    }
+                    if (screen_camera == local && screen_picture) {
+                        hide = true;
+                        kind_name = "camera-sized: a picture of the screen, in the 5th player's view (hidden)";
+                        static int screen_logged = 0;
+                        if (screen_logged < 20) {
+                            screen_logged++;
+                            char line[160];
+                            std::snprintf(line, sizeof(line), "[net view] f=%u a picture of the screen (%08X) over the 5th player's view hidden: %08X %08X",
+                                (unsigned)conker::netsession::frame(), picture, w0, w1);
+                            conker::netsession::log(line);
+                        }
+                    } else if (screen_camera == local) {
                         stretch = true;
                         kind_name = "camera-sized: stretched to the view";
                     } else {
