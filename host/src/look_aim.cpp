@@ -404,7 +404,9 @@ void conker::look_aim::on_input_poll() {
 #if defined(CONKER_RT64)
     Movement m;
     recompinput::get_mouse_deltas(&m.mouse_x, &m.mouse_y);
-    recompinput::get_gyro_deltas(0, &m.gyro_x, &m.gyro_y);
+    // (possess66) gyro taken out of the game: its movement is never read
+    m.gyro_x = 0.0f;
+    m.gyro_y = 0.0f;
     if (conker::netsession::active()) {
         // Online the game's state is the same on every machine, made from the controllers' buttons and sticks that
         // travel: this machine's mouse and gyro turn nothing in it.
