@@ -940,6 +940,35 @@ extern "C" void conker_look_view(uint8_t* rdram, recomp_context* ctx) {
             after_logged = 0;
         }
         last_stage = stage;
+        // (possess97 diagnostics) R-Look's second stage past its first 45 frames, each frame Conker went up or down (a ramp, a step): his
+        // height, the look-at point's and the eye's, the line between them as the view's pitch, and the look's own pitch (the stick's)
+        {
+            static float slope_last_y = 0.0f;
+            static bool slope_have = false;
+            static int slope_lines = 0;
+            const gpr slope_conker = (gpr)(int32_t)MEM_W(0x3D0, camera);
+            if (stage == 2 && ((uint32_t)slope_conker & 0xFF000000u) == 0x80000000u) {
+                const float cy = read_float(rdram, slope_conker, 0x18);
+                if (slope_have && std::fabs(cy - slope_last_y) > 0.3f && frames_logged >= 45 && slope_lines < 1500) {
+                    slope_lines++;
+                    const float ex = read_float(rdram, camera, 0x2F8), ey = read_float(rdram, camera, 0x2FC), ez = read_float(rdram, camera, 0x300);
+                    const float ax = read_float(rdram, camera, 0x2E0), ay = read_float(rdram, camera, 0x2E4), az = read_float(rdram, camera, 0x2E8);
+                    const float across = std::sqrt((ax - ex) * (ax - ex) + (az - ez) * (az - ez));
+                    const float view_pitch = std::atan2(ay - ey, across) * 57.2957795f;
+                    const gpr t0s = camera + 0x740;
+                    char line[300];
+                    std::snprintf(line, sizeof(line), "[look-slope] f=%u conker y %.1f (%+.1f) look-at y %.1f eye y %.1f, %.0f across: the view's pitch %.1f, "
+                        "the look's %.2f (target %.2f), aim %d",
+                        conker::netsession::frame(), cy, cy - slope_last_y, ay, ey, across, view_pitch, read_float(rdram, t0s, current_pitch),
+                        read_float(rdram, t0s, target_pitch), ((uint32_t)MEM_W(0x3D4, camera) & 0xFF000000u) == 0x80000000u ? (int)MEM_H(0x12, (gpr)(int32_t)MEM_W(0x3D4, camera)) : 0);
+                    conker::netsession::log(line);
+                }
+                slope_last_y = cy;
+                slope_have = true;
+            } else {
+                slope_have = false;
+            }
+        }
         if (stage == 0 && after_logged < 30) {
             after_logged++;
             const gpr after_conker = (gpr)(int32_t)MEM_W(0x3D0, camera);
