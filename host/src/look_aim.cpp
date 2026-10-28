@@ -1074,45 +1074,13 @@ extern "C" void conker_look_view(uint8_t* rdram, recomp_context* ctx) {
     // him (possess103) every step of his showed, uneven on a ramp (2.5 and 2.8 a frame by turns, possess103's [look-slope] lines) and
     // stopping dead at its top and bottom. 0.35 of the way a frame (about 5 behind him climbing a ramp), at once past 80
     // (a fall, a comeback). Once a frame for each player's camera, on every machine alike.
-    struct SteadyHeight { bool have = false; float height = 0.0f; uint32_t frame = 0; };
-    static SteadyHeight steady_height[aim_players];
-    const bool steady_now = player >= 0 && player < aim_players && steady_camera(rdram, camera);
-    if (player >= 0 && player < aim_players && !steady_now) {
-        steady_height[player].have = false;
-    }
-    if (steady_now) {
-        SteadyHeight& sh = steady_height[player];
-        const float conker_y = read_float(rdram, (gpr)(int32_t)MEM_W(0x3D0, camera), 0x18);
-        const uint32_t frame_now = conker::netsession::active() ? conker::netsession::frame() : 0u;
-        if (!sh.have || std::fabs(conker_y - sh.height) > 80.0f) {
-            sh.have = true;
-            sh.height = conker_y;
-            sh.frame = frame_now;
-        } else if (!conker::netsession::active() || frame_now != sh.frame) {
-            sh.frame = frame_now;
-            sh.height += (conker_y - sh.height) * 0.35f;
-        }
-        write_float(rdram, camera, 0x2E4, read_float(rdram, camera, 0x2E4) + (sh.height - conker_y));
-    }
-    if (steady_now) {
-        const float vex = read_float(rdram, camera, 0x2EC), vez = read_float(rdram, camera, 0x2F8 + 8);
-        const float vax = read_float(rdram, camera, 0x2E0), vay = read_float(rdram, camera, 0x2E4), vaz = read_float(rdram, camera, 0x2E8);
-        const float across = std::sqrt((vax - vex) * (vax - vex) + (vaz - vez) * (vaz - vez));
-        const float look_pitch = read_float(rdram, camera + 0x740, current_pitch);
-        constexpr float flat_view_share = 0.81f, steady_degrees = 3.14159265358979f / 180.0f;
-        const float lift = across * conker::det::tan(flat_view_share * look_pitch * steady_degrees);
-        write_float(rdram, camera, 0x2F0, vay + lift);
-    }
-    if (!swap_state(player)) {
-        return;
-    }
+    // (possess105: the swap first, then Steady Camera's view, below)
+    if (swap_state(player)) {
     // The eye from where it's copied (+0x2F8): the copy's z is stored after this, in the branch's delay slot.
     const float ex = read_float(rdram, camera, 0x2F8), ez = read_float(rdram, camera, 0x300);
     const float dx = read_float(rdram, camera, 0x2E0) - ex, dz = read_float(rdram, camera, 0x2E8) - ez;
     const float across = std::sqrt(dx * dx + dz * dz);
-    if (across < 1.0f) {
-        return;
-    }
+    if (across >= 1.0f) {
     constexpr float degrees_to_radians = 3.14159265358979f / 180.0f;
     float aim_yaw = swap_view_yaw_set[player] ? swap_view_yaw[player] : read_float(rdram, camera, current_yaw);
     swap_view_yaw_set[player] = false;
@@ -1136,6 +1104,55 @@ extern "C" void conker_look_view(uint8_t* rdram, recomp_context* ctx) {
     const float yaw = (270.0f - aim_yaw) * degrees_to_radians;
     write_float(rdram, camera, 0x2E0, ex + (online ? conker::det::cos(yaw) : std::cos(yaw)) * across);
     write_float(rdram, camera, 0x2E8, ez + (online ? conker::det::sin(yaw) : std::sin(yaw)) * across);
+    }
+    }
+    // (possess105) Aiming: Steady Camera's view, built once the rest has placed it: the look-at point at Conker's height eased (0.35 of the
+    // way a frame, possess104, the eye with it so it never tilts), the eye along the same line from it at a distance eased too, and over it
+    // by that distance times the tangent of 0.81 of the look's pitch (possess103: on flat ground the view looks down so). possess104's
+    // [look-slope] lines: by walls and up the steep ramps the game's camera came in close and went back out at once (94 across, 67,
+    // 58, 83, 90 within a few frames), its eye eased at once since possess101: the view jumped in and out as the ramps were crossed. Now it
+    // comes in quickly (0.5 of the way a frame, so it doesn't see through walls) and goes back out slowly (0.15). Once a frame for each
+    // player's camera, on every machine alike (det_math).
+    struct SteadyView { bool have = false; float height = 0.0f, distance = 0.0f; uint32_t frame = 0; };
+    static SteadyView steady_view[aim_players];
+    const bool steady_now = player >= 0 && player < aim_players && steady_camera(rdram, camera);
+    if (player >= 0 && player < aim_players && !steady_now) {
+        steady_view[player].have = false;
+    }
+    if (steady_now) {
+        SteadyView& sv = steady_view[player];
+        const float conker_y = read_float(rdram, (gpr)(int32_t)MEM_W(0x3D0, camera), 0x18);
+        const float ex = read_float(rdram, camera, 0x2EC), ez = read_float(rdram, camera, 0x300);
+        const float ax = read_float(rdram, camera, 0x2E0), ay = read_float(rdram, camera, 0x2E4), az = read_float(rdram, camera, 0x2E8);
+        const float dx = ex - ax, dz = ez - az;
+        const float across = std::sqrt(dx * dx + dz * dz);
+        const uint32_t frame_now = conker::netsession::active() ? conker::netsession::frame() : 0u;
+        if (!sv.have || std::fabs(conker_y - sv.height) > 80.0f) {
+            sv.have = true;
+            sv.height = conker_y;
+            sv.distance = across;
+            sv.frame = frame_now;
+        } else if (!conker::netsession::active() || frame_now != sv.frame) {
+            sv.frame = frame_now;
+            sv.height += (conker_y - sv.height) * 0.35f;
+            sv.distance += (across - sv.distance) * (across < sv.distance ? 0.5f : 0.15f);
+        }
+        if (across >= 1.0f) {
+            const float view_ay = ay + (sv.height - conker_y);
+            const float look_pitch = read_float(rdram, camera + 0x740, current_pitch);
+            constexpr float flat_view_share = 0.81f, steady_degrees = 3.14159265358979f / 180.0f;
+            const float k = sv.distance / across;
+            const float nx = ax + dx * k, nz = az + dz * k;
+            const float ny = view_ay + sv.distance * conker::det::tan(flat_view_share * look_pitch * steady_degrees);
+            write_float(rdram, camera, 0x2E4, view_ay);
+            write_float(rdram, camera, 0x2EC, nx);
+            write_float(rdram, camera, 0x2F0, ny);
+            // (the view's z is stored from $at in the branch's delay slot after this)
+            uint32_t z_bits;
+            std::memcpy(&z_bits, &nz, sizeof(z_bits));
+            ctx->r1 = (gpr)(int32_t)z_bits;
+        }
+    }
 #endif
 }
 
