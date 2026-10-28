@@ -37,6 +37,7 @@
 // Writes conker_possess.log next to the game (a second window of the game on the same computer, an online test: conker_possess_2.log).
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdarg>
 #include <cstdint>
@@ -2389,7 +2390,40 @@ extern "C" void conker_possess_overlay(uint8_t* rdram, recomp_context* ctx, int 
     }
 }
 
+// (possess84, a measurement for 8 players) how long the extra view takes each frame, and the copy of the frame's start: logged every
+// 30 seconds or so (the frame's time, from one view to the next, alongside)
+namespace {
+    double timing_view_ms = 0, timing_view_max = 0, timing_copy_ms = 0, timing_frame_ms = 0;
+    uint32_t timing_views = 0, timing_copies = 0;
+    std::chrono::steady_clock::time_point timing_last_frame{};
+}
+static void conker_possess_view_local_body(uint8_t* rdram, recomp_context* ctx);
 extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
+    const uint32_t views_before = local_views;
+    const auto t0 = std::chrono::steady_clock::now();
+    conker_possess_view_local_body(rdram, ctx);
+    if (local_views == views_before) {
+        return;
+    }
+    const auto t1 = std::chrono::steady_clock::now();
+    const double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+    timing_view_ms += ms;
+    timing_view_max = std::max(timing_view_max, ms);
+    if (timing_last_frame.time_since_epoch().count() != 0) {
+        timing_frame_ms += std::chrono::duration<double, std::milli>(t0 - timing_last_frame).count();
+    }
+    timing_last_frame = t0;
+    if (++timing_views >= 1800) {
+        log("f=%u [timing] the extra view: %.2f ms a frame on average (the longest %.2f), the frame start's copy %.2f ms; a frame every %.2f ms (%u frames)",
+            (unsigned)frames, timing_view_ms / timing_views, timing_view_max, timing_copies ? timing_copy_ms / timing_copies : 0.0,
+            timing_frame_ms / (timing_views - 1 > 0 ? timing_views - 1 : 1), (unsigned)timing_views);
+        timing_view_ms = timing_view_max = timing_copy_ms = timing_frame_ms = 0;
+        timing_views = timing_copies = 0;
+        timing_last_frame = {};
+    }
+}
+
+static void conker_possess_view_local_body(uint8_t* rdram, recomp_context* ctx) {
     second_pass_at = 0;   // (possess61: this frame's, once the view's second pass begins)
     fifth_view_at = 0;    // (possess80)
     if (!local_view_wanted(rdram)) {
@@ -3150,7 +3184,12 @@ extern "C" void conker_possess_frame_start(uint8_t* rdram) {
         }
         return;
     }
-    start_copy.assign(rdram, rdram + game_size);
+    {
+        const auto t0 = std::chrono::steady_clock::now();
+        start_copy.assign(rdram, rdram + game_size);
+        timing_copy_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        timing_copies++;
+    }
     start_copied = true;
 }
 
