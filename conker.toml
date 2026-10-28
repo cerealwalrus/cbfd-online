@@ -3423,3 +3423,38 @@ text = "{ extern void conker_draw_note(uint8_t*, recomp_context*, int); conker_d
 func = "func_15019CC8"
 before_vram = 0x15019CC8
 text = "{ extern void conker_draw_note(uint8_t*, recomp_context*, int); conker_draw_note(rdram, ctx, 10); }"
+
+# possess88: online, the 5th player's character dies and comes back as a player's, not a computer player's (host/src/possess_test.cpp,
+# conker_possess_as_player): after each load of D_80082FA0 (the game's last player) in func_1507C8FC (the deaths, frame by frame),
+# func_1507CD0C (the iris begins) and func_1507D1D8 (the comeback), the 5th player's character counts as one of the players. And what
+# the player's way reads and writes by the player's number, for the 5th player: the buttons pressed (D_800BE710, slot 4 table 9), and
+# func_1517F814's projected view (D_800D9D10, table 18) and the iris's centre it works out (D_800DDDE8, table 46).
+[[patches.hook]]
+func = "func_1507C8FC"
+before_vram = 0x1507C9A0
+text = "{ extern void conker_possess_as_player(uint8_t*, gpr*, gpr); conker_possess_as_player(rdram, &ctx->r15, ctx->r18); }"
+
+[[patches.hook]]
+func = "func_1507CD0C"
+before_vram = 0x1507CD40
+text = "{ extern void conker_possess_as_player(uint8_t*, gpr*, gpr); conker_possess_as_player(rdram, &ctx->r8, ctx->r25); }"
+
+[[patches.hook]]
+func = "func_1507D1D8"
+before_vram = 0x1507D39C
+text = "{ extern void conker_possess_as_player(uint8_t*, gpr*, gpr); conker_possess_as_player(rdram, &ctx->r15, ctx->r17); }"
+
+[[patches.hook]]
+func = "func_1507C8FC"
+before_vram = 0x1507CAE8
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r19, 0, 9); }"
+
+[[patches.hook]]
+func = "func_1517F814"
+before_vram = 0x1517F85C
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r4, 0, 18); }"
+
+[[patches.hook]]
+func = "func_1517F814"
+before_vram = 0x1517F9D8
+text = "{ extern void conker_slot4(uint8_t*, gpr*, int32_t, int); conker_slot4(rdram, &ctx->r2, 0, 46); }"

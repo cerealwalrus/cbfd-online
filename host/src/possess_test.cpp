@@ -266,6 +266,11 @@ namespace {
         {0x800DDE28, 0x4, true},   // 50
         {0x800DF090, 0x10, false},   // 51
         {0x800DDE3C, 0x1, true},   // 52 (possess45)
+    // (possess88) the death screen's timers (func_151814FC's, by the player's number): no code of the game's names their 5th entries
+    // (no hooks); the 5th player's swapped in for player 1's as func_151814FC is run for it (conker_possess_fifth_death_screen)
+        {0x800DDD70, 0x1, true},   // 53
+        {0x800DDD74, 0x1, true},   // 54
+        {0x800DDD80, 0x2, true},   // 55
     };
     constexpr int slot4_count = (int)(sizeof(slot4_tables) / sizeof(slot4_tables[0]));
     constexpr uint32_t slot4_shadow = 0x80FD1000;    // ours: 0x100 a table
@@ -1209,8 +1214,15 @@ extern "C" void conker_possess_cameras_alloc2(uint8_t* rdram, recomp_context* ct
     }
 }
 
+namespace {
+    uint32_t extra_made_at = 0xFFFFFFF0u;   // (possess88) the frame func_150054C4 last made the extra camera
+}
+
 // func_150054C4, 0x150054C8 (its start, past one instruction): camera ($a0) for character $a1.
 extern "C" void conker_possess_camera_args(uint8_t* rdram, recomp_context* ctx) {
+    if (!hooks_off() && extra_ready && (uint32_t)ctx->r4 == extra_camera(rdram)) {
+        extra_made_at = frames;
+    }
     if (!hooks_off() && (int32_t)ctx->r5 == 0) {
         camera_arg2 = (uint32_t)ctx->r6;
         camera_arg3 = (uint32_t)ctx->r7;
@@ -1368,6 +1380,8 @@ namespace {
     }
 }
 
+void conker_possess_fifth_death_screen(uint8_t* rdram, recomp_context* ctx);   // (possess88, below)
+
 // func_15122AE0, 0x15122C18: the game's cameras have run this frame.
 extern "C" void conker_possess_camera_frame(uint8_t* rdram, recomp_context* ctx) {
     if (hooks_off() || MEM_BU(0, (gpr)(int32_t)multiplayer) == 0 || (!extra_wanted && !extra_ready)) {
@@ -1394,6 +1408,9 @@ extern "C" void conker_possess_camera_frame(uint8_t* rdram, recomp_context* ctx)
         }
         slot4_reset(rdram);
         slot4_on = true;
+        // (possess88) its buffer as D_800BE2B0's slot 4 (ours), where func_150054C4 reads it: the game makes this camera again as the 5th
+        // player comes back now (func_1507D1D8), as a player's
+        MEM_W(0, (gpr)(int32_t)shadow_of(0x800BE2B0u)) = (int32_t)extra_buffer;
         MEM_B(extra, (gpr)(int32_t)camera_bytes) = 0;   // D_800DBFF4's 5th byte: nothing else names it
         ctx->r4 = (gpr)(int32_t)camera;
         ctx->r5 = (gpr)extra;
@@ -1431,7 +1448,7 @@ extern "C" void conker_possess_camera_frame(uint8_t* rdram, recomp_context* ctx)
     // above, as before, and left where it is.)
     const float jx = px - extra_last_place[0], jy = py - extra_last_place[1], jz = pz - extra_last_place[2];
     const bool jumped = extra_have_place && jx * jx + jy * jy + jz * jz > 300.0f * 300.0f;
-    if (jumped && have_args) {
+    if (jumped && have_args && frames - extra_made_at > 1u) {   // (possess88: the game makes it itself now, as a player's)
         ctx->r4 = (gpr)(int32_t)camera;
         ctx->r5 = (gpr)extra;
         ctx->r6 = (gpr)(int32_t)camera_arg2;
@@ -1535,11 +1552,33 @@ extern "C" void conker_possess_camera_frame(uint8_t* rdram, recomp_context* ctx)
                 position(rdram, 0x800DC1F4u, 0), position(rdram, 0x800DC1F8u, 0));
         }
     }
+    conker_possess_fifth_death_screen(rdram, ctx);   // (possess88)
+    *ctx = saved;
     static uint32_t logged = 0;
     if (logged < 3 || (frames % 600) == 0) {
         logged++;
         log("f=%u the extra camera ran (%s); for character %08X, at %.0f %.0f %.0f", (unsigned)frames, other_way ? "other way" : "usual way",
             (unsigned)word(rdram, camera + 0x3D0), position(rdram, camera, 0x2EC), position(rdram, camera, 0x2F0), position(rdram, camera, 0x2F4));
+    }
+}
+
+// (possess88) The match's deaths and comebacks as a player's for the 5th player's character. func_1507C8FC (each character's death,
+// frame by frame), func_1507CD0C (its iris begins) and func_1507D1D8 (it comes back) do a player's for characters 0 to D_80082FA0
+// (the game's own players) and a computer player's for the rest, the 5th player's with them: no iris (func_15181D70), its body faded
+// out where it fell (func_1506160C) and back 3 s later, its camera not made again behind its next soldier (func_150054C4), no fade
+// in. Here, after each of those loads D_80082FA0, the 5th player's character (online, played) counts as one of the players ($last
+// raised to its number), on every machine alike. What that way reads and writes by the player's number goes to the 5th player's
+// entries of ours (conker_slot4: the HUD's tables 40 to 50 had hooks already; conker.toml's possess88 hooks for the buttons pressed,
+// table 9, and the iris's centre, func_1517F814: table 18's projected view and table 46).
+extern "C" void conker_possess_as_player(uint8_t* rdram, gpr* last, gpr index) {
+    (void)rdram;
+    if (hooks_off() || !conker::netsession::active() || !extra_ready || !extra_played || (int32_t)index != ch5 || (int32_t)*last >= (int32_t)index) {
+        return;
+    }
+    *last = (gpr)(int32_t)index;
+    static uint32_t told = 0;
+    if (told++ < 20) {
+        log("f=%u [death] the 5th player's character's death or comeback done as a player's", (unsigned)frames);
     }
 }
 
@@ -2247,6 +2286,8 @@ extern "C" void func_1517F3A0(uint8_t* rdram, recomp_context* ctx);
 extern "C" void func_15180580(uint8_t* rdram, recomp_context* ctx);
 extern "C" void func_1507DB6C(uint8_t* rdram, recomp_context* ctx);
 extern "C" void func_151674F8(uint8_t* rdram, recomp_context* ctx);
+extern "C" void func_1507E1D0(uint8_t* rdram, recomp_context* ctx);   // (possess88)
+extern "C" void func_1517F814(uint8_t* rdram, recomp_context* ctx);
 
 namespace {
     // (possess72) func_15019BB8 (a view's HUD pass) for view 1, as the game's own does it, but for its objects of layer 4 (what's drawn
@@ -2426,6 +2467,31 @@ namespace {
                 MEM_B(b, (gpr)(int32_t)t.base) = MEM_B(b, (gpr)(int32_t)shadow);
             }
         }
+        // (possess88) the 5th player's iris (its character dies as a player's now) closing on its character as its view shows it: the match
+        // worked the centre out for view 5 (func_1517F814: the full screen's record), and the HUD is drawn in view 1's place (net_view.cpp
+        // makes it full screen): worked out again here for view 1, with the extra camera's projected view in view 1's (put back with the rest)
+        if (MEM_BU(0, (gpr)(int32_t)0x800DDE20u) != 0) {
+            const uint32_t ours_projected = shadow_of(0x800D9D10u);
+            for (uint32_t b = 0; b < 0x40; b += 4) {
+                MEM_W(b, (gpr)(int32_t)0x800D9D10u) = MEM_W(b, (gpr)(int32_t)ours_projected);
+            }
+            const uint32_t sp = (uint32_t)saved.r29 - 0x60u;
+            ctx->r29 = (gpr)(int32_t)sp;
+            ctx->r4 = (gpr)(int32_t)character(ch5);
+            ctx->r5 = (gpr)(int32_t)(sp + 0x30u);
+            ctx->r6 = (gpr)(int32_t)(sp + 0x34u);
+            ctx->r7 = (gpr)(int32_t)(sp + 0x38u);
+            func_1507E1D0(rdram, ctx);
+            *ctx = saved;
+            ctx->r29 = (gpr)(int32_t)sp;
+            ctx->r4 = 0;
+            ctx->r5 = (gpr)MEM_W(0x30, (gpr)(int32_t)sp);
+            ctx->r6 = (gpr)MEM_W(0x34, (gpr)(int32_t)sp);
+            ctx->r7 = (gpr)MEM_W(0x38, (gpr)(int32_t)sp);
+            MEM_W(0x10, (gpr)(int32_t)sp) = 0;
+            func_1517F814(rdram, ctx);
+            *ctx = saved;
+        }
         const int32_t was_last = MEM_W(0, (gpr)(int32_t)last_player);
         const int8_t was_humans = MEM_B(0, (gpr)(int32_t)humans_now);
         const int8_t was_blur = MEM_B(0, (gpr)(int32_t)blur_where);
@@ -2524,6 +2590,63 @@ namespace {
                 (unsigned)((list - before) / 8));
         }
         return list;
+    }
+}
+
+// (possess88) The 5th player's death screen stepped as a player's. Once a player's character has died its iris closes (func_15181D70 starts
+// it), then its states go on (its brain's +0x120: 3 the iris closing, 4, 5, 7, 9 the comeback) as func_151814FC steps them each frame, for
+// the players 0 to D_80082FA0 only, by the player's number in tables of 4 (with pointers it moves along, no hooks to send a 5th entry
+// to ours). The 5th player's character dies as a player's now (conker_possess_as_player), so here, while its iris is on, func_151814FC
+// is run once more for it alone: as player 1's (D_80082FA0 0; the iris's size for the match's number of players, D_800A7260's, in
+// the one player's place), its entries of those tables (ours) and its character swapped in for player 1's, then all put back. Every
+// machine alike (the match's own state); the game's other threads stopped meanwhile, as for the extra view.
+void conker_possess_fifth_death_screen(uint8_t* rdram, recomp_context* ctx) {
+    if (hooks_off() || !conker::netsession::active() || !extra_ready || !extra_played || ch5 < 1 || ch5 >= 25) {
+        return;
+    }
+    const uint32_t iris_on = shadow_of(0x800DDE20u);
+    if (iris_on == 0 || MEM_BU(0, (gpr)(int32_t)iris_on) == 0) {
+        return;
+    }
+    const int32_t last = MEM_W(0, (gpr)(int32_t)last_player);
+    if (last < 0 || last > 3) {
+        return;
+    }
+    constexpr uint32_t iris_sizes = 0x800A7260u;   // D_800A7260: a float for each number of players
+    static constexpr uint32_t tables[][2] = {
+        { 0x800DDDC8u, 4 }, { 0x800DDDD8u, 4 }, { 0x800DDDE8u, 8 }, { 0x800DDE20u, 1 }, { 0x800DDE3Cu, 1 },
+        { 0x800DDD70u, 1 }, { 0x800DDD74u, 1 }, { 0x800DDD80u, 2 },
+    };
+    auto swap_all = [&]() {
+        for (const auto& t : tables) {
+            const uint32_t ours = shadow_of(t[0]);
+            for (uint32_t b = 0; b < t[1]; b++) {
+                swap_bytes_at(rdram, t[0] + b, ours + b);
+            }
+        }
+        swap_word_runs(rdram, objects_at_, objects_at_ + (uint32_t)ch5 * 0x32Cu, 0x32Cu);
+    };
+    const uint32_t brain = brain_of(rdram, ch5);
+    const uint8_t state_before = brain != 0 ? MEM_BU(0x120, (gpr)(int32_t)brain) : 0xFF;
+    {
+        OthersStopped others(rdram);
+        const int32_t size0 = MEM_W(0, (gpr)(int32_t)iris_sizes);
+        MEM_W(0, (gpr)(int32_t)iris_sizes) = MEM_W(4 * (uint32_t)last, (gpr)(int32_t)iris_sizes);
+        MEM_W(0, (gpr)(int32_t)last_player) = 0;
+        swap_all();
+        const recomp_context saved = *ctx;
+        func_151814FC(rdram, ctx);
+        *ctx = saved;
+        swap_all();
+        MEM_W(0, (gpr)(int32_t)last_player) = last;
+        MEM_W(0, (gpr)(int32_t)iris_sizes) = size0;
+    }
+    const uint8_t state_after = brain != 0 ? MEM_BU(0x120, (gpr)(int32_t)brain) : 0xFF;
+    static uint32_t told = 0;
+    if (state_after != state_before && told < 60) {
+        told++;
+        log("f=%u [death] the 5th player's death screen stepped as a player's: its state %u -> %u", (unsigned)frames, (unsigned)state_before,
+            (unsigned)state_after);
     }
 }
 
