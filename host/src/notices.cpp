@@ -31,6 +31,16 @@ namespace {
     std::deque<std::string> waiting;
     std::string replacing;
 
+    // (possess95) a line at the top middle of the screen (online, "Spectating" and the player watched), a context of its own: shown at
+    // once in place of what it showed, for as long as a notice
+    std::string top_text;
+    bool top_waiting = false;
+    bool top_created = false;
+    recompui::ContextId top_context = recompui::ContextId::null();
+    recompui::Label* top_label = nullptr;
+    bool top_shown = false;
+    clock::time_point top_until;
+
     std::atomic<bool> ui_ready = false;
     bool created = false;
     recompui::ContextId context = recompui::ContextId::null();
@@ -57,6 +67,59 @@ namespace {
         context.close();
         created = true;
     }
+
+    // (possess95) the top middle's: a row across the screen's top, its line in the middle
+    void create_top() {
+        top_context = recompui::create_context();
+        top_context.open();
+        top_context.set_captures_input(false);
+        top_context.set_captures_mouse(false);
+        recompui::Element* row = top_context.create_element<recompui::Element>(top_context.get_root_element());
+        row->set_position(recompui::Position::Absolute);
+        row->set_top(8.0f);
+        row->set_left(0.0f);
+        row->set_right(0.0f);
+        row->set_display(recompui::Display::Flex);
+        row->set_justify_content(recompui::JustifyContent::Center);
+        recompui::Element* box = top_context.create_element<recompui::Element>(row);
+        box->set_padding_left(10.0f);
+        box->set_padding_right(10.0f);
+        box->set_padding_top(4.0f);
+        box->set_padding_bottom(4.0f);
+        box->set_border_radius(6.0f);
+        box->set_background_color(recompui::theme::color::BGOverlay);
+        top_label = top_context.create_element<recompui::Label>(box, "", recompui::LabelStyle::Normal);
+        top_context.close();
+        top_created = true;
+    }
+
+    void update_top(clock::time_point now) {
+        std::string next;
+        bool waiting_now = false;
+        {
+            std::lock_guard lock{notices_mutex};
+            waiting_now = top_waiting;
+            top_waiting = false;
+            next.swap(top_text);
+        }
+        if (waiting_now && !next.empty()) {
+            if (!top_created) {
+                create_top();
+            }
+            top_context.open();
+            top_label->set_text(next);
+            top_context.close();
+            if (!recompui::is_context_shown(top_context)) {
+                recompui::show_context(top_context, "");
+            }
+            top_shown = true;
+            top_until = now + notice_time;
+        }
+        else if (top_shown && now >= top_until) {
+            recompui::hide_context(top_context);
+            top_shown = false;
+        }
+    }
 }
 
 void conker::notices::show(const std::string& text, bool replace) {
@@ -71,6 +134,14 @@ void conker::notices::show(const std::string& text, bool replace) {
     }
 }
 
+void conker::notices::show_top(const std::string& text) {
+    std::printf("[notice] %s\n", text.c_str());
+    std::fflush(stdout);
+    std::lock_guard lock{notices_mutex};
+    top_text = text;
+    top_waiting = true;
+}
+
 void conker::notices::on_ui_ready() {
     ui_ready = true;
 }
@@ -80,6 +151,7 @@ void conker::notices::update() {
         return;
     }
     const clock::time_point now = clock::now();
+    update_top(now);
     std::string replacement;
     {
         std::lock_guard lock{notices_mutex};

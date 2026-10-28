@@ -2048,6 +2048,10 @@ namespace {
         uint32_t scissor_rows = 0;     // (possess94) the rows the last G_SETSCISSOR lets the RDP draw in (0: none seen)
         int cimg_now = -1;             // (possess94) the color image drawn into now (an index of cimgs), and whether a scissor
         bool scissor_since = false;    // was set since it was
+        // (possess95 diagnostics) the geometry mode as the commands set it (G_GEOMETRYMODE), the vertex loads lit (G_LIGHTING) and with
+        // texture generation (G_TEXTURE_GEN) before the view's microcode switch (split_at, a command of the view's own) and after it
+        uint32_t geometry = 0, split_at = 0, top_now = 0, small_cimgs = 0;
+        uint32_t lit[2] = { 0, 0 }, texgen[2] = { 0, 0 };
         uint32_t timg_at = 0, timg_w1 = 0, timg_siz = 0, timg_width = 0;
         int timg_body = -1;
         uint32_t resolve(uint32_t a, int* segment) const {
@@ -2123,7 +2127,13 @@ namespace {
                 }
                 const uint32_t w0 = mem_word(rdram, at), w1 = mem_word(rdram, at + 4);
                 commands++;
+                if (body < 0) {
+                    top_now = at;
+                }
                 switch (w0 >> 24) {
+                    case 0xD9:   // G_GEOMETRYMODE (possess95 diagnostics)
+                        geometry = (geometry & (w0 & 0x00FFFFFFu)) | w1;
+                        break;
                     case 0x01: {   // G_VTX (possess94: 1 to 64 of them, from an address on 4 bytes at least)
                         const uint32_t n = (w0 >> 12) & 0xFFu;
                         int segment = -1;
@@ -2135,6 +2145,15 @@ namespace {
                             break;
                         }
                         note(body, at, w1, n * 16u);
+                        if (!light) {   // (possess95 diagnostics)
+                            const int k = (split_at != 0 && top_now >= split_at) ? 1 : 0;
+                            if ((geometry & 0x20000u) != 0) {
+                                lit[k]++;
+                            }
+                            if ((geometry & 0x60000u) == 0x60000u) {
+                                texgen[k]++;
+                            }
+                        }
                         break;
                     }
                     case 0xDA:   // G_MTX (possess94: 64 bytes, as all of the game's are: DA38)
@@ -2191,7 +2210,11 @@ namespace {
                         // (possess94) and only in a list that is one (give_up, above); its size the game buffer's when it's one of those (240
                         // rows of the screen's width took in 14 KB past the depth buffer's end, the heap's), otherwise as many rows as the
                         // scissor lets the RDP draw into it (the one set after it, or the one before; 240 with none)
-                        if ((image & 0x3Fu) != 0 || width > 1024u) {
+                        // (possess95) but one a few pixels across, on 8 bytes, is one: the game copies a few pixels so (func_15173D00, a
+                        // color image 4 across for each glow it checks: possess94's logs had 2 to 18 a frame in an explosion)
+                        if (width < 32u && (image & 7u) == 0 && (image & 0x3Fu) != 0) {
+                            small_cimgs++;
+                        } else if ((image & 0x3Fu) != 0 || width > 1024u) {
                             bogus_cimgs++;
                             if (give_up(at)) {
                                 return at;
@@ -3024,8 +3047,64 @@ static void conker_possess_view_local_body(uint8_t* rdram, recomp_context* ctx) 
     ctx->r4 = 0;
     func_15018F80(rdram, ctx);
     *ctx = saved;
-    uint32_t list = call_list(rdram, ctx, func_15019464, list_before, 0);
+    // (possess95) The game draws its views' first passes (func_15019464's) with the frame's first microcode, the task's own (with
+    // D_800BEBA0 0: Conker's F3DEXBG, text D_800BEBB0, data at D_800BEAD0, as func_1501C880 hands the task them), then switches to the
+    // second (func_1501878C: G_RDPHALF_1 + G_LOAD_UCODE to the one at D_800C1060, its geometry mode, a matrix and the look-at after it)
+    // for the rest of the frame. The extra view, drawn at the frame's end, had its first pass drawn with the second microcode too: RT64
+    // takes Conker's G_LOAD_UCODE for the switch to its advanced lighting (the vertices' normals from the list's own, G_MV_NORMALES), so
+    // whatever the first pass lit or mapped by its normals (texture generation) went by normals from anywhere: an explosion at the 5th
+    // player's own feet, drawn over its whole view as it ended, came out as black shapes with a texture repeated over them, for a frame
+    // or two. Now the view's first pass is drawn after a G_LOAD_UCODE of the task's own microcode (rt64.patch: back to the basic
+    // lighting), and the game's switch is copied after it, as each of the game's views is drawn.
+    uint32_t ucode_switch[8][2] = {};
+    int ucode_switch_n = 0;
+    for (uint32_t a = frame_list; a + 16 <= list_before && a - frame_list < 0x100000u; a += 8) {
+        if ((mem_word(rdram, a) >> 24) != 0xE1 || (mem_word(rdram, a + 8) >> 24) != 0xDD) {
+            continue;
+        }
+        for (uint32_t c = a; c + 8 <= list_before && ucode_switch_n < 7; c += 8) {
+            const uint32_t op = mem_word(rdram, c) >> 24;
+            if (ucode_switch_n >= 2 && op != 0xD9 && op != 0xDA && op != 0xDC) {
+                break;
+            }
+            ucode_switch[ucode_switch_n][0] = mem_word(rdram, c);
+            ucode_switch[ucode_switch_n][1] = mem_word(rdram, c + 4);
+            ucode_switch_n++;
+        }
+        break;
+    }
+    uint32_t list = list_before;
+    if (ucode_switch_n >= 2) {
+        MEM_W(0, (gpr)(int32_t)list) = (int32_t)0xE1000000u;
+        MEM_W(4, (gpr)(int32_t)list) = MEM_W(0, (gpr)(int32_t)0x800BEAD0);
+        MEM_W(8, (gpr)(int32_t)list) = (int32_t)ucode_switch[1][0];
+        MEM_W(12, (gpr)(int32_t)list) = (int32_t)0x800BEBB0u;
+        list += 16;
+    }
+    list = call_list(rdram, ctx, func_15019464, list, 0);
     *ctx = saved;
+    const uint32_t view_switch_at = list;   // (possess95 diagnostics: the walker's split_at)
+    for (int i = 0; i < ucode_switch_n; i++) {
+        MEM_W(0, (gpr)(int32_t)list) = (int32_t)ucode_switch[i][0];
+        MEM_W(4, (gpr)(int32_t)list) = (int32_t)ucode_switch[i][1];
+        list += 8;
+    }
+    {
+        static uint32_t told = 0, told_n = 0xFFFFFFFFu;
+        if ((uint32_t)ucode_switch_n != told_n && told < 20) {
+            told++;
+            told_n = (uint32_t)ucode_switch_n;
+            std::string out;
+            for (int i = 0; i < ucode_switch_n; i++) {
+                char piece[24];
+                std::snprintf(piece, sizeof(piece), " %08X %08X", (unsigned)ucode_switch[i][0], (unsigned)ucode_switch[i][1]);
+                out += piece;
+            }
+            log("f=%u [ucode] the game's switch of microcode after its first passes: %s%s; the extra view's first pass %s", (unsigned)frames,
+                ucode_switch_n >= 2 ? "found," : "none", out.c_str(),
+                ucode_switch_n >= 2 ? "with the task's own again (text 800BEBB0), the switch copied after it" : "as the frame's");
+        }
+    }
     list = call_list(rdram, ctx, func_1515D6D0, list, 0);
     *ctx = saved;
     list = call_list(rdram, ctx, func_150195A0, list, 0);
@@ -3123,7 +3202,17 @@ static void conker_possess_view_local_body(uint8_t* rdram, recomp_context* ctx) 
     // (possess94) the game's own buffers, for a color image set at one's start
     const std::vector<std::pair<uint32_t, uint32_t>> game_buffers = rdp_buffers(rdram);
     walker.known = game_buffers;
+    walker.split_at = view_switch_at;
     walker.run(list_before, 0, list, -1);
+    {   // (possess95 diagnostics)
+        static uint32_t told = 0;
+        if ((drawn_burst > 0 || local_views % 600 == 0) && told < 80) {
+            told++;
+            log("f=%u [walk] lit vertex loads: %u before the microcode switch (%u with texture generation), %u after it (%u); %u little color images",
+                (unsigned)frames, (unsigned)walker.lit[0], (unsigned)walker.texgen[0], (unsigned)walker.lit[1], (unsigned)walker.texgen[1],
+                (unsigned)walker.small_cimgs);
+        }
+    }
     // (possess94) the lists that aren't (ListWalk's give_up), and those called from one
     std::vector<uint8_t> bad(walker.bodies.size(), 0);
     for (size_t b = 0; b < walker.bodies.size(); b++) {

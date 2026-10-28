@@ -286,6 +286,9 @@ namespace conker {
         // From any thread. With replace, it's shown at once in place of what's shown (and of an earlier one to
         // replace), as a save state's slot is as F6 is pressed again and again.
         void show(const std::string& text, bool replace = false);
+        // (possess95) From any thread: a line at the top middle of the screen for a few seconds, shown at once in place of the last one
+        // there (online spectating's "Spectating" and the player's name).
+        void show_top(const std::string& text);
         // From the launcher's init (frontend.cpp): recompui's UI exists now, so the line's context can be made.
         void on_ui_ready();
         // On the main thread (update_gfx): shows the waiting lines, one at a time, once the game has started.

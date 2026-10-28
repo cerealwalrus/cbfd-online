@@ -2494,8 +2494,8 @@ void conker::netsession::spectate_poll() {
     if (target != spectate_target.load() || (own_out && !was_watching)) {
         log_line("[net] watching player %d of the match (slot %d)%s", target + 1, (int)list[target] + 1,
             own_out ? " (this machine's player out of the match)" : "");
-        if (own_out) {
-            conker::notices::show("Out of lives: watching " + player_name((int)list[target]) + " (D-pad left / right to change)", true);
+        if (own_out) {   // (possess95: at the top middle, the player's name alone)
+            conker::notices::show_top("Spectating " + player_name((int)list[target]));
         }
     }
     spectate_target = target;

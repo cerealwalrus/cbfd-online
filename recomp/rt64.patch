@@ -284,10 +284,10 @@ index 69c35d2..bcea8ec 100644
  
 diff --git a/src/gbi/rt64_gbi_f3dex2cbfd.cpp b/src/gbi/rt64_gbi_f3dex2cbfd.cpp
 new file mode 100644
-index 0000000..96768bb
+index 0000000..90af37d
 --- /dev/null
 +++ b/src/gbi/rt64_gbi_f3dex2cbfd.cpp
-@@ -0,0 +1,123 @@
+@@ -0,0 +1,126 @@
 +//
 +// RT64
 +//
@@ -367,9 +367,12 @@ index 0000000..96768bb
 +            }
 +        }
 +
-+        // The microcode reuses G_LOAD_UCODE to switch to its advanced lighting mode.
++        // The microcode reuses G_LOAD_UCODE to switch to its advanced lighting mode (the game loads its second microcode after its
++        // views' first passes); a G_LOAD_UCODE of the task's own microcode switches back to the basic one (CBFD Online's 5th view,
++        // drawn at the frame's end, draws its first pass so).
 +        void switchLightingMode(State *state, DisplayList **dl) {
-+            state->rsp->cbfd.advancedLighting = true;
++            const uint32_t textAddress = (*dl)->w1 & 0xFFFFF8;
++            state->rsp->cbfd.advancedLighting = (textAddress != state->ext.interpreter->UCode.textAddress);
 +        }
 +
 +        void tri4(State *state, DisplayList **dl) {
