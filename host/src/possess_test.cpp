@@ -1247,6 +1247,127 @@ extern "C" void conker_possess_views_make(uint8_t* rdram, recomp_context* ctx) {
     log("views %d to 4 made (full screen) for the extra camera", first);
 }
 
+namespace {
+    // (possess87 diagnostics) a player's death and respawn as the game keeps them, for the 4 players and the 5th player's character:
+    // the iris (D_800D18A2 a bit a player while it closes, D_800D18A4 its size, func_1507DB6C), the soldiers taken (D_800D18A0),
+    // each character's state (+5), camera (+0x318), number (+0x3B, +0x127), AI flag (brain +0x84) and where it is (a jump of more than
+    // 300 in a frame), the HUD's screen effects (tables 37 to 52, the 5th player's ours), and what the extra camera follows. A line a
+    // frame something changed (3000 at most); and the objects drawn in the extra camera's view for 90 frames after a change of the
+    // 5th player's character (drawn_burst).
+    struct DeathWatch {
+        bool have = false;
+        uint16_t taken = 0, closing = 0, players_mask = 0;
+        uint8_t iris[6] = {};
+        uint8_t state[5] = {}, number[5] = {}, owner[5] = {}, ai[5] = {};
+        uint32_t cam[5] = {};
+        float place[5][3] = {};
+        uint8_t hud[5][7] = {};
+        int32_t fade_end[5] = {};
+        uint32_t follows = 0;
+    };
+    DeathWatch watch;
+    float extra_last_place[3] = {};
+    bool extra_have_place = false;
+    uint32_t death_lines = 0;
+    uint32_t drawn_burst = 0;
+    constexpr uint32_t death_hud_bytes[7] = { 0x800DDD78u, 0x800DDD9Cu, 0x800DDDACu, 0x800DDDC0u, 0x800DDE1Cu, 0x800DDE20u, 0x800DDE3Cu };
+    constexpr int death_hud_tables[7] = { 37, 39, 41, 43, 48, 49, 52 };
+
+    uint8_t hud_byte(uint8_t* rdram, int table_index, int k) {
+        const uint32_t at = k < 4 ? death_hud_bytes[table_index] + (uint32_t)k : slot4_shadow + 0x100u * (uint32_t)death_hud_tables[table_index];
+        return MEM_BU(0, (gpr)(int32_t)at);
+    }
+
+    void death_watch(uint8_t* rdram, uint32_t camera) {
+        if (death_lines >= 3000) {
+            return;
+        }
+        DeathWatch now;
+        now.have = true;
+        now.taken = MEM_HU(0, (gpr)(int32_t)0x800D18A0);
+        now.closing = MEM_HU(0, (gpr)(int32_t)0x800D18A2);
+        now.players_mask = MEM_HU(0, (gpr)(int32_t)0x800D2340);
+        for (int k = 0; k < 5; k++) {
+            now.iris[k] = MEM_BU(0, (gpr)(int32_t)(0x800D18A4u + (uint32_t)k));
+        }
+        now.iris[5] = MEM_BU(0, (gpr)(int32_t)(slot4_shadow + 0x100u * 11u));
+        for (int k = 0; k < 5; k++) {
+            const int c = k < 4 ? k : ch5;
+            const uint32_t o = character(c);
+            now.state[k] = MEM_BU(5, (gpr)(int32_t)o);
+            now.number[k] = MEM_BU(0x3B, (gpr)(int32_t)o);
+            now.owner[k] = MEM_BU(0x127, (gpr)(int32_t)o);
+            const uint32_t brain = brain_of(rdram, c);
+            now.ai[k] = brain != 0 ? MEM_BU(0x84, (gpr)(int32_t)brain) : 0xEE;
+            now.cam[k] = word(rdram, o + 0x318);
+            now.place[k][0] = position(rdram, o, 0x14);
+            now.place[k][1] = position(rdram, o, 0x18);
+            now.place[k][2] = position(rdram, o, 0x1C);
+            for (int t = 0; t < 7; t++) {
+                now.hud[k][t] = hud_byte(rdram, t, k);
+            }
+            const uint32_t fe = k < 4 ? 0x800DDE28u + 4u * (uint32_t)k : shadow_of(0x800DDE28u);
+            now.fade_end[k] = MEM_W(0, (gpr)(int32_t)fe);
+        }
+        now.follows = word(rdram, camera + 0x3D0);
+        if (!watch.have) {
+            std::string list;
+            for (int k = 0; k < 16; k++) {
+                char piece[8];
+                std::snprintf(piece, sizeof(piece), " %d", (int)(int8_t)MEM_B(0, (gpr)(int32_t)(0x8008FE44u + (uint32_t)k)));
+                list += piece;
+            }
+            log("f=%u [death] watching (the match's list:%s; the 5th player's character %d)", (unsigned)frames, list.c_str(), ch5);
+            watch = now;
+            return;
+        }
+        std::string out;
+        char piece[160];
+        auto add = [&](const char* text) { if (out.size() < 1500) { out += text; } };
+        if (now.taken != watch.taken) { std::snprintf(piece, sizeof(piece), " taken %04X->%04X", watch.taken, now.taken); add(piece); }
+        if (now.closing != watch.closing) { std::snprintf(piece, sizeof(piece), " iris-closing %04X->%04X", watch.closing, now.closing); add(piece); }
+        if (now.players_mask != watch.players_mask) { std::snprintf(piece, sizeof(piece), " D_800D2340 %04X->%04X", watch.players_mask, now.players_mask); add(piece); }
+        if (now.follows != watch.follows) { std::snprintf(piece, sizeof(piece), " extra-camera-follows %08X->%08X", watch.follows, now.follows); add(piece); }
+        bool fifth_changed = false;
+        for (int k = 0; k < 5; k++) {
+            const size_t was = out.size();
+            if (now.state[k] != watch.state[k]) { std::snprintf(piece, sizeof(piece), " c%d.state %u->%u", k, watch.state[k], now.state[k]); add(piece); }
+            if (now.number[k] != watch.number[k] || now.owner[k] != watch.owner[k]) {
+                std::snprintf(piece, sizeof(piece), " c%d.number %u/%u->%u/%u", k, watch.number[k], watch.owner[k], now.number[k], now.owner[k]); add(piece);
+            }
+            if (now.ai[k] != watch.ai[k]) { std::snprintf(piece, sizeof(piece), " c%d.ai %u->%u", k, watch.ai[k], now.ai[k]); add(piece); }
+            if (now.cam[k] != watch.cam[k]) { std::snprintf(piece, sizeof(piece), " c%d.camera %08X->%08X", k, watch.cam[k], now.cam[k]); add(piece); }
+            const float dx = now.place[k][0] - watch.place[k][0], dy = now.place[k][1] - watch.place[k][1], dz = now.place[k][2] - watch.place[k][2];
+            if (dx * dx + dy * dy + dz * dz > 300.0f * 300.0f) {
+                std::snprintf(piece, sizeof(piece), " c%d.moved %.0f,%.0f,%.0f->%.0f,%.0f,%.0f", k, watch.place[k][0], watch.place[k][1], watch.place[k][2],
+                    now.place[k][0], now.place[k][1], now.place[k][2]);
+                add(piece);
+            }
+            if (k < 4 && now.iris[k] != watch.iris[k] && (now.iris[k] < 0x30 || watch.iris[k] < 0x30)) {
+                std::snprintf(piece, sizeof(piece), " iris%d %u->%u", k, watch.iris[k], now.iris[k]); add(piece);
+            }
+            for (int t = 0; t < 7; t++) {
+                if (now.hud[k][t] != watch.hud[k][t]) {
+                    std::snprintf(piece, sizeof(piece), " hud%d.t%d %u->%u", k, death_hud_tables[t], watch.hud[k][t], now.hud[k][t]); add(piece);
+                }
+            }
+            if (now.fade_end[k] != watch.fade_end[k]) { std::snprintf(piece, sizeof(piece), " hud%d.t50 %d->%d", k, (int)watch.fade_end[k], (int)now.fade_end[k]); add(piece); }
+            if (k == 4 && out.size() != was) {
+                fifth_changed = true;
+            }
+        }
+        if (!out.empty()) {
+            death_lines++;
+            log("f=%u [death]%s | iris %u %u %u %u, 5th %u (ours %u)", (unsigned)frames, out.c_str(), now.iris[0], now.iris[1], now.iris[2],
+                now.iris[3], now.iris[4], now.iris[5]);
+        }
+        if (fifth_changed) {
+            drawn_burst = 90;
+        }
+        watch = now;
+    }
+}
+
 // func_15122AE0, 0x15122C18: the game's cameras have run this frame.
 extern "C" void conker_possess_camera_frame(uint8_t* rdram, recomp_context* ctx) {
     if (hooks_off() || MEM_BU(0, (gpr)(int32_t)multiplayer) == 0 || (!extra_wanted && !extra_ready)) {
@@ -1283,19 +1404,53 @@ extern "C" void conker_possess_camera_frame(uint8_t* rdram, recomp_context* ctx)
         // its buffer (func_150054C4 read it from D_800BE2B0[4], past that table's 4)
         MEM_W(0x8BC, (gpr)(int32_t)camera) = (int32_t)extra_buffer;
         extra_ready = true;
+        extra_have_place = false;   // (possess87)
+        watch.have = false;
+        drawn_burst = 0;
         log("f=%u the extra camera %08X made for character %d (now its camera: %08X)", (unsigned)frames, (unsigned)camera, ch5,
             (unsigned)word(rdram, character(ch5) + 0x318));
     }
+    death_watch(rdram, camera);   // (possess87 diagnostics)
     // still the extra character's (something in the match took it off: put back)
-    if (word(rdram, character(ch5) + 0x318) != camera || word(rdram, camera + 0x3D0) != character(ch5)) {
+    const uint32_t its = character(ch5);
+    const float px = position(rdram, its, 0x14), py = position(rdram, its, 0x18), pz = position(rdram, its, 0x1C);
+    const bool taken_off = word(rdram, its + 0x318) != camera || word(rdram, camera + 0x3D0) != its;
+    if (taken_off) {
         static uint32_t told = 0;
         if (told++ < 10) {
             log("f=%u the extra camera was off character %d (its camera %08X, the camera's character %08X): put back", (unsigned)frames, ch5,
-                (unsigned)word(rdram, character(ch5) + 0x318), (unsigned)word(rdram, camera + 0x3D0));
+                (unsigned)word(rdram, its + 0x318), (unsigned)word(rdram, camera + 0x3D0));
         }
-        set_word(rdram, character(ch5) + 0x318, camera);
+        set_word(rdram, its + 0x318, camera);
         camera_follow(rdram, camera, ch5);
     }
+    // (possess87) and made again where the character is now when it went further in a frame than anyone can run (the 5th player
+    // back after dying, put where its next soldier is), as a player's camera starts behind its new soldier after the iris. Followed as
+    // it was, it swept there from where the character died, through the walls (the green outside of the level showed for a few
+    // frames; a player's iris is closed while its camera moves). (The match takes the camera off the character as it dies: put back
+    // above, as before, and left where it is.)
+    const float jx = px - extra_last_place[0], jy = py - extra_last_place[1], jz = pz - extra_last_place[2];
+    const bool jumped = extra_have_place && jx * jx + jy * jy + jz * jz > 300.0f * 300.0f;
+    if (jumped && have_args) {
+        ctx->r4 = (gpr)(int32_t)camera;
+        ctx->r5 = (gpr)extra;
+        ctx->r6 = (gpr)(int32_t)camera_arg2;
+        ctx->r7 = (gpr)(int32_t)camera_arg3;
+        func_150054C4(rdram, ctx);
+        *ctx = saved;
+        MEM_W(0x8BC, (gpr)(int32_t)camera) = (int32_t)extra_buffer;
+        set_word(rdram, its + 0x318, camera);
+        camera_follow(rdram, camera, ch5);
+        static uint32_t told_made = 0;
+        if (told_made++ < 40) {
+            log("f=%u [death] the extra camera made again at character %d (it moved %.0f in a frame), at %.0f %.0f %.0f", (unsigned)frames, ch5,
+                std::sqrt(jx * jx + jy * jy + jz * jz), px, py, pz);
+        }
+    }
+    extra_last_place[0] = px;
+    extra_last_place[1] = py;
+    extra_last_place[2] = pz;
+    extra_have_place = true;
     // (possess49) its view's projected view matrix, as the game's views have theirs made before their cameras run
     extra_view_projection(rdram, ctx);
     *ctx = saved;
@@ -3020,6 +3175,18 @@ static void conker_possess_view_local_body(uint8_t* rdram, recomp_context* ctx) 
     kept_back = std::move(keep);
     // (possess37 diagnostics) the objects the view drew, and the extra character's drawing: its matrices (where each puts its origin)
     // and vertices (the first of each block), as the commands left to be drawn have them
+    if (drawn_burst > 0 && list > list_before && !(local_views < 3 || local_views % 120 == 0)) {   // (possess87 diagnostics)
+        drawn_burst--;
+        std::string out;
+        for (const Drawn& d : drawn_now) {
+            char piece[48];
+            std::snprintf(piece, sizeof(piece), " %X:%u(%u)", (unsigned)d.kind, (unsigned)d.object, (unsigned)(d.end > d.start ? (d.end - d.start) / 8 : 0));
+            if (out.size() < 1400) {
+                out += piece;
+            }
+        }
+        log("f=%u [death] drawn in the extra camera's view: %u objects:%s", (unsigned)frames, (unsigned)drawn_now.size(), out.c_str());
+    }
     if ((local_views < 3 || local_views % 120 == 0) && list > list_before) {
         std::string out;
         for (const Drawn& d : drawn_now) {
