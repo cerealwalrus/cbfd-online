@@ -847,6 +847,19 @@ func = "func_1000F44C"
 before_vram = 0x1000F4C8
 text = "{ extern void conker_net_sound_hook(uint8_t*, recomp_context*, int); conker_net_sound_hook(rdram, ctx, 3); }"
 
+# possess-test (possess48): online, a match of 5 players: the game's choice of the nearest listener (a point's volume and pan,
+# func_1000F6B8; the moving sounds' list's, func_100114D0) takes the 5th player's in, every machine alike (host/src/local_audio.cpp,
+# conker_listener5_point / _list: with it nearer, the function run with it alone, and returning).
+[[patches.hook]]
+func = "func_1000F6B8"
+before_vram = 0x1000F6B8
+text = "{ extern int conker_listener5_point(uint8_t*, recomp_context*); if (conker_listener5_point(rdram, ctx)) { return; } }"
+
+[[patches.hook]]
+func = "func_100114D0"
+before_vram = 0x100114D0
+text = "{ extern int conker_listener5_list(uint8_t*, recomp_context*); if (conker_listener5_list(rdram, ctx)) { return; } }"
+
 # Online: each machine hears the game from its own player's camera (host/src/local_audio.cpp). The game still decides from its
 # own volumes whether a sound starts or stops; only the volume and pan the sound player gets are this machine's. (Sounds on
 # characters, func_10010154 / func_10010344 / func_10010FFC, are given theirs in func_10010BE8, by its return address.)

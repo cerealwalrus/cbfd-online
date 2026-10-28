@@ -41,6 +41,7 @@
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <string>
@@ -1903,6 +1904,137 @@ namespace {
     }
 }
 
+// (possess48) The 5th player's HUD, over its view on its machine. The game draws a multiplayer match's HUD for its players 0 to
+// D_80082FA0, each in its view's rectangle: once a frame (func_150198FC: the match's HUD, func_150918EC, its health, lives, weapon and
+// ammo, scores, the radar and the map; and the screen's own effects), then for each view (func_15019BB8: a hit's flash, the tint, the
+// fades and the iris, the view's 2D pieces), then the overlays and the text (func_15019E60, func_151E84B0, func_15043384). Here, as the
+// extra camera's view is drawn (as view 1, its camera, view and HUD tables in player 1's place already), the same is drawn for one
+// player (D_80082FA0 0, D_8008FD90 1: the one-player layout, full screen) with character 5's state in character 1's place: its object
+// (gObjects[4]: its health, weapon, ammo, where it is), its line of the match's tallies (func_150859AC's), its bits and bytes in the
+// tables kept a character (D_800D2340, D_800E0BCC, D_800D18A0/2, D_80087270, D_800E0AC0, gGameState's scores), and the HUD's tables of 4
+// (its fades, its flash) as ours have them now. All of it back as it was after (and the game's memory put back with the view's).
+// Not while the game is paused (its pause screen copies the frame), nor on the other machines (the view's commands are let go there).
+// CONKER_POSSESS_HUD=0 leaves it out.
+extern "C" void func_150198FC(uint8_t* rdram, recomp_context* ctx);
+extern "C" void func_15019BB8(uint8_t* rdram, recomp_context* ctx);
+extern "C" void func_15019E60(uint8_t* rdram, recomp_context* ctx);
+extern "C" void func_151E84B0(uint8_t* rdram, recomp_context* ctx);
+extern "C" void func_15043384(uint8_t* rdram, recomp_context* ctx);
+
+namespace {
+    constexpr uint32_t humans_now = 0x8008FD90;     // D_8008FD90: the match's players (its human ones, D_8008FE44's 0-3)
+    constexpr uint32_t paused_now = 0x800BEAC0;      // D_800BEAC0: the game's pause screen up
+    constexpr uint32_t blur_where = 0x800BE575;      // D_800BE575: 1, the blur drawn in func_150198FC
+    constexpr uint32_t objects_at_ = 0x800CC2D0;     // gObjects, 0x32C a character
+    constexpr uint32_t tallies = 0x800D213C;         // func_150859AC's: 0x1C a character (its lives at +9...)
+    constexpr uint32_t tally_size = 0x1C;
+    constexpr uint32_t game_state_at = 0x8008FDD4;   // gGameState: a halfword a character at +0x46 (the scores)
+
+    bool fifth_hud_on() {
+        static const bool on = []() {
+            const char* text = std::getenv("CONKER_POSSESS_HUD");
+            return text == nullptr || std::string(text) != "0";
+        }();
+        return on;
+    }
+
+    void swap_word_runs(uint8_t* rdram, uint32_t a, uint32_t b, uint32_t size) {
+        for (uint32_t i = 0; i < size; i += 4) {
+            const int32_t x = MEM_W(i, (gpr)(int32_t)a), y = MEM_W(i, (gpr)(int32_t)b);
+            MEM_W(i, (gpr)(int32_t)a) = y;
+            MEM_W(i, (gpr)(int32_t)b) = x;
+        }
+    }
+
+    void swap_bytes_at(uint8_t* rdram, uint32_t a, uint32_t b) {
+        const int8_t x = MEM_B(0, (gpr)(int32_t)a), y = MEM_B(0, (gpr)(int32_t)b);
+        MEM_B(0, (gpr)(int32_t)a) = y;
+        MEM_B(0, (gpr)(int32_t)b) = x;
+    }
+
+    void swap_halves_at(uint8_t* rdram, uint32_t a, uint32_t b) {
+        const int16_t x = MEM_H(0, (gpr)(int32_t)a), y = MEM_H(0, (gpr)(int32_t)b);
+        MEM_H(0, (gpr)(int32_t)a) = y;
+        MEM_H(0, (gpr)(int32_t)b) = x;
+    }
+
+    // bits i and j of the halfword at `at`
+    void swap_bits_at(uint8_t* rdram, uint32_t at, int i, int j) {
+        const uint16_t v = MEM_HU(0, (gpr)(int32_t)at);
+        const uint16_t bi = (uint16_t)((v >> i) & 1u), bj = (uint16_t)((v >> j) & 1u);
+        const uint16_t cleared = (uint16_t)(v & ~((1u << i) | (1u << j)));
+        MEM_H(0, (gpr)(int32_t)at) = (int16_t)(cleared | (uint16_t)(bi << j) | (uint16_t)(bj << i));
+    }
+
+    // character 0's state and character k's swapped (twice: back as they were)
+    void swap_character_state(uint8_t* rdram, int k) {
+        swap_word_runs(rdram, objects_at_, objects_at_ + (uint32_t)k * 0x32Cu, 0x32Cu);
+        swap_word_runs(rdram, tallies, tallies + (uint32_t)k * tally_size, tally_size);
+        for (uint32_t bits : { 0x800D2340u, 0x800E0BCCu, 0x800D18A0u, 0x800D18A2u }) {
+            swap_bits_at(rdram, bits, 0, k);
+        }
+        for (uint32_t bytes : { 0x80087270u, 0x800E0AC0u }) {
+            swap_bytes_at(rdram, bytes, bytes + (uint32_t)k);
+        }
+        const uint32_t state = (uint32_t)MEM_W(0, (gpr)(int32_t)game_state_at);
+        if ((state >> 24) == 0x80 && (state & 0x7FFFFFu) + 0x80u < 0x800000u) {
+            swap_halves_at(rdram, state + 0x46u, state + 0x46u + 2u * (uint32_t)k);
+        }
+    }
+
+    uint32_t fifth_huds = 0;
+
+    // the HUD's commands after `list` (the view's), the new end
+    uint32_t fifth_hud(uint8_t* rdram, recomp_context* ctx, uint32_t list) {
+        if (!fifth_hud_on() || MEM_BU(0, (gpr)(int32_t)paused_now) != 0) {
+            return list;
+        }
+        const recomp_context saved = *ctx;
+        const uint32_t before = list;
+        // the HUD's tables of 4 as ours have them now (the view's passes stepped player 1's entry, our copy, once more)
+        for (int i = 35; i < slot4_count; i++) {
+            const Slot4Table& t = slot4_tables[i];
+            if (!t.always) {
+                continue;
+            }
+            const uint32_t shadow = slot4_shadow + 0x100u * (uint32_t)i;
+            for (uint32_t b = 0; b < t.stride; b++) {
+                MEM_B(b, (gpr)(int32_t)t.base) = MEM_B(b, (gpr)(int32_t)shadow);
+            }
+        }
+        const int32_t was_last = MEM_W(0, (gpr)(int32_t)last_player);
+        const int8_t was_humans = MEM_B(0, (gpr)(int32_t)humans_now);
+        const int8_t was_blur = MEM_B(0, (gpr)(int32_t)blur_where);
+        const int32_t was_view = MEM_W(0, (gpr)(int32_t)view_now);
+        swap_character_state(rdram, extra);
+        MEM_W(0, (gpr)(int32_t)last_player) = 0;
+        MEM_B(0, (gpr)(int32_t)humans_now) = 1;
+        MEM_B(0, (gpr)(int32_t)blur_where) = 0;
+        MEM_W(0, (gpr)(int32_t)view_now) = 0;
+        list = call_list(rdram, ctx, func_150198FC, list, 0);
+        *ctx = saved;
+        list = call_list(rdram, ctx, func_15019E60, list, 0);
+        *ctx = saved;
+        list = call_list(rdram, ctx, func_15019BB8, list, 0);
+        *ctx = saved;
+        list = call_list(rdram, ctx, func_151E84B0, list, 0);
+        *ctx = saved;
+        list = call_list(rdram, ctx, func_15043384, list, 0);
+        *ctx = saved;
+        MEM_W(0, (gpr)(int32_t)view_now) = was_view;
+        MEM_B(0, (gpr)(int32_t)blur_where) = was_blur;
+        MEM_B(0, (gpr)(int32_t)humans_now) = was_humans;
+        MEM_W(0, (gpr)(int32_t)last_player) = was_last;
+        swap_character_state(rdram, extra);
+        fifth_huds++;
+        if (fifth_huds <= 3 || fifth_huds % 600 == 0) {
+            log("f=%u the 5th player's HUD drawn over its view (%u times): %u commands", (unsigned)frames, (unsigned)fifth_huds,
+                (unsigned)((list - before) / 8));
+        }
+        return list;
+    }
+}
+
 extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
     if (!local_view_wanted(rdram)) {
         return;
@@ -2122,6 +2254,14 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
         extra_hidden[k] = MEM_BU(0xF, c) & 0x11u;
     }
     extra_fades_kept = true;
+    // (possess48) its HUD over it, on the 5th player's machine (fifth_hud: what's kept for the next frame is above, and the HUD
+    // changes none of it)
+    if (view_shown_here()) {
+        extra_view_now = true;
+        list = fifth_hud(rdram, ctx, list);
+        extra_view_now = false;
+        *ctx = saved;
+    }
     // past the list's room (the game's limit, with a margin for its end): the view's commands let go
     bool too_long = (int32_t)((list - frame_list) >> 3) + 64 > (int32_t)MEM_W(0, (gpr)(int32_t)list_most);
     if (too_long) {

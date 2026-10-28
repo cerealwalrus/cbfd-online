@@ -21,6 +21,11 @@
 //     machine's player.
 // The volume and pan go to the sound player's own state and events (and the music manager's), which nothing in the game reads.
 //
+// (possess48) A match of 5 players (possess_test.cpp): the 5th player has a listener of its own, its extra camera's (made as the game
+// makes its own, kept in ours: make_fifth_listener), which its machine hears from; its character's sounds are a player's (heard from
+// where it is by the others, its own in the middle); and the game's choice of the nearest listener takes it in, on every machine alike
+// (conker_listener5_point / _list), so the sounds near the 5th player are started as they are near any player.
+//
 // CONKER_NET_LOCAL_AUDIO=0 turns it off (every machine hears what the split screen would).
 
 #include <atomic>
@@ -56,6 +61,12 @@ namespace {
     constexpr uint32_t listener_words = 7;
     constexpr uint32_t listener_size = 0x1C;
     constexpr uint32_t last_listener = 0x80082FA0;   // D_80082FA0: the index of the last listener in use (0: one)
+    // (possess48) online, a match of 5 players (possess_test.cpp): the 5th player's listener, from its extra camera (the look cameras'
+    // 5th), made each frame as func_10011BB8 makes the game's (make_fifth_listener). The game's table has room for 4 (what follows it is
+    // other sound state), so it's kept in ours (the possess test's memory past the game's 8 MB, which goes with a resync's state), and
+    // listener index fifth_listener names it here.
+    constexpr uint32_t fifth_listener_at = 0x80FD0900;
+    constexpr int fifth_listener = 4;
     constexpr uint32_t look_cameras = 0x800DBFF0;    // pointer to the look cameras, 0x9A0 apart
     constexpr uint32_t look_size = 0x9A0;
     constexpr uint32_t look_player = 0x23D;          // the player a look camera is for
@@ -150,6 +161,16 @@ namespace {
         return (address >> 24) == 0x80 && (address & 0x7FFFFFu) < 0x7FFFF0u;
     }
 
+    // (possess48) online, the 5th player's extra camera is there (made at the same frame on every machine): its listener is one more.
+    bool fifth_there() {
+        return conker::netsession::active() && conker::possess_test::online_extra_camera();
+    }
+
+    // Where listener k is: the game's table, or ours for the 5th player's.
+    uint32_t listener_at(int k) {
+        return k == fifth_listener ? fifth_listener_at : listeners + (uint32_t)k * listener_size;
+    }
+
     // The listener of this machine's player, or -1 (offline, one listener, or no look camera of this player's).
     int local_listener(uint8_t* rdram) {
         if (!switched_on() || !conker::netsession::active()) {
@@ -159,7 +180,9 @@ namespace {
         const uint32_t base = word(rdram, look_cameras);
         int found = -1;
         const int local = conker::netsession::view_player();
-        if (last >= 1 && last <= 3 && (base >> 24) == 0x80 && (base & 0x7FFFFFu) + 4u * look_size <= 0x800000u) {
+        // (possess48) with the 5th player's listener there are two at least: one player's own too (and the 5th player's machine its own)
+        const bool fifth = fifth_there();
+        if (last >= (fifth ? 0 : 1) && last <= 3 && (base >> 24) == 0x80 && (base & 0x7FFFFFu) + 4u * look_size <= 0x800000u) {
             for (int k = 0; k <= last; k++) {
                 const gpr record = (gpr)(int32_t)(base + (uint32_t)k * look_size);
                 if ((int)MEM_BU(look_player, record) == local) {
@@ -172,10 +195,15 @@ namespace {
                 }
             }
         }
+        if (found < 0 && fifth && local == 4) {
+            found = fifth_listener;
+        }
         if (found != logged_listener) {
             logged_listener = found;
             char line[200];
-            if (found >= 0) {
+            if (found == fifth_listener) {
+                std::snprintf(line, sizeof(line), "[audio] this machine hears from the 5th player's listener (its extra camera; the game's listeners 0-%d)", (int)last);
+            } else if (found >= 0) {
                 std::snprintf(line, sizeof(line), "[audio] this machine hears from listener %d (look camera of player %d; listeners 0-%d)", found, local + 1, (int)last);
             } else {
                 std::snprintf(line, sizeof(line), "[audio] the game's own listener choice (last listener %d, player %d)", (int)last, local + 1);
@@ -192,7 +220,13 @@ namespace {
         }
         const uint32_t record = word(rdram, object + object_look);
         const uint32_t base = word(rdram, look_cameras);
-        if (!ram_pointer(record) || record < base || (record - base) % look_size != 0 || (record - base) / look_size >= 4) {
+        if (!ram_pointer(record) || record < base || (record - base) % look_size != 0) {
+            return -1;
+        }
+        // (possess48) the 5th player's character too, its look camera the extra camera, the 5th: its sounds were taken as no player's, so
+        // the game's own (in the middle, at full volume) on every machine
+        const uint32_t index = (record - base) / look_size;
+        if (index >= 4 && !(index == 4 && fifth_there())) {
             return -1;
         }
         return (int)MEM_BU(look_player, (gpr)(int32_t)record);
@@ -307,7 +341,11 @@ namespace {
         d.owner = object;
     }
 
-    // Listener k alone in the game's table while `call` runs; the table is as it was afterwards.
+    // (possess48) set while listener k alone is in the game's table for a call of ours (with_listener): the game's choice of the nearest
+    // listener isn't to take the 5th player's in then (conker_listener5_point / _list)
+    bool listener_alone = false;
+
+    // Listener k alone in the game's table while `call` runs; the table is as it was afterwards. (possess48: k may be the 5th player's)
     template <typename Call>
     void with_listener(uint8_t* rdram, int k, Call call) {
         uint32_t saved_entry[listener_words];
@@ -316,10 +354,13 @@ namespace {
         }
         const uint32_t saved_last = word(rdram, last_listener);
         for (uint32_t i = 0; i < listener_words; i++) {
-            put_word(rdram, listeners + i * 4, word(rdram, listeners + (uint32_t)k * listener_size + i * 4));
+            put_word(rdram, listeners + i * 4, word(rdram, listener_at(k) + i * 4));
         }
         put_word(rdram, last_listener, 0);
+        const bool was_alone = listener_alone;
+        listener_alone = true;
         call();
+        listener_alone = was_alone;
         put_word(rdram, last_listener, saved_last);
         for (uint32_t i = 0; i < listener_words; i++) {
             put_word(rdram, listeners + i * 4, saved_entry[i]);
@@ -369,6 +410,58 @@ namespace {
             *volume = word(rdram, scratch_out + 4);
             *ctx = saved;
         });
+    }
+
+    // (possess48) The 5th player's listener (online, a match of 5 players: the extra camera, the look cameras' 5th), made as
+    // func_10011BB8 makes each of the game's every frame from its look camera: with more than one listener, its eye (+0x2F8, in whole
+    // numbers) both where the pan is worked out from (+0x0) and where the distance is measured to (+0xC), and the camera's turn (+0x380) at
+    // +0x18. Every machine alike, at the start of func_10011BB8 (the game makes its own right after, from where the cameras are then).
+    void make_fifth_listener(uint8_t* rdram) {
+        // (not while the game leaves its own as they are: D_80041F60 or D_80041F61 set, func_10011BB8's start)
+        if (!fifth_there() || MEM_BU(0, (gpr)(int32_t)0x80041F60) != 0 || MEM_BU(0, (gpr)(int32_t)0x80041F61) != 0) {
+            return;
+        }
+        const uint32_t base = word(rdram, look_cameras);
+        if ((base >> 24) != 0x80 || (base & 0x7FFFFFu) + 5u * look_size > 0x800000u) {
+            return;
+        }
+        const uint32_t camera = base + 4u * look_size;
+        const int32_t x = TRUNC_W_S(float_at(rdram, camera + 0x2F8));
+        const int32_t y = TRUNC_W_S(float_at(rdram, camera + 0x2FC));
+        const int32_t z = TRUNC_W_S(float_at(rdram, camera + 0x300));
+        put_word(rdram, fifth_listener_at + 0x0, (uint32_t)x);
+        put_word(rdram, fifth_listener_at + 0x4, (uint32_t)y);
+        put_word(rdram, fifth_listener_at + 0x8, (uint32_t)z);
+        put_word(rdram, fifth_listener_at + 0xC, (uint32_t)x);
+        put_word(rdram, fifth_listener_at + 0x10, (uint32_t)y);
+        put_word(rdram, fifth_listener_at + 0x14, (uint32_t)z);
+        put_word(rdram, fifth_listener_at + 0x18, word(rdram, camera + 0x380));
+    }
+
+    // The squared distance from (x, y, z) to the listener at `at` (its +0xC), as func_1000F6B8 and func_100114D0 measure it to find the
+    // nearest: whole numbers, 32 bits, wrapping.
+    uint32_t listener_distance(uint8_t* rdram, uint32_t at, int32_t x, int32_t y, int32_t z) {
+        const uint32_t dx = (uint32_t)x - word(rdram, at + 0xC);
+        const uint32_t dy = (uint32_t)y - word(rdram, at + 0x10);
+        const uint32_t dz = (uint32_t)z - word(rdram, at + 0x14);
+        return dx * dx + dy * dy + dz * dz;
+    }
+
+    // Whether the 5th player's listener is nearer the point than the game's nearest, as the game would choose with it last in its table
+    // (with one listener the game takes that one without measuring: the 5th player's then if nearer).
+    bool fifth_nearest(uint8_t* rdram, int32_t x, int32_t y, int32_t z) {
+        const int32_t last = (int32_t)word(rdram, last_listener);
+        if (last < 0 || last > 3) {
+            return false;
+        }
+        uint32_t best = 0xFFFFFFFFu;
+        for (int32_t k = 0; k <= last; k++) {
+            const uint32_t d = listener_distance(rdram, listeners + (uint32_t)k * listener_size, x, y, z);
+            if (d < best) {
+                best = d;
+            }
+        }
+        return listener_distance(rdram, fifth_listener_at, x, y, z) < best;
     }
 
     // func_1000F85C(handle, what, value), from the host.
@@ -517,11 +610,13 @@ namespace {
             const uint32_t holder = word(rdram, caller_s0 + 0x18);
             const uint32_t base = word(rdram, look_cameras);
             const int k_now = local_listener(rdram);
-            if (k_now >= 0 && ram_pointer(holder) && holder >= base && (holder - base) % look_size == 0 && (holder - base) / look_size < 4) {
+            // (possess48: the 5th player's rifle too, its extra camera the 5th record, its listener ours)
+            const bool fifth_holder = fifth_there() && holder == base + 4u * look_size;
+            if (k_now >= 0 && ram_pointer(holder) && holder >= base && (holder - base) % look_size == 0 && ((holder - base) / look_size < 4 || fifth_holder)) {
                 const uint32_t n = (holder - base) / look_size;
                 const int holder_player = (int)MEM_BU(look_player, (gpr)(int32_t)holder);
-                if (holder_player != conker::netsession::view_player() && (int32_t)n <= (int32_t)word(rdram, last_listener)) {
-                    const uint32_t entry = listeners + n * listener_size;
+                if (holder_player != conker::netsession::view_player() && (fifth_holder || (int32_t)n <= (int32_t)word(rdram, last_listener))) {
+                    const uint32_t entry = fifth_holder ? fifth_listener_at : listeners + n * listener_size;
                     const uint32_t x = word(rdram, entry + 0xC), y = word(rdram, entry + 0x10), z = word(rdram, entry + 0x14);
                     uint32_t attenuation = 0, pan = 0x40;
                     evaluate_point(rdram, ctx, k_now, 0, x, y, z, 500, 4501, &attenuation, &pan);
@@ -1083,6 +1178,7 @@ extern "C" void conker_local_audio(uint8_t* rdram, recomp_context* ctx, int whic
             on_replace(rdram, ctx);
             return;
         case 12: {
+            make_fifth_listener(rdram);   // (possess48)
             stop_tails(rdram, ctx);
             conker_heap_watch(rdram, ctx);
             conker_mp_characters(rdram);
@@ -1240,4 +1336,36 @@ extern "C" void conker_net_footsteps(uint8_t* rdram, recomp_context* ctx) {
     if (conker::netsession::active() && (int32_t)ctx->r12 > 1) {
         ctx->r12 = 1;
     }
+}
+
+// (possess48) The game's choice of the nearest listener with the 5th player's in it. func_1000F6B8 (a point's volume and pan: $a1, $a2,
+// $a3 the point, halfwords) and func_100114D0 (the moving sounds' list's: $a0, $a1, $a2) each find the listener nearest the point among
+// the game's (D_80041F68, 0 to D_80082FA0) and work the volume and pan out from it; from those the game decides whether a sound starts
+// or stops (func_10010BE8's "too quiet", the list's), so a sound near the 5th player alone, away from the 4 players, was never started:
+// it heard nothing near it but its own character. Here, with the 5th player's listener nearer the point than the game's nearest, the
+// function is run with it alone in the table instead (with_listener; the function's own hook lets that run through): as with the 5th
+// player's listener last in the table. Every machine alike (the listener is the game's memory's, made the same everywhere, and goes
+// with a resync's state). 1: done, the function returns what that run worked out.
+extern "C" int conker_listener5_point(uint8_t* rdram, recomp_context* ctx) {
+    if (listener_alone || !fifth_there()) {
+        return 0;
+    }
+    const int32_t x = (int16_t)(uint16_t)(uint32_t)ctx->r5, y = (int16_t)(uint16_t)(uint32_t)ctx->r6, z = (int16_t)(uint16_t)(uint32_t)ctx->r7;
+    if (!fifth_nearest(rdram, x, y, z)) {
+        return 0;
+    }
+    with_listener(rdram, fifth_listener, [&]() { func_1000F6B8(rdram, ctx); });
+    return 1;
+}
+
+extern "C" int conker_listener5_list(uint8_t* rdram, recomp_context* ctx) {
+    if (listener_alone || !fifth_there()) {
+        return 0;
+    }
+    const int32_t x = (int32_t)ctx->r4, y = (int32_t)ctx->r5, z = (int32_t)ctx->r6;
+    if (!fifth_nearest(rdram, x, y, z)) {
+        return 0;
+    }
+    with_listener(rdram, fifth_listener, [&]() { func_100114D0(rdram, ctx); });
+    return 1;
 }
