@@ -1763,14 +1763,12 @@ void conker::look_aim::no_weapon_walk(uint8_t* rdram, int port, uint16_t* button
         if (MEM_BU(0x23E, camera) != 0x00) {
             return;
         }
-        // (possess148) No weapon out (his +0x31C's +0x78 0), R held or in the look: the D-pad's way taken as the left stick's C-buttons'
-        // (dx, dy). His moving angle here is set from the way pressed (walk_dx, walk_dy: below and conker_look_targets), the game's strafe
-        // going by it and not setting it itself, so the D-pad given to the game's strafe alone (conker_dpad_strafe) left him walking the
-        // way the left stick last set (the possess147 test). It's kept from conker_dpad_strafe here. (With a weapon out, the D-pad is the
-        // game's strafe's, as before: the M4's and the tommy gun's, right in the possess147 test.)
-        const gpr brain = (gpr)(int32_t)MEM_W(0x3D4, camera);
-        const bool no_weapon = ((uint32_t)brain & 0xFF000000u) == 0x80000000u && MEM_BU(0x78, brain) == 0;
-        if (no_weapon && ((*buttons & 0x0010) != 0 || MEM_H(0x73C, camera) == 2) && (*buttons & 0x0F00u) != 0) {
+        // (possess148) No weapon out (this look, kind 0: the M4's is 0x39, the sniper rifle's 0x24), R held or in the look: the D-pad's
+        // way taken as the left stick's C-buttons' (dx, dy). His moving angle here is set from the way pressed (walk_dx, walk_dy: below
+        // and conker_look_targets), the game's strafe going by it and not setting it itself, so the D-pad given to the game's strafe alone
+        // (conker_dpad_strafe) left him walking the way the left stick last set (the possess147 test). It's kept from conker_dpad_strafe
+        // here. (possess149: possess148 tested the weapon at the camera's +0x3D4's +0x78, not 0 here: it never ran.)
+        if (((*buttons & 0x0010) != 0 || MEM_H(0x73C, camera) == 2) && (*buttons & 0x0F00u) != 0) {
             const uint16_t pad = (uint16_t)(*buttons & 0x0F00u);
             dx = ((*buttons & 0x0001) || (pad & 0x0100) ? 1 : 0) - ((*buttons & 0x0002) || (pad & 0x0200) ? 1 : 0);
             dy = ((*buttons & 0x0008) || (pad & 0x0800) ? 1 : 0) - ((*buttons & 0x0004) || (pad & 0x0400) ? 1 : 0);
@@ -1907,8 +1905,11 @@ void conker::look_aim::gun_side_walk(uint8_t* rdram, int port, uint16_t* buttons
         return;
     }
     gun_walk_set[port] = false;
-    const int dx = ((*buttons & 0x0001) ? 1 : 0) - ((*buttons & 0x0002) ? 1 : 0);
-    const int dy = ((*buttons & 0x0008) ? 1 : 0) - ((*buttons & 0x0004) ? 1 : 0);
+    // (possess149) and the D-pad's way, as the left stick's C-buttons' (the looks below: his moving angle is set from the way pressed,
+    // conker_look_targets; the D-pad then not the game's strafe's as well)
+    const uint16_t pad = (uint16_t)(*buttons & 0x0F00u);
+    const int dx = ((*buttons & 0x0001) || (pad & 0x0100) ? 1 : 0) - ((*buttons & 0x0002) || (pad & 0x0200) ? 1 : 0);
+    const int dy = ((*buttons & 0x0008) || (pad & 0x0800) ? 1 : 0) - ((*buttons & 0x0004) || (pad & 0x0400) ? 1 : 0);
     if (dx == 0) {
         return;
     }
@@ -1934,7 +1935,7 @@ void conker::look_aim::gun_side_walk(uint8_t* rdram, int port, uint16_t* buttons
         gun_walk_dx[port] = dx;
         gun_walk_dy[port] = dy;
         gun_walk_set[port] = true;
-        *buttons = (uint16_t)((*buttons & ~0x000Fu) | (dy < 0 ? 0x0004u : 0x0008u));
+        *buttons = (uint16_t)((*buttons & ~0x0F0Fu) | (dy < 0 ? 0x0004u : 0x0008u));
         return;
     }
 #endif
@@ -2522,8 +2523,9 @@ extern "C" void conker_steady_walk(uint8_t* rdram, recomp_context* ctx) {
         constexpr uint32_t c_up = 0x0008, c_down = 0x0004, c_left = 0x0002, c_right = 0x0001;
         const gpr held_at = (gpr)(int32_t)MEM_W(0x36C, camera);
         const uint32_t held = kseg0(held_at) ? (uint32_t)MEM_HU(0, held_at) : 0u;
-        dx = ((held & c_right) ? 1 : 0) - ((held & c_left) ? 1 : 0);
-        dy = ((held & c_up) ? 1 : 0) - ((held & c_down) ? 1 : 0);
+        // (possess149: the D-pad's way too, as the C-buttons': the game's strafe there goes by his moving angle, set from it here)
+        dx = ((held & (c_right | 0x0100u)) ? 1 : 0) - ((held & (c_left | 0x0200u)) ? 1 : 0);
+        dy = ((held & (c_up | 0x0800u)) ? 1 : 0) - ((held & (c_down | 0x0400u)) ? 1 : 0);
         if (conker::netsession::active() && gun_walk_set[player].load()) {
             dx = gun_walk_dx[player].load();
             dy = gun_walk_dy[player].load();
@@ -2649,8 +2651,10 @@ extern "C" void conker_look_targets(uint8_t* rdram, recomp_context* ctx) {
         constexpr uint32_t c_up = 0x0008, c_down = 0x0004, c_left = 0x0002, c_right = 0x0001;
         // The buttons this camera's player holds (+0x36C points at them).
         const uint32_t held = (uint32_t)MEM_HU(0, (gpr)(int32_t)MEM_W(0x36C, ctx->r16));
-        int dx = ((held & c_right) ? 1 : 0) - ((held & c_left) ? 1 : 0);
-        int dy = ((held & c_up) ? 1 : 0) - ((held & c_down) ? 1 : 0);
+        // (possess149: the D-pad's way too, as the C-buttons': in a gun's look (the M4's, 0x39) the game's strafe goes by his moving angle
+        // and doesn't set it itself, so the D-pad given to the game's strafe alone walked him the way the left stick last set, one way only)
+        int dx = ((held & (c_right | 0x0100u)) ? 1 : 0) - ((held & (c_left | 0x0200u)) ? 1 : 0);
+        int dy = ((held & (c_up | 0x0800u)) ? 1 : 0) - ((held & (c_down | 0x0400u)) ? 1 : 0);
         // (the tommy gun's: the way pressed, not the C-Up it was turned into, gun_side_walk)
         if (conker::netsession::active() && look_player >= 0 && look_player < aim_players && gun_walk_set[look_player].load()) {
             dx = gun_walk_dx[look_player].load();

@@ -92,6 +92,8 @@ namespace {
         conker::netsession::log(line);
     }
 
+    void fifth_say(const char* what);   // (possess147, below)
+
     bool is_weapon(uint8_t* rdram, uint32_t record) {
         const uint32_t index = (uint32_t)MEM_W(0x14, (gpr)(int32_t)record);
         return index < 0x400u && (uint32_t)MEM_W(0, (gpr)(int32_t)(behaviours + index * 0xCu)) == weapon_behaviour &&
@@ -1542,7 +1544,7 @@ extern "C" void conker_gold_reticle_end(uint8_t* rdram, recomp_context* ctx) {
     copy.from_gold = gold;
     const int32_t l4 = (int32_t)std::lround(left * 4.0f), t4 = (int32_t)std::lround(top * 4.0f);
     uint32_t removed = 0, kept = 0;
-    std::string ops;
+    std::string ops, rects_seen;
     for (uint32_t c = start; c + 8 <= end; c += 8) {
         const gpr at = (gpr)(int32_t)c;
         const uint32_t w0 = (uint32_t)MEM_W(0, at), w1 = (uint32_t)MEM_W(4, at);
@@ -1563,6 +1565,11 @@ extern "C" void conker_gold_reticle_end(uint8_t* rdram, recomp_context* ctx) {
         const float xl = (float)((w0 >> 12) & 0xFFFu) * 0.25f;
         const float xh = (float)((w1 >> 12) & 0xFFFu) * 0.25f;
         const float rx = (xl + xh) * 0.5f;
+        if (rects_seen.size() < 900) {   // (possess149 diagnostics)
+            char piece[48];
+            std::snprintf(piece, sizeof(piece), " %02X %.0f,%.0f-%.0f,%.0f", (unsigned)op, xh, (float)(w1 & 0xFFFu) * 0.25f, xl, (float)(w0 & 0xFFFu) * 0.25f);
+            rects_seen += piece;
+        }
         const bool on_bar = bar_l >= 0.0f && rx >= bar_l && rx <= bar_r;
         if (on_bar) {
             // (possess141) the zoom bar (and its marker) moved to the view's left edge, 6 pixels in
@@ -1617,6 +1624,21 @@ extern "C" void conker_gold_reticle_end(uint8_t* rdram, recomp_context* ctx) {
             say("[gold] the zoom bar's part %u copied for the gold knives' scope, from view %u's (character %d's scope%s): %u commands, %u of "
                 "them its rectangles", (unsigned)part, (unsigned)bar_copy[part].from_view, bar_copy[part].from_character, gold ? ", gold" : "",
                 (unsigned)(bar_copy[part].words.size() / 2), (unsigned)bar_copy[part].rects.size());
+        }
+    }
+    // (possess149 diagnostics) a scope not gold's HUD, player 1's (view 1) and the 5th player's (view 5, his HUD drawn by possess_test.cpp's
+    // fifth_hud_pass with view 1's record): its rectangles, logged as their number changes, to compare the two
+    if (!gold && (reticle_keep.view == 0 || reticle_keep.view == 4)) {
+        static uint32_t hud_told = 0;
+        static int hud_count[5][2] = {};
+        const int count = (int)std::count(rects_seen.begin(), rects_seen.end(), '-');
+        int& was = hud_count[reticle_keep.view][part];
+        if (hud_told < 24 && count != was) {
+            was = count;
+            hud_told++;
+            say("[fifth] scope HUD of view %u (character %d, weapon kind %02X), part %u, the view's place %.0f,%.0f-%.0f,%.0f: %d rectangles:%s",
+                (unsigned)reticle_keep.view + 1, reticle_keep.character, (unsigned)reticle_keep.kind, (unsigned)part, left, top, right, bottom, count,
+                rects_seen.c_str());
         }
     }
     // (possess143) the gold knives' scope: the zoom bar put after what was drawn, as the gold sniper rifle's and revolver's show it
@@ -1862,8 +1884,23 @@ namespace {
 }
 
 // func_151408A4's start
+namespace {
+    struct BeamDiag { bool on = false; uint32_t beam = 0; int view = -1, holder = -1; };
+    BeamDiag beam_diag;
+    uint32_t beam_diag_told = 0;
+}
+
 extern "C" void conker_gold_beam_start(uint8_t* rdram, recomp_context* ctx) {
     beam_keep.on = false;
+    beam_diag.on = false;
+    // (possess149 diagnostics) the lasers' glows drawn in the 5th player's view (the extra view): whose, for which view, drawn or not
+    if (conker::possess_test::drawing_extra_view() && beam_diag_told < 24 && kseg0((uint32_t)ctx->r4)) {
+        const uint32_t laser = (uint32_t)MEM_W(0x170, (gpr)(int32_t)ctx->r4);
+        const uint32_t c = kseg0(laser) ? (uint32_t)MEM_W(0x110, (gpr)(int32_t)laser) : 0u;
+        if (c >= characters && (c - characters) % character_size == 0 && (c - characters) / character_size < 25) {
+            beam_diag = BeamDiag{ true, (uint32_t)ctx->r4, (int)(int16_t)(uint16_t)(uint32_t)ctx->r5, (int)((c - characters) / character_size) };
+        }
+    }
     // (possess147: not in the 5th player's view, the extra view: a gold weapon's holder's beam there as the others see it)
     if (!golds_made || (int32_t)MEM_W(0, (gpr)(int32_t)scene_now) != total_war || conker::possess_test::drawing_extra_view()) {
         return;
@@ -1934,6 +1971,26 @@ extern "C" void conker_gold_beam_listed(uint8_t* rdram, recomp_context* ctx) {
 
 // func_151408A4 at 0x15141194, returning ($v0 its list for the view, 0 if left out; $s0 the beam, $sp its frame: +0x114 its 4th vertex)
 extern "C" void conker_gold_beam_end(uint8_t* rdram, recomp_context* ctx) {
+    if (beam_diag.on && (uint32_t)ctx->r16 == beam_diag.beam) {
+        beam_diag.on = false;
+        static int told_key[25];
+        static bool told_set = false;
+        if (!told_set) {
+            told_set = true;
+            for (int& v : told_key) {
+                v = -1;
+            }
+        }
+        const int key = beam_diag.view * 2 + ((uint32_t)ctx->r2 != 0 ? 1 : 0);
+        if (told_key[beam_diag.holder] != key) {
+            told_key[beam_diag.holder] = key;
+            beam_diag_told++;
+            char line[160];
+            std::snprintf(line, sizeof(line), "character %d's laser glow in the 5th player's view (the extra view), view %d: %s", beam_diag.holder,
+                beam_diag.view, (uint32_t)ctx->r2 != 0 ? "drawn" : "left out");
+            fifth_say(line);
+        }
+    }
     if (!beam_keep.on) {
         return;
     }
@@ -2180,17 +2237,47 @@ extern "C" void conker_fifth_attachments(uint8_t* rdram, recomp_context* ctx) {
 // func_151028AC at 0x151028C4 ($a1 the view, $t8 its laser's own view, +0x132; $v0 the laser's +0x110, its holder): in the 5th player's
 // view (the extra view, view 1), his own laser is his own view's (its glow left out while he's scoped, as players 1 to 4 have theirs),
 // and player 1's laser isn't (its own view is view 1: left in, as players 2 to 4 see it)
+namespace {
+    void fifth_own_laser(uint8_t* rdram, recomp_context* ctx, const char* what) {
+        if (!conker::possess_test::drawing_extra_view() || !kseg0((uint32_t)ctx->r2)) {
+            return;
+        }
+        const int view = (int)(int16_t)(uint16_t)(uint32_t)ctx->r5;
+        const uint32_t holder = (uint32_t)MEM_W(0, ctx->r2);
+        const bool fifth = holder == characters + (uint32_t)fifth_character * character_size;
+        // (possess149 diagnostics) each kind of the 5th player's laser's checks in his view: its view, its own, and whether he's scoped
+        static uint32_t told = 0;
+        static int told_key[8] = { -1, -1, -1, -1, -1, -1, -1, -1 };
+        if (fifth && told < 24) {
+            const int slot = (what[0] == 'b' ? 0 : 4) + std::min(view, 3) % 4;
+            const uint32_t aim = (uint32_t)MEM_W(0x31C, (gpr)(int32_t)holder);
+            const int key = (int)((uint32_t)ctx->r24 & 0xFFu) * 2 + (kseg0(aim) && MEM_BU(0x197, (gpr)(int32_t)aim) != 0 ? 1 : 0);
+            if (slot >= 0 && slot < 8 && told_key[slot] != key) {
+                told_key[slot] = key;
+                told++;
+                char line[200];
+                std::snprintf(line, sizeof(line), "the 5th player's laser's %s checked in his view (the extra view) for view %d: its own view %u, scoped %d%s", what,
+                    view, (unsigned)((uint32_t)ctx->r24 & 0xFFu), key & 1, view == 0 ? ": taken as his own view" : "");
+                fifth_say(line);
+            }
+        }
+        if (view != 0) {
+            return;
+        }
+        if (fifth) {
+            ctx->r24 = 0;
+        } else if (holder == characters && (uint32_t)ctx->r24 == 0) {
+            ctx->r24 = 0xFF;
+        }
+    }
+}
+
 extern "C" void conker_fifth_laser_view(uint8_t* rdram, recomp_context* ctx) {
-    if (!conker::possess_test::drawing_extra_view() || (int32_t)(int16_t)(uint16_t)(uint32_t)ctx->r5 != 0) {
-        return;
-    }
-    if (!kseg0((uint32_t)ctx->r2)) {
-        return;
-    }
-    const uint32_t holder = (uint32_t)MEM_W(0, ctx->r2);
-    if (holder == characters + (uint32_t)fifth_character * character_size) {
-        ctx->r24 = 0;
-    } else if (holder == characters && (uint32_t)ctx->r24 == 0) {
-        ctx->r24 = 0xFF;
-    }
+    fifth_own_laser(rdram, ctx, "beam");
+}
+
+// (possess149) func_1510281C at 0x15102834, the same check for the laser's glow at the gun (the laser sight's +0x24; $v0 its +0xD0's
+// +0x110, the holder): left out of its holder's own view while he's scoped, so in the 5th player's view his own laser's glow is his
+extern "C" void conker_fifth_glow_view(uint8_t* rdram, recomp_context* ctx) {
+    fifth_own_laser(rdram, ctx, "glow");
 }

@@ -3539,6 +3539,12 @@ func = "func_151028AC"
 before_vram = 0x151028C4
 text = "{ extern void conker_fifth_laser_view(uint8_t*, recomp_context*); conker_fifth_laser_view(rdram, ctx); }"
 
+# possess149: and the laser's glow at the gun (func_1510281C, the same check: $a1 the view, $t8 its own view, $v0 its holder's)
+[[patches.hook]]
+func = "func_1510281C"
+before_vram = 0x15102834
+text = "{ extern void conker_fifth_glow_view(uint8_t*, recomp_context*); conker_fifth_glow_view(rdram, ctx); }"
+
 # possess136: no reticle over a gold weapon's scope: func_151674F8's layer 4 for that view drawn with the reticle's types emptied, put back
 # as it returns (0x15167A38)
 [[patches.hook]]
