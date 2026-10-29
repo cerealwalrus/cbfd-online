@@ -864,9 +864,14 @@ extern std::atomic<int> walk_dx[aim_players], walk_dy[aim_players];
 #if defined(CONKER_RT64)
 // (possess101) Aiming: Steady Camera, for a camera: R-Look's second stage, Conker's. (possess112: always on, for every player, online,
 // in single player and offline alike; it was a setting, each player's own online, a bit of their look flags.)
+// (possess119) Not for the shotgun's look (its kind, +0x23E, 0x3B: the co-op mansion's): the game's own R-Look there, as before Steady
+// Camera (possess101), its view, its turning of Conker toward the lock-on's target, his walking and his width.
+static bool steady_kind(uint8_t* rdram, gpr camera) {
+    return MEM_BU(0x23E, camera) != 0x3B;
+}
 static bool steady_camera(uint8_t* rdram, gpr camera) {
     const gpr walker = (gpr)(int32_t)MEM_W(0x3D0, camera);
-    return MEM_H(0x73C, camera) == 2 && ((uint32_t)walker & 0xFF000000u) == 0x80000000u;
+    return MEM_H(0x73C, camera) == 2 && ((uint32_t)walker & 0xFF000000u) == 0x80000000u && steady_kind(rdram, camera);
 }
 
 // (possess109) The look record (D_800DBFF0, 0x9A0 each) whose Conker (+0x3D0) an object is, with Aiming: Steady Camera's view on it
@@ -1510,7 +1515,7 @@ extern "C" void conker_steady_width(uint8_t* rdram, recomp_context* ctx) {
         return;
     }
     const int stage = (int)MEM_H(0x73C, camera);
-    if (stage == 0) {   // (possess112: Steady Camera always on)
+    if (stage == 0 || !steady_kind(rdram, camera)) {   // (possess112: Steady Camera always on; possess119: but not the shotgun's look)
         return;
     }
     const float walking = ctx->f0.fl;
