@@ -61,13 +61,26 @@ namespace {
     // lists loaded it: a bit a weapon (0 the sniper rifle, 1 the revolver, 2 the knives, 3 another or none). A weapon's part of a
     // character's model is what only its holders load. And whether that's been seen to hold for each weapon (a holder's list sharing most
     // of its loads with the others').
-    std::unordered_map<uint32_t, uint8_t> vertex_holders;
+    // (possess135) counts, not bits: how many times each weapon's holders (and the others) loaded it. possess131-133 kept bits, so one
+    // frame's list put to the wrong character (players close together, the nearest character to its first matrix) marked a weapon's
+    // vertices as everyone's for good, and the gold went back to silver (the possess133 test: the revolver whole until the four of them
+    // stood together, never after). A source is a weapon's while its holders' loads are at least 10 times all the others'.
+    struct Holders { uint32_t n[4] = {}; };
+    std::unordered_map<uint32_t, Holders> vertex_holders;
+    bool weapons_own(const Holders& h, int g) {
+        const uint32_t others = h.n[0] + h.n[1] + h.n[2] + h.n[3] - h.n[g];
+        return h.n[g] >= 4 && others * 10u <= h.n[g];
+    }
+    bool shared_by_others(const Holders& h, int g) {
+        const uint32_t others = h.n[0] + h.n[1] + h.n[2] + h.n[3] - h.n[g];
+        return others * 10u > h.n[g];
+    }
     bool vertex_baseline[3] = {};
 
     bool kseg0(uint32_t a) { return (a >> 24) == 0x80 && (a & 0x00FFFFFFu) < 0x00FF0000u; }
 
     void say(const char* format, ...) {
-        char line[512];
+        char line[2400];
         va_list args;
         va_start(args, format);
         std::vsnprintf(line, sizeof(line), format, args);
@@ -643,10 +656,10 @@ namespace {
         // (possess132) the whole list the weapon's: every vertex load in it only that weapon's holders' (the hand's weapon is a list of its
         // own: the revolver's 13 loads at 265490, the sniper rifle's 5 at 264D90, the possess131 test), so all of it gold, its combiners too
         bool whole = false;
-        uint32_t hidden = 0;
+        uint32_t hidden = 0, hidden_vertices = 0;
         bool weapon_vertex(uint32_t a) const {
             auto it = vertex_holders.find(a);
-            return it != vertex_holders.end() && it->second == (uint8_t)(1u << g);
+            return it != vertex_holders.end() && weapons_own(it->second, g);
         }
 
         uint32_t take(uint32_t bytes) {
@@ -714,6 +727,25 @@ namespace {
                     changed = true;
                 } else if (op == 0x01 && !whole && !(by_vertices ? weapon_vertex(resolve(seg, w1)) : in_part)) {
                     last_weapon = false;
+                    // (possess135) the body left out by its vertices: a copy of them all at one place (its first's), so whatever draws its
+                    // triangles draws nothing (possess131-133 cleared the triangle commands alone, 0x05 to 0x07, and the body stayed)
+                    const uint32_t n = (w0 >> 12) & 0xFFu;
+                    const uint32_t from = resolve(seg, w1);
+                    if (hide_body && n != 0 && phys_ok(from) && from + n * 0x10u <= 0x00800000u) {
+                        const uint32_t v = take(n * 0x10u);
+                        if (v != 0) {
+                            std::memcpy(rdram + (v - 0x80000000u), rdram + from, n * 0x10u);
+                            const uint32_t first = (uint32_t)MEM_W(0, (gpr)(int32_t)v), second = (uint32_t)MEM_W(4, (gpr)(int32_t)v) & 0xFFFF0000u;
+                            for (uint32_t k = 1; k < n; k++) {
+                                const gpr at = (gpr)(int32_t)(v + k * 0x10u);
+                                MEM_W(0, at) = (int32_t)first;
+                                MEM_W(4, at) = (int32_t)(second | ((uint32_t)MEM_W(4, at) & 0xFFFFu));
+                            }
+                            MEM_W(4, cmd) = (int32_t)(v & 0x1FFFFFFFu);
+                            hidden_vertices += n;
+                            changed = true;
+                        }
+                    }
                 } else if (op == 0x01) {
                     last_weapon = true;
                     const uint32_t n = (w0 >> 12) & 0xFFu;
@@ -999,9 +1031,15 @@ void conker::gold_weapons::frame_end(uint8_t* rdram, uint32_t start, uint32_t en
         if (owner[i] < 0) {
             continue;
         }
-        const uint8_t bit = (uint8_t)(1u << weapon_of(owner[i]));
+        const int held = weapon_of(owner[i]);
         for (uint32_t a : w.all[i].vertices) {
-            vertex_holders[a] |= bit;
+            Holders& h = vertex_holders[a];
+            h.n[held]++;
+            if (h.n[held] > 100000u) {
+                for (uint32_t& c : h.n) {
+                    c /= 2u;
+                }
+            }
         }
     }
     uint32_t shared_n[3] = {}, total_n[3] = {}, own_n[3] = {};
@@ -1014,10 +1052,10 @@ void conker::gold_weapons::frame_end(uint8_t* rdram, uint32_t start, uint32_t en
             continue;
         }
         for (uint32_t a : w.all[i].vertices) {
-            const uint8_t m = vertex_holders[a];
+            const Holders& h = vertex_holders[a];
             total_n[g]++;
-            shared_n[g] += (m & (uint8_t)~(1u << g)) != 0 ? 1u : 0u;
-            own_n[g] += m == (uint8_t)(1u << g) ? 1u : 0u;
+            shared_n[g] += shared_by_others(h, g) ? 1u : 0u;
+            own_n[g] += weapons_own(h, g) ? 1u : 0u;
         }
     }
     for (int g = 0; g < 3; g++) {
@@ -1065,12 +1103,12 @@ void conker::gold_weapons::frame_end(uint8_t* rdram, uint32_t start, uint32_t en
             bool all_own = true;
             for (uint32_t a : w.all[i].vertices) {
                 auto it = vertex_holders.find(a);
-                all_own = all_own && it != vertex_holders.end() && it->second == (uint8_t)(1u << g);
+                all_own = all_own && it != vertex_holders.end() && weapons_own(it->second, g);
             }
             clone.whole = all_own;
         }
         clone.hide_body = scoped && k == local_character;
-        const uint32_t before_vertices = clone.vertices, before_hidden = clone.hidden;
+        const uint32_t before_vertices = clone.vertices, before_hidden = clone.hidden, before_hidden_v = clone.hidden_vertices;
         const uint32_t copy = clone.list(w.all[i].to, seg, 0);
         if (copy != 0) {
             MEM_W(4, (gpr)(int32_t)(w.all[i].call | 0x80000000u)) = (int32_t)copy;
@@ -1080,7 +1118,7 @@ void conker::gold_weapons::frame_end(uint8_t* rdram, uint32_t start, uint32_t en
             std::snprintf(piece, sizeof(piece), " | character %d's %s (the call at %06X of the list at %06X, %u loads): %s by its %s, %u vertices gold%s", k,
                 golds[g].name, (unsigned)w.all[i].call, (unsigned)w.all[i].to, (unsigned)w.all[i].vertices.size(),
                 copy != 0 ? "a gold copy drawn" : (clone.full ? "no room in ours" : "nothing in it made gold"), clone.whole ? "whole list" : (clone.by_vertices ? "vertices" : "textures"),
-                (unsigned)(clone.vertices - before_vertices), clone.hide_body ? (clone.hidden != before_hidden ? ", the body left out (scoped)" : ", scoped, nothing left out") : "");
+                (unsigned)(clone.vertices - before_vertices), clone.hide_body ? (clone.hidden != before_hidden || clone.hidden_vertices != before_hidden_v ? ", the body left out (scoped)" : ", scoped, nothing left out") : "");
             made += piece;
         }
         if (tell && !listed[g]) {
@@ -1099,8 +1137,8 @@ void conker::gold_weapons::frame_end(uint8_t* rdram, uint32_t start, uint32_t en
         return;
     }
     if (!made.empty()) {
-        say("[gold] [hand] f=%u the weapons in the hands:%s (ours used: %u bytes, %u lists, %u combiners, %u triangles left out)", (unsigned)hand_frames,
-            made.c_str(), (unsigned)(clone.at - (0x80F90000u + pool_half * 0x4000u)), (unsigned)clone.lists, (unsigned)clone.combiners, (unsigned)clone.hidden);
+        say("[gold] [hand] f=%u the weapons in the hands:%s (ours used: %u bytes, %u lists, %u combiners, %u triangles and %u body vertices left out)", (unsigned)hand_frames,
+            made.c_str(), (unsigned)(clone.at - (0x80F90000u + pool_half * 0x4000u)), (unsigned)clone.lists, (unsigned)clone.combiners, (unsigned)clone.hidden, (unsigned)clone.hidden_vertices);
     }
     // who holds a gold weapon, and who holds which pickup
     std::string held;
