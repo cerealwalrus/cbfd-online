@@ -450,6 +450,11 @@ extern "C" void conker_gun_aim_turn(uint8_t* rdram, recomp_context* ctx) {
     if (!conker::netsession::active()) {
         return;
     }
+    // (possess122) not the shotgun's aim (Conker's state, +0x4, 0x3B: the co-op mansion's): its turn as on a Nintendo 64, the
+    // lock-on's with it ($a0 the character)
+    if (((uint32_t)ctx->r4 & 0xFF000000u) == 0x80000000u && MEM_BU(0x4, ctx->r4) == 0x3B) {
+        return;
+    }
     const int32_t turn = (int32_t)ctx->r13;
     ctx->r13 = (gpr)(int32_t)(turn * 3 / 2);
 }
@@ -2012,7 +2017,11 @@ namespace {
     // tilt): only the target the stick moves, so the camera still eases after it as on a Nintendo 64. The same for every player on every
     // machine (the game's state has to be), so it's not a setting.
     constexpr float online_look_speed = 1.5f;
-    float look_speed() {
+    // (possess122) but the shotgun's look (its kind, +0x23E, 0x3B: the co-op mansion's) as on a Nintendo 64, at the game's own speed
+    float look_speed(uint8_t* rdram, gpr camera) {
+        if (((uint32_t)camera & 0xFF000000u) == 0x80000000u && MEM_BU(0x23E, camera) == 0x3B) {
+            return 1.0f;
+        }
         return conker::netsession::active() ? online_look_speed : 1.0f;
     }
 }
@@ -2021,7 +2030,7 @@ namespace {
 extern "C" void conker_look_stick_yaw_a(uint8_t* rdram, recomp_context* ctx) {
 #if defined(CONKER_RT64)
     // 0x15120A10: sub.s $f6, $f8, $f18 (the target less the stick's turn; turned around, plus)
-    const float turn = ctx->f18.fl * look_speed();
+    const float turn = ctx->f18.fl * look_speed(rdram, ctx->r16);
     ctx->f6.fl = look_flag(rdram, ctx->r16, look_turn_x) ? ctx->f8.fl + turn : ctx->f8.fl - turn;
 #endif
 }
@@ -2029,7 +2038,7 @@ extern "C" void conker_look_stick_yaw_a(uint8_t* rdram, recomp_context* ctx) {
 extern "C" void conker_look_stick_yaw_b(uint8_t* rdram, recomp_context* ctx) {
 #if defined(CONKER_RT64)
     // 0x15120A40: sub.s $f18, $f4, $f10
-    const float turn = ctx->f10.fl * look_speed();
+    const float turn = ctx->f10.fl * look_speed(rdram, ctx->r16);
     ctx->f18.fl = look_flag(rdram, ctx->r16, look_turn_x) ? ctx->f4.fl + turn : ctx->f4.fl - turn;
 #endif
 }
