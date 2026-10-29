@@ -1326,7 +1326,27 @@ extern "C" void conker_gold_reticle_end(uint8_t* rdram, recomp_context* ctx) {
     const gpr record = (gpr)(int32_t)(records + reticle_keep.view * 0x180u);
     auto f = [&](uint32_t off) { uint32_t b = (uint32_t)MEM_W(off, record); float v; std::memcpy(&v, &b, 4); return v; };
     const float top = f(0x24), bottom = f(0x28), left = f(0x2C), right = f(0x30);
-    const float cx = (left + right) * 0.5f, cy = (top + bottom) * 0.5f, reach = (bottom - top) * 0.25f;
+    const float cx = (left + right) * 0.5f, cy = (top + bottom) * 0.5f;
+    (void)cy;
+    // (possess139) the zoom bar: a tall thin rectangle (3 times as tall as wide at least); kept, with whatever sits across it (its marker).
+    // Every other rectangle of the scope's HUD taken out: possess138 took out those within a quarter of the view's height of its middle,
+    // and the reticle's dots further out stayed (the possess138 test's screenshots).
+    static float bar_l = -1.0f, bar_r = -1.0f;
+    for (uint32_t c = start; c + 8 <= end; c += 8) {
+        const uint32_t w0 = (uint32_t)MEM_W(0, (gpr)(int32_t)c), w1 = (uint32_t)MEM_W(4, (gpr)(int32_t)c);
+        const uint32_t op = w0 >> 24;
+        if (op != 0xE4 && op != 0xE5 && op != 0xF6) {
+            continue;
+        }
+        const float xl = (float)((w0 >> 12) & 0xFFFu) * 0.25f, yl = (float)(w0 & 0xFFFu) * 0.25f;
+        const float xh = (float)((w1 >> 12) & 0xFFFu) * 0.25f, yh = (float)(w1 & 0xFFFu) * 0.25f;
+        const float wide = std::fabs(xl - xh), high = std::fabs(yl - yh);
+        // (not the cross's own upright, at the view's middle: the bar sits well off to the side)
+        if (high >= 3.0f * wide && high >= 8.0f && std::fabs((xl + xh) * 0.5f - cx) > (right - left) * 0.12f) {
+            bar_l = std::min(xl, xh) - 2.0f;
+            bar_r = std::max(xl, xh) + 2.0f;
+        }
+    }
     uint32_t removed = 0, kept = 0;
     std::string ops;
     for (uint32_t c = start; c + 8 <= end; c += 8) {
@@ -1341,11 +1361,11 @@ extern "C" void conker_gold_reticle_end(uint8_t* rdram, recomp_context* ctx) {
         if (op != 0xE4 && op != 0xE5 && op != 0xF6) {
             continue;
         }
-        const float xl = (float)((w0 >> 12) & 0xFFFu) * 0.25f, yl = (float)(w0 & 0xFFFu) * 0.25f;
-        const float xh = (float)((w1 >> 12) & 0xFFFu) * 0.25f, yh = (float)(w1 & 0xFFFu) * 0.25f;
-        const float rx = (xl + xh) * 0.5f, ry = (yl + yh) * 0.5f;
-        const bool middle = std::fabs(rx - cx) <= reach && std::fabs(ry - cy) <= reach;
-        if (!middle) {
+        const float xl = (float)((w0 >> 12) & 0xFFFu) * 0.25f;
+        const float xh = (float)((w1 >> 12) & 0xFFFu) * 0.25f;
+        const float rx = (xl + xh) * 0.5f;
+        const bool on_bar = bar_l >= 0.0f && rx >= bar_l && rx <= bar_r;
+        if (on_bar) {
             kept++;
             continue;
         }
@@ -1359,18 +1379,36 @@ extern "C" void conker_gold_reticle_end(uint8_t* rdram, recomp_context* ctx) {
     }
     if (reticle_told < 12) {
         reticle_told++;
-        say("[gold] view %u scoped with a gold weapon: of its scope's HUD (%u commands, the view's middle %.0f,%.0f), %u rectangles at the middle taken "
-            "out (the reticle), %u kept (the zoom bar); its commands:%s", (unsigned)reticle_keep.view, (unsigned)((end - start) / 8), cx, cy, (unsigned)removed,
-            (unsigned)kept, ops.c_str());
+        say("[gold] view %u scoped with a gold weapon: of its scope's HUD (%u commands, the view's middle %.0f,%.0f), %u  rectangles taken "
+            "out (the reticle), %u kept (the zoom bar, %.0f to %.0f across); its commands:%s", (unsigned)reticle_keep.view, (unsigned)((end - start) / 8), cx, cy,
+            (unsigned)removed, (unsigned)kept, bar_l, bar_r, ops.c_str());
     }
 }
 
 // (possess137) func_1510B5F8(view, its matrix, its field of view up and down, across, ...) makes a view's projection; besides func_1510B128
 // (conker_gold_fov_start), func_1510B51C calls it again as the frame is drawn (func_1501878C), from the view's field of view as it is (the
 // zoomed one, put back for the aim): the possess136 test's views still zoomed. For a gold weapon's scoped holder's view, made unzoomed.
+// (possess139) held at the field of view the view had before the scope (the last one made unscoped): possess138's unzoomed one (the
+// view's own, +0x6C/+0x70) still narrowed with the scope's easing in, a tenth or so (its projection 1.71 to 1.89 across, the possess138
+// test), where the 5th player's view (drawn by view 1's) never changes at all.
+namespace {
+    uint32_t view_fov_up[4] = {}, view_fov_across[4] = {};
+    bool view_fov_have[4] = {};
+}
 extern "C" void conker_gold_projection(uint8_t* rdram, recomp_context* ctx) {
     const uint32_t view = (uint32_t)ctx->r4;
+    if (view > 3) {
+        return;
+    }
     if (gold_scoped_view(rdram, view) < 0) {
+        view_fov_up[view] = (uint32_t)ctx->r6;
+        view_fov_across[view] = (uint32_t)ctx->r7;
+        view_fov_have[view] = true;
+        return;
+    }
+    if (view_fov_have[view]) {
+        ctx->r6 = (gpr)(int32_t)view_fov_up[view];
+        ctx->r7 = (gpr)(int32_t)view_fov_across[view];
         return;
     }
     const uint32_t records = (uint32_t)MEM_W(0, (gpr)(int32_t)0x800BE628);
