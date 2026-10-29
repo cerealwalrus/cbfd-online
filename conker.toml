@@ -3465,6 +3465,12 @@ func = "func_1510B128"
 before_vram = 0x1510B314
 text = "{ extern void conker_gold_fov_end(uint8_t*, recomp_context*); conker_gold_fov_end(rdram, ctx); }"
 
+# possess137: and every projection made for that view unzoomed (func_1510B5F8's start: func_1510B51C makes them again as the frame is drawn)
+[[patches.hook]]
+func = "func_1510B5F8"
+before_vram = 0x1510B5F8
+text = "{ extern void conker_gold_projection(uint8_t*, recomp_context*); conker_gold_projection(rdram, ctx); }"
+
 # possess136: no reticle over a gold weapon's scope: func_151674F8's layer 4 for that view drawn with the reticle's types emptied, put back
 # as it returns (0x15167A38)
 [[patches.hook]]

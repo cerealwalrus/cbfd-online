@@ -13,6 +13,7 @@
 // a pickup of its kind, as the script runs. Every machine alike: the level's data and the game's memory, at the same frame.
 
 #include <algorithm>
+#include <cmath>
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
@@ -1288,12 +1289,14 @@ extern "C" void conker_gold_fov_end(uint8_t* rdram, recomp_context* ctx) {
     put(record, 0x78, up);
 }
 
-// ---- (possess136) No reticle over a gold weapon's scope ----
-// What's drawn over a view for it alone (func_151674F8's objects of layer 4, $a1 4, $a2 the view, $a3 the part: D_800DCE50's lists, 0x1A0
-// a part, 4 bytes a type) has R-Look's reticle among it, a type whose setup list's +0x10 is D_8008AC70 (possess72-74). For a gold weapon's
-// holder, scoped, in their own view, the reticle's types are emptied for the call and put back as it returns (0x15167A38).
+// ---- (possess136, possess137) No reticle over a gold weapon's scope, its zoom bar kept ----
+// What's drawn over a view for it alone (func_151674F8's objects of layer 4, $a1 4, $a2 the view, $a3 the part: $a0 the list it adds to,
+// $v0 its end as it returns, 0x15167A38) has the scope's HUD among it: the reticle (its circle and cross, at the view's middle) and the
+// zoom bar beside it, both from the reticle's object (possess136 emptied that object's types: both went, the possess136 test). Now it's
+// drawn, and of what it added for a gold weapon's scoped holder's own view, the rectangles around the view's middle (within a quarter of
+// its height: the reticle; the bar sits a third of it off to the side) are taken out (G_NOOPs). [gold] lines of what was there.
 namespace {
-    struct ReticleKeep { bool on = false; uint32_t part = 0; uint32_t heads[104] = {}; };
+    struct ReticleKeep { bool on = false; uint32_t view = 0, start = 0; };
     ReticleKeep reticle_keep;
     uint32_t reticle_told = 0;
 }
@@ -1304,34 +1307,80 @@ extern "C" void conker_gold_reticle_start(uint8_t* rdram, recomp_context* ctx) {
         return;
     }
     const uint32_t view = (uint32_t)(int32_t)(int16_t)(uint16_t)(uint32_t)ctx->r6;
-    if (gold_scoped_view(rdram, view) < 0) {
+    if (gold_scoped_view(rdram, view) < 0 || !kseg0((uint32_t)ctx->r4)) {
         return;
     }
-    reticle_keep.on = true;
-    reticle_keep.part = (uint32_t)ctx->r7;
-    uint32_t emptied = 0;
-    for (uint32_t t = 0; t < 104; t++) {
-        const gpr at = (gpr)(int32_t)(0x800DCE50u + reticle_keep.part * 0x1A0u + t * 4u);
-        reticle_keep.heads[t] = (uint32_t)MEM_W(0, at);
-        if ((uint32_t)MEM_W(0x10, (gpr)(int32_t)(0x8008B4A8u + t * 0x34u)) == 0x8008AC70u && reticle_keep.heads[t] != 0) {
-            MEM_W(0, at) = 0;
-            emptied++;
-        }
-    }
-    if (emptied != 0 && reticle_told < 10) {
-        reticle_told++;
-        say("[gold] view %u scoped with a gold weapon: its reticle left out (%u of the reticle's types, part %u)", (unsigned)view, (unsigned)emptied,
-            (unsigned)reticle_keep.part);
-    }
+    reticle_keep = ReticleKeep{ true, view, (uint32_t)ctx->r4 };
 }
 
 extern "C" void conker_gold_reticle_end(uint8_t* rdram, recomp_context* ctx) {
-    (void)ctx;
     if (!reticle_keep.on) {
         return;
     }
     reticle_keep.on = false;
-    for (uint32_t t = 0; t < 104; t++) {
-        MEM_W(0, (gpr)(int32_t)(0x800DCE50u + reticle_keep.part * 0x1A0u + t * 4u)) = (int32_t)reticle_keep.heads[t];
+    const uint32_t start = reticle_keep.start, end = (uint32_t)ctx->r2;
+    const uint32_t records = (uint32_t)MEM_W(0, (gpr)(int32_t)0x800BE628);
+    if (!kseg0(end) || end <= start || end - start > 0x8000u || !kseg0(records)) {
+        return;
     }
+    const gpr record = (gpr)(int32_t)(records + reticle_keep.view * 0x180u);
+    auto f = [&](uint32_t off) { uint32_t b = (uint32_t)MEM_W(off, record); float v; std::memcpy(&v, &b, 4); return v; };
+    const float top = f(0x24), bottom = f(0x28), left = f(0x2C), right = f(0x30);
+    const float cx = (left + right) * 0.5f, cy = (top + bottom) * 0.5f, reach = (bottom - top) * 0.25f;
+    uint32_t removed = 0, kept = 0;
+    std::string ops;
+    for (uint32_t c = start; c + 8 <= end; c += 8) {
+        const gpr at = (gpr)(int32_t)c;
+        const uint32_t w0 = (uint32_t)MEM_W(0, at), w1 = (uint32_t)MEM_W(4, at);
+        const uint32_t op = w0 >> 24;
+        if (ops.size() < 3 * 60) {
+            char piece[8];
+            std::snprintf(piece, sizeof(piece), " %02X", (unsigned)op);
+            ops += piece;
+        }
+        if (op != 0xE4 && op != 0xE5 && op != 0xF6) {
+            continue;
+        }
+        const float xl = (float)((w0 >> 12) & 0xFFFu) * 0.25f, yl = (float)(w0 & 0xFFFu) * 0.25f;
+        const float xh = (float)((w1 >> 12) & 0xFFFu) * 0.25f, yh = (float)(w1 & 0xFFFu) * 0.25f;
+        const float rx = (xl + xh) * 0.5f, ry = (yl + yh) * 0.5f;
+        const bool middle = std::fabs(rx - cx) <= reach && std::fabs(ry - cy) <= reach;
+        if (!middle) {
+            kept++;
+            continue;
+        }
+        removed++;
+        const uint32_t words = (op == 0xF6) ? 1u : 3u;   // (a texture rectangle's two G_RDPHALFs after it)
+        for (uint32_t k = 0; k < words && c + k * 8 + 8 <= end; k++) {
+            MEM_W(k * 8, at) = 0;
+            MEM_W(k * 8 + 4, at) = 0;
+        }
+        c += (words - 1) * 8;
+    }
+    if (reticle_told < 12) {
+        reticle_told++;
+        say("[gold] view %u scoped with a gold weapon: of its scope's HUD (%u commands, the view's middle %.0f,%.0f), %u rectangles at the middle taken "
+            "out (the reticle), %u kept (the zoom bar); its commands:%s", (unsigned)reticle_keep.view, (unsigned)((end - start) / 8), cx, cy, (unsigned)removed,
+            (unsigned)kept, ops.c_str());
+    }
+}
+
+// (possess137) func_1510B5F8(view, its matrix, its field of view up and down, across, ...) makes a view's projection; besides func_1510B128
+// (conker_gold_fov_start), func_1510B51C calls it again as the frame is drawn (func_1501878C), from the view's field of view as it is (the
+// zoomed one, put back for the aim): the possess136 test's views still zoomed. For a gold weapon's scoped holder's view, made unzoomed.
+extern "C" void conker_gold_projection(uint8_t* rdram, recomp_context* ctx) {
+    const uint32_t view = (uint32_t)ctx->r4;
+    if (gold_scoped_view(rdram, view) < 0) {
+        return;
+    }
+    const uint32_t records = (uint32_t)MEM_W(0, (gpr)(int32_t)0x800BE628);
+    if (!kseg0(records)) {
+        return;
+    }
+    const gpr record = (gpr)(int32_t)(records + view * 0x180u);
+    auto f = [&](gpr at, uint32_t off) { uint32_t b = (uint32_t)MEM_W(off, at); float v; std::memcpy(&v, &b, 4); return v; };
+    auto bits = [](float v) { uint32_t b; std::memcpy(&b, &v, 4); return b; };
+    const float extra = f((gpr)(int32_t)0x800C3648, 0);
+    ctx->r6 = (gpr)(int32_t)bits(f(record, 0x70) + extra);
+    ctx->r7 = (gpr)(int32_t)bits(f(record, 0x6C) + extra);
 }
