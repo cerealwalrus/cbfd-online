@@ -2487,6 +2487,8 @@ void conker::gold_weapons::fifth_view_projection(uint8_t* rdram, uint32_t camera
 // 5th player's character as its holder. [fifth] lines of what was on, and how far the run inside the view moved the dot.
 namespace {
     uint32_t fifth_laser = 0;          // the 5th player's character's laser sight (its object), as last seen
+    uint32_t first_laser = 0;          // (possess157) player 1's character's, as last seen
+    uint32_t first_laser_told = 0;
     uint32_t fifth_laser_told = 0;
 
     bool fifth_laser_ok(uint8_t* rdram, uint32_t laser) {
@@ -2607,6 +2609,21 @@ namespace {
 
 void conker::gold_weapons::fifth_view_begin(uint8_t* rdram) {
     laser_kept.have = false;
+    // (possess157) player 1's laser ray (gun to dot) in the 5th player's view: the laser sight's drawing (func_151019C4) leaves it out of
+    // its holder's own view (+0x132) while he's scoped, and the 5th player's view is drawn as view 1, player 1's own: scoped, player 1's
+    // ray was never seen there (the possess156 test: his gold sniper rifle's ray seen by players 2 to 4, not the 5th). Here, in that view
+    // alone (the game's memory is put back after it; nothing but those checks reads +0x132), his laser's own view is none (0xFF), as
+    // the laser checks' hooks already have it (fifth_own_laser): his ray drawn there as players 2 to 4 see it.
+    if (kseg0(first_laser) && (uint32_t)MEM_W(0x110, (gpr)(int32_t)first_laser) == characters && MEM_BU(0x132, (gpr)(int32_t)first_laser) == 0) {
+        MEM_B(0x132, (gpr)(int32_t)first_laser) = (int8_t)0xFF;
+        const uint32_t c0aim = (uint32_t)MEM_W(0x31C, (gpr)(int32_t)characters);
+        const bool c0scoped = kseg0(c0aim) && MEM_BU(0x197, (gpr)(int32_t)c0aim) != 0;
+        if (c0scoped && first_laser_told < 6) {
+            first_laser_told++;
+            say("[fifth] f=%u player 1 scoped (%s): his laser's own view made none in the 5th player's view, so its ray is drawn there as "
+                "players 2 to 4 see it", (unsigned)conker::netsession::frame(), gold_held(rdram, 0) >= 0 ? "a gold weapon" : "a weapon not gold");
+        }
+    }
     if (!fifth_laser_ok(rdram, fifth_laser)) {
         return;
     }
@@ -2708,6 +2725,8 @@ namespace {
         // (possess150) his laser sight, for fifth_view_begin ($v0 its +0x110), from these checks in every view
         if (fifth) {
             fifth_laser = (uint32_t)ctx->r2 - 0x110u;
+        } else if (holder == characters) {
+            first_laser = (uint32_t)ctx->r2 - 0x110u;   // (possess157) player 1's
         }
         if (!conker::possess_test::drawing_extra_view()) {
             return;
