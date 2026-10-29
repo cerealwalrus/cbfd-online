@@ -18,6 +18,7 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "recomp.h"
@@ -56,6 +57,12 @@ namespace {
     };
     bool golds_made = false;
     std::vector<uint32_t> textures[3];   // (possess128) the textures each weapon's model loads, as the frame's lists are walked
+    // (possess131) each vertex load's source (a physical address) in the characters' lists, and the weapons held by the characters whose
+    // lists loaded it: a bit a weapon (0 the sniper rifle, 1 the revolver, 2 the knives, 3 another or none). A weapon's part of a
+    // character's model is what only its holders load. And whether that's been seen to hold for each weapon (a holder's list sharing most
+    // of its loads with the others').
+    std::unordered_map<uint32_t, uint8_t> vertex_holders;
+    bool vertex_baseline[3] = {};
 
     bool kseg0(uint32_t a) { return (a >> 24) == 0x80 && (a & 0x00FFFFFFu) < 0x00FF0000u; }
 
@@ -92,6 +99,10 @@ extern "C" void conker_gold_props(uint8_t* rdram, recomp_context* ctx) {
     golds_made = false;
     for (auto& t : textures) {
         t.clear();
+    }
+    vertex_holders.clear();
+    for (bool& b : vertex_baseline) {
+        b = false;
     }
     for (Gold& g : golds) {
         g.id = 0;
@@ -626,6 +637,14 @@ namespace {
         bool in_part = false;
         uint32_t vertices = 0, combiners = 0, lists = 0;
         bool full = false;
+        // (possess131) the weapon's part by its vertices (vertex_holders) once that's been seen for the weapon, else by its textures; and,
+        // for the local player scoped with it, the body's triangles left out (the view's eye is inside him: only the gun drawn)
+        bool by_vertices = false, hide_body = false, last_weapon = false;
+        uint32_t hidden = 0;
+        bool weapon_vertex(uint32_t a) const {
+            auto it = vertex_holders.find(a);
+            return it != vertex_holders.end() && it->second == (uint8_t)(1u << g);
+        }
 
         uint32_t take(uint32_t bytes) {
             bytes = (bytes + 15u) & ~15u;
@@ -685,7 +704,15 @@ namespace {
                         combiners++;
                         changed = true;
                     }
-                } else if (op == 0x01 && in_part) {
+                } else if ((op == 0x05 || op == 0x06 || op == 0x07) && hide_body && !last_weapon) {
+                    MEM_W(0, cmd) = 0;
+                    MEM_W(4, cmd) = 0;
+                    hidden++;
+                    changed = true;
+                } else if (op == 0x01 && !(by_vertices ? weapon_vertex(resolve(seg, w1)) : in_part)) {
+                    last_weapon = false;
+                } else if (op == 0x01) {
+                    last_weapon = true;
                     const uint32_t n = (w0 >> 12) & 0xFFu;
                     const uint32_t from = resolve(seg, w1);
                     if (n != 0 && phys_ok(from) && from + n * 0x10u <= 0x00800000u) {
@@ -737,6 +764,11 @@ namespace {
         // segments as they were there, the matrix at the load and the weapon.
         struct Site { uint32_t call, to, matrix; int g; uint32_t seg[16]; };
         std::vector<Site> sites;
+        // (possess131) every call of a list from the frame's list: its first matrix inside (a character's is at the character), its segments,
+        // its vertex loads' sources, and a short listing of it (for the [hand] lines)
+        struct Call { uint32_t call, to, matrix; uint32_t seg[16]; std::vector<uint32_t> vertices; std::string listing; uint32_t listed; };
+        std::vector<Call> all;
+        int cur = -1;
         uint32_t top_call = 0, top_to = 0;
         uint32_t top_seg[16] = {};
         static float fixed(uint8_t* rdram, uint32_t m, int r, int c) {
@@ -780,8 +812,24 @@ namespace {
                     seg[(w0 & 0xFFFFu) / 4u] = w1 & 0x00FFFFFFu;
                     continue;
                 }
+                if (cur >= 0 && depth >= 1 && all[(size_t)cur].listed < 90 && (op == 0xDA || op == 0xFD || op == 0x01 || op == 0xDE || op == 0xFC || op == 0xDB)) {
+                    Call& k = all[(size_t)cur];
+                    k.listed++;
+                    char piece[32];
+                    if (op == 0x01) {
+                        std::snprintf(piece, sizeof(piece), " 01:%u@%06X", (unsigned)((w0 >> 12) & 0xFFu), (unsigned)resolve(w1));
+                    } else {
+                        std::snprintf(piece, sizeof(piece), " %02X:%06X", (unsigned)op, (unsigned)(op == 0xFC ? (w1 & 0xFFFFFFu) : resolve(w1)));
+                    }
+                    if (k.listing.size() < 1400) {
+                        k.listing += piece;
+                    }
+                }
                 if (op == 0xDA) {
                     matrix = resolve(w1);
+                    if (cur >= 0 && depth >= 1 && all[(size_t)cur].matrix == 0) {
+                        all[(size_t)cur].matrix = matrix;
+                    }
                     continue;
                 }
                 if (op == 0xFD) {
@@ -820,6 +868,9 @@ namespace {
                 }
                 if (op == 0x01) {
                     const uint32_t a = resolve(w1);
+                    if (cur >= 0 && all[(size_t)cur].vertices.size() < 600) {
+                        all[(size_t)cur].vertices.push_back(a);
+                    }
                     for (int g = 0; g < 3; g++) {
                         const GoldModel& m = gold_models[g];
                         const uint32_t game_v = m.from_vertices & 0x1FFFFFFFu, our_v = m.ours & 0x1FFFFFFFu;
@@ -861,10 +912,17 @@ namespace {
                             top_call = c;
                             top_to = to;
                             std::memcpy(top_seg, seg, sizeof(top_seg));
+                            if (all.size() < 400) {
+                                Call k{ c, to, 0, {}, {}, {}, 0 };
+                                std::memcpy(k.seg, seg, sizeof(k.seg));
+                                all.push_back(std::move(k));
+                                cur = (int)all.size() - 1;
+                            }
                         }
                         run(to, depth + 1, 0, into);
                         if (depth == 0) {
                             top_call = 0;
+                            cur = -1;
                         }
                     }
                 }
@@ -892,22 +950,37 @@ void conker::gold_weapons::frame_end(uint8_t* rdram, uint32_t start, uint32_t en
     }
     Walk w{ rdram };
     w.run(start & 0x1FFFFFFFu, 0, end & 0x1FFFFFFFu);
-    // (possess129) each call of a character's list that loads a gold weapon's texture, by the matrix there nearest a holder of that weapon
-    // (within 250 across), pointed at a gold copy of it
-    static uint32_t pool_half = 0;
-    pool_half ^= 1u;
-    Clone clone{ rdram, 0x80F90000u + pool_half * 0x8000u, 0x80F90000u + pool_half * 0x8000u + 0x8000u, 0 };
-    std::string made;
-    for (const Walk::Site& site : w.sites) {
-        const float mx = Walk::fixed(rdram, site.matrix, 3, 0), my = Walk::fixed(rdram, site.matrix, 3, 1), mz = Walk::fixed(rdram, site.matrix, 3, 2);
+    // (possess131) each call from the frame's list whose first matrix is at a character (within 250 across): the weapon that character holds
+    // (its pickup's kind: one of the three, or 3 for another or none) noted for each vertex source it loads; then each call of a gold
+    // weapon's holder pointed at a gold copy (Clone): its weapon's part by the vertices only that weapon's holders load, once the holder's
+    // list has been seen sharing most of its loads with the others' (the same model), else by the weapon's own textures (possess129).
+    const uint32_t block = (uint32_t)MEM_W(0, (gpr)(int32_t)pickups_block);
+    auto weapon_of = [&](int k) -> int {
+        if (!kseg0(block)) {
+            return 3;
+        }
+        const int32_t p = MEM_W(0xEB0 + 4 * (uint32_t)k, (gpr)(int32_t)block);
+        if (p < 0 || p >= pickups_most) {
+            return 3;
+        }
+        const uint32_t kind = (uint32_t)MEM_W(0x1174 + 4 * (uint32_t)p, (gpr)(int32_t)block);
+        for (int g = 0; g < 3; g++) {
+            if (golds[g].kind == kind) {
+                return g;
+            }
+        }
+        return 3;
+    };
+    auto character_at = [&](uint32_t matrix) -> int {
+        if (!Walk::phys_ok(matrix) || matrix == 0) {
+            return -1;
+        }
+        const float mx = Walk::fixed(rdram, matrix, 3, 0), my = Walk::fixed(rdram, matrix, 3, 1), mz = Walk::fixed(rdram, matrix, 3, 2);
         int best = -1;
         float best_d = 250.0f * 250.0f;
         for (int k = 0; k < 5; k++) {
-            if (gold_held(rdram, k) != site.g) {
-                continue;
-            }
             const gpr ch = (gpr)(int32_t)(characters + (uint32_t)k * character_size);
-            auto f = [&](uint32_t off) { uint32_t b = (uint32_t)MEM_W(off, ch); float v; std::memcpy(&v, &b, 4); return v; };
+            auto f = [&](uint32_t off) { uint32_t bits = (uint32_t)MEM_W(off, ch); float v; std::memcpy(&v, &bits, 4); return v; };
             const float dx = f(0x14) - mx, dy = f(0x18) - my, dz = f(0x1C) - mz;
             const float d = dx * dx + dy * dy + dz * dz;
             if (d < best_d) {
@@ -915,37 +988,95 @@ void conker::gold_weapons::frame_end(uint8_t* rdram, uint32_t start, uint32_t en
                 best = k;
             }
         }
-        if (best < 0) {
+        return best;
+    };
+    std::vector<int> owner(w.all.size(), -1);
+    for (size_t i = 0; i < w.all.size(); i++) {
+        owner[i] = character_at(w.all[i].matrix);
+        if (owner[i] < 0) {
             continue;
         }
-        uint32_t seg[16];
-        std::memcpy(seg, site.seg, sizeof(seg));
-        clone.g = site.g;
-        clone.in_part = false;
-        const uint32_t before_vertices = clone.vertices;
-        const uint32_t copy = clone.list(site.to, seg, 0);
-        if (copy != 0) {
-            MEM_W(4, (gpr)(int32_t)(site.call | 0x80000000u)) = (int32_t)copy;
+        const uint8_t bit = (uint8_t)(1u << weapon_of(owner[i]));
+        for (uint32_t a : w.all[i].vertices) {
+            vertex_holders[a] |= bit;
         }
-        if (tell) {
-            char piece[200];
-            std::snprintf(piece, sizeof(piece), " | character %d's %s (the call at %06X of the list at %06X): %s, %u vertices gold", best, golds[site.g].name,
-                (unsigned)site.call, (unsigned)site.to, copy != 0 ? "a gold copy drawn" : (clone.full ? "no room in ours" : "nothing in it made gold"),
-                (unsigned)(clone.vertices - before_vertices));
+    }
+    uint32_t shared_n[3] = {}, total_n[3] = {}, own_n[3] = {};
+    for (size_t i = 0; i < w.all.size(); i++) {
+        if (owner[i] < 0) {
+            continue;
+        }
+        const int g = weapon_of(owner[i]);
+        if (g > 2) {
+            continue;
+        }
+        for (uint32_t a : w.all[i].vertices) {
+            const uint8_t m = vertex_holders[a];
+            total_n[g]++;
+            shared_n[g] += (m & (uint8_t)~(1u << g)) != 0 ? 1u : 0u;
+            own_n[g] += m == (uint8_t)(1u << g) ? 1u : 0u;
+        }
+    }
+    for (int g = 0; g < 3; g++) {
+        if (total_n[g] >= 8 && shared_n[g] * 10u >= total_n[g] * 3u && own_n[g] > 0) {
+            vertex_baseline[g] = true;
+        }
+    }
+    static uint32_t pool_half = 0;
+    pool_half ^= 1u;
+    Clone clone{ rdram, 0x80F90000u + pool_half * 0x8000u, 0x80F90000u + pool_half * 0x8000u + 0x8000u, 0 };
+    const int local_character = conker::netsession::active() ? conker::netsession::local_player() : 0;
+    std::string made;
+    static bool listed[3] = {};
+    for (size_t i = 0; i < w.all.size(); i++) {
+        const int k = owner[i];
+        const int g = k >= 0 ? gold_held(rdram, k) : -1;
+        if (g < 0) {
+            continue;
+        }
+        const gpr aim = (gpr)(int32_t)MEM_W(0x31C, (gpr)(int32_t)(characters + (uint32_t)k * character_size));
+        const bool scoped = kseg0((uint32_t)aim) && MEM_BU(0x197, aim) != 0;
+        uint32_t seg[16];
+        std::memcpy(seg, w.all[i].seg, sizeof(seg));
+        clone.g = g;
+        clone.in_part = false;
+        clone.last_weapon = false;
+        clone.by_vertices = vertex_baseline[g];
+        clone.hide_body = scoped && k == local_character;
+        const uint32_t before_vertices = clone.vertices, before_hidden = clone.hidden;
+        const uint32_t copy = clone.list(w.all[i].to, seg, 0);
+        if (copy != 0) {
+            MEM_W(4, (gpr)(int32_t)(w.all[i].call | 0x80000000u)) = (int32_t)copy;
+        }
+        if (tell && made.size() < 1500) {
+            char piece[240];
+            std::snprintf(piece, sizeof(piece), " | character %d's %s (the call at %06X of the list at %06X, %u loads): %s by its %s, %u vertices gold%s", k,
+                golds[g].name, (unsigned)w.all[i].call, (unsigned)w.all[i].to, (unsigned)w.all[i].vertices.size(),
+                copy != 0 ? "a gold copy drawn" : (clone.full ? "no room in ours" : "nothing in it made gold"), clone.by_vertices ? "vertices" : "textures",
+                (unsigned)(clone.vertices - before_vertices), clone.hide_body ? (clone.hidden != before_hidden ? ", the body left out (scoped)" : ", scoped, nothing left out") : "");
             made += piece;
         }
+        if (tell && !listed[g]) {
+            listed[g] = true;
+            say("[gold] [hand] the list character %d holds the %s with (at %06X):%s", k, golds[g].name, (unsigned)w.all[i].to, w.all[i].listing.c_str());
+        }
+    }
+    if (tell) {
+        say("[gold] [hand] f=%u the weapons' parts by their vertices: the sniper rifle %s (%u of %u loads its own, %u shared), the revolver %s (%u/%u, %u), "
+            "the knives %s (%u/%u, %u); %u sources known", (unsigned)hand_frames, vertex_baseline[0] ? "found" : "not yet", (unsigned)own_n[0],
+            (unsigned)total_n[0], (unsigned)shared_n[0], vertex_baseline[1] ? "found" : "not yet", (unsigned)own_n[1], (unsigned)total_n[1],
+            (unsigned)shared_n[1], vertex_baseline[2] ? "found" : "not yet", (unsigned)own_n[2], (unsigned)total_n[2], (unsigned)shared_n[2],
+            (unsigned)vertex_holders.size());
     }
     if (!tell) {
         return;
     }
-    if (!made.empty() || !w.sites.empty()) {
-        say("[gold] [hand] f=%u the weapons in the hands: %u calls of a character's list with a weapon's own texture%s (ours used: %u bytes, %u lists, "
-            "%u combiners)", (unsigned)hand_frames, (unsigned)w.sites.size(), made.c_str(), (unsigned)(clone.at - (0x80F90000u + pool_half * 0x8000u)),
-            (unsigned)clone.lists, (unsigned)clone.combiners);
+    if (!made.empty()) {
+        say("[gold] [hand] f=%u the weapons in the hands:%s (ours used: %u bytes, %u lists, %u combiners, %u triangles left out)", (unsigned)hand_frames,
+            made.c_str(), (unsigned)(clone.at - (0x80F90000u + pool_half * 0x8000u)), (unsigned)clone.lists, (unsigned)clone.combiners, (unsigned)clone.hidden);
     }
     // who holds a gold weapon, and who holds which pickup
     std::string held;
-    const uint32_t block = (uint32_t)MEM_W(0, (gpr)(int32_t)pickups_block);
     if (kseg0(block)) {
         for (int k = 0; k < 5; k++) {
             const int32_t p = MEM_W(0xEB0 + 4 * (uint32_t)k, (gpr)(int32_t)block);
