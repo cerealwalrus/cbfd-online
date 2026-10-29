@@ -496,6 +496,9 @@ namespace {
         int32_t turned = 0;
     };
     HitHold hit_hold_state[aim_players];   // (possess47: the 5th player's too)
+    // (possess107) the way each player was last walked in the look, and the frames left to keep it after the stick is let go (conker_look_targets)
+    uint16_t release_move[aim_players] = {};
+    int release_frames[aim_players] = {};
 
     void note_move_written(int player, uint16_t move) {
         if (player >= 0 && player < aim_players) {
@@ -1763,6 +1766,14 @@ extern "C" void conker_look_targets(uint8_t* rdram, recomp_context* ctx) {
     const uint8_t look_kind = MEM_BU(0x23E, ctx->r16);
     // (0.10.8: not while a hit in the look plays, hit_holding)
     const bool hit_hold_now = hit_holding(rdram, ctx->r16, look_player, true);
+    // (possess107) The way he was last walked, kept for the frames after the stick is let go: the game slows him to a stop along his moving
+    // angle (+0x76), which only the walking below sets, so let go it went back to his facing and he slowed to a stop that way instead:
+    // strafing back down a ramp and letting go, he went 4.2, 3.1, 2.0, 0.9 forward (possess106's [steady] lines), the view lurching with
+    // him. Kept 12 frames (he stops in 5), not while a hit plays. Every player's camera on every machine, from the game's memory and the
+    // frame's agreed buttons.
+    if (look_player >= 0 && look_player < aim_players && hit_hold_now) {
+        release_frames[look_player] = 0;
+    }
     if ((units_per_degree != 0.0f) && swap_state(look_player) && look_kind != 0x26 && look_kind != 0x14 && !holding_grenade && !hit_hold_now) {
         constexpr uint32_t c_up = 0x0008, c_down = 0x0004, c_left = 0x0002, c_right = 0x0001;
         // The buttons this camera's player holds (+0x36C points at them).
@@ -1799,7 +1810,19 @@ extern "C" void conker_look_targets(uint8_t* rdram, recomp_context* ctx) {
             MEM_H(0x76, conker) = (int16_t)moving;
             note_move_written(look_player, moving);
             aim_remainder = 0.0f;
+            if (look_player >= 0 && look_player < aim_players) {
+                release_move[look_player] = moving;
+                release_frames[look_player] = 12;
+            }
+        } else if (look_player >= 0 && look_player < aim_players && release_frames[look_player] > 0) {
+            release_frames[look_player]--;
+            const gpr conker = (gpr)(int32_t)MEM_W(0x3D0, ctx->r16);
+            if (((uint32_t)conker & 0xFF000000u) == 0x80000000u) {
+                MEM_H(0x76, conker) = (int16_t)release_move[look_player];
+            }
         }
+    } else if (look_player >= 0 && look_player < aim_players && look_kind != 0x00) {
+        release_frames[look_player] = 0;
     }
 #endif
 #if defined(CONKER_RT64)
@@ -1816,6 +1839,13 @@ extern "C" void conker_look_targets(uint8_t* rdram, recomp_context* ctx) {
             const uint16_t moving = (uint16_t)((uint32_t)MEM_HU(0x7A, conker) + (uint32_t)offset);
             MEM_H(0x76, conker) = (int16_t)moving;
             note_move_written(player, moving);
+            if (player >= 0 && player < aim_players) {   // (possess107, as above)
+                release_move[player] = moving;
+                release_frames[player] = 12;
+            }
+        } else if (player >= 0 && player < aim_players && release_frames[player] > 0 && ((uint32_t)conker & 0xFF000000u) == 0x80000000u) {
+            release_frames[player]--;
+            MEM_H(0x76, conker) = (int16_t)release_move[player];
         }
     }
 #endif
@@ -1954,6 +1984,10 @@ extern "C" void conker_look_currents(uint8_t* rdram, recomp_context* ctx) {
 // 0.10.13: the online hooks' own state between frames, back to how it starts: on every machine at the same frame with a resync (net_session.cpp,
 // hook_reset_frame), and on the machine loading the host's copy. (The function-local ones start over by conker::netsession::hook_generation.)
 void conker::look_aim::reset_online_state() {
+    for (int k = 0; k < aim_players; k++) {   // (possess107)
+        release_frames[k] = 0;
+        release_move[k] = 0;
+    }
     aim_remainder = 0.0f;
     for (int p = 0; p < aim_players; p++) {
         look_settle[p] = 0.0f;
