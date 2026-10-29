@@ -3446,6 +3446,30 @@ func = "func_1502E4C4"
 before_vram = 0x1502E9C8
 text = "{ extern void conker_gold_scope_end(uint8_t*, recomp_context*); conker_gold_scope_end(rdram, ctx); }"
 
+# possess136: a gold weapon's own zoom, as the 5th player's: func_1510B128 (a view's field of view, then its frustum and projection) makes a
+# gold weapon's scoped holder's view with no zoom, its field of view put back zoomed for the aim as it returns (0x1510B314)
+[[patches.hook]]
+func = "func_1510B128"
+before_vram = 0x1510B128
+text = "{ extern void conker_gold_fov_start(uint8_t*, recomp_context*); conker_gold_fov_start(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_1510B128"
+before_vram = 0x1510B314
+text = "{ extern void conker_gold_fov_end(uint8_t*, recomp_context*); conker_gold_fov_end(rdram, ctx); }"
+
+# possess136: no reticle over a gold weapon's scope: func_151674F8's layer 4 for that view drawn with the reticle's types emptied, put back
+# as it returns (0x15167A38)
+[[patches.hook]]
+func = "func_151674F8"
+before_vram = 0x151674F8
+text = "{ extern void conker_gold_reticle_start(uint8_t*, recomp_context*); conker_gold_reticle_start(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_151674F8"
+before_vram = 0x15167A38
+text = "{ extern void conker_gold_reticle_end(uint8_t*, recomp_context*); conker_gold_reticle_end(rdram, ctx); }"
+
 # possess114: a view's passes go by its player's bit of D_800D18A0 (the match's characters out of it): for a player out of the match
 # func_15019464 (the first pass) draws the sky alone, func_150195A0 (the 3D) none of the characters and objects, and func_1510B9D0 (the
 # level) looks again. The extra camera's view is drawn as view 1, so once player 1 was out the 5th player's view was the sky alone. As

@@ -801,7 +801,9 @@ namespace {
         std::vector<Site> sites;
         // (possess131) every call of a list from the frame's list: its first matrix inside (a character's is at the character), its segments,
         // its vertex loads' sources, and a short listing of it (for the [hand] lines)
-        struct Call { uint32_t call, to, matrix; uint32_t seg[16]; std::vector<uint32_t> vertices; std::string listing; uint32_t listed; };
+        struct Call { uint32_t call, to, matrix; uint32_t seg[16]; std::vector<uint32_t> vertices; std::string listing; uint32_t listed;
+            uint32_t fc0 = 0, fc1 = 0; };   // (possess136) the colour combiner set when it was called
+        uint32_t last_fc0 = 0, last_fc1 = 0;
         std::vector<Call> all;
         int cur = -1;
         uint32_t top_call = 0, top_to = 0;
@@ -859,6 +861,10 @@ namespace {
                     if (k.listing.size() < 1400) {
                         k.listing += piece;
                     }
+                }
+                if (op == 0xFC) {
+                    last_fc0 = w0;
+                    last_fc1 = w1;
                 }
                 if (op == 0xDA) {
                     matrix = resolve(w1);
@@ -950,6 +956,8 @@ namespace {
                             if (all.size() < 400) {
                                 Call k{ c, to, 0, {}, {}, {}, 0 };
                                 std::memcpy(k.seg, seg, sizeof(k.seg));
+                                k.fc0 = last_fc0;
+                                k.fc1 = last_fc1;
                                 all.push_back(std::move(k));
                                 cur = (int)all.size() - 1;
                             }
@@ -1109,7 +1117,30 @@ void conker::gold_weapons::frame_end(uint8_t* rdram, uint32_t start, uint32_t en
         }
         clone.hide_body = scoped && k == local_character;
         const uint32_t before_vertices = clone.vertices, before_hidden = clone.hidden, before_hidden_v = clone.hidden_vertices;
-        const uint32_t copy = clone.list(w.all[i].to, seg, 0);
+        const uint32_t before_combiners = clone.combiners;
+        uint32_t copy = clone.list(w.all[i].to, seg, 0);
+        // (possess136) a weapon's list with no colour combiner of its own (the sniper rifle's in the hand: the possess135 test's 0 combiners)
+        // draws by the one set before it, the texture times the vertices' colours, so its gold came out dark: called through a list of ours,
+        // the combiner before it made shiny gold, the copy, and that combiner put back for what follows
+        if (copy != 0 && clone.whole && clone.combiners == before_combiners && (w.all[i].fc0 >> 24) == 0xFC) {
+            const uint32_t mini = clone.take(32);
+            if (mini != 0) {
+                const gpr m = (gpr)(int32_t)mini;
+                MEM_W(0, m) = (int32_t)w.all[i].fc0;
+                MEM_W(4, m) = (int32_t)w.all[i].fc1;
+                const bool shiny = gold_combiner(rdram, mini);
+                MEM_W(8, m) = (int32_t)0xDE000000u;
+                MEM_W(12, m) = (int32_t)copy;
+                MEM_W(16, m) = (int32_t)w.all[i].fc0;
+                MEM_W(20, m) = (int32_t)w.all[i].fc1;
+                MEM_W(24, m) = (int32_t)0xDF000000u;
+                MEM_W(28, m) = 0;
+                if (shiny) {
+                    clone.combiners++;
+                    copy = mini & 0x1FFFFFFFu;
+                }
+            }
+        }
         if (copy != 0) {
             MEM_W(4, (gpr)(int32_t)(w.all[i].call | 0x80000000u)) = (int32_t)copy;
         }
@@ -1177,4 +1208,130 @@ void conker::gold_weapons::frame_end(uint8_t* rdram, uint32_t start, uint32_t en
         where += piece;
     }
     say("[gold] [hand]   the characters:%s", where.c_str());
+}
+
+
+// ---- (possess136) A gold weapon's own zoom: the 5th player's ----
+// Scoped with the 5th player's sniper rifle, pushing the stick up and down doesn't zoom his view, it only changes how fast the stick turns
+// the aim (the possess135 test's p5.mp4), which is what the gold weapons are to do. func_1510B128(view, the zoom across, the zoom up and
+// down, ...) puts a view's field of view (its record's +0x74 and +0x78, D_800BE628's 0x180 a view) at its unzoomed one (+0x6C, +0x70)
+// with the zoom, then works its frustum and projection out from it; the aim's turning (the game's, and the mouse's here) goes by that
+// field of view. The 5th player's zoom goes into his own view's record, the extra camera's, but his view is drawn by view 1's: never zoomed.
+// For a gold weapon's holder, scoped, the view is made with no zoom (its frustum and projection), and its field of view then put back
+// as zoomed for what goes by it. Every view on every machine alike, from the game's memory.
+namespace {
+    struct FovKeep { bool on = false; uint32_t view = 0, across = 0, up = 0; };
+    FovKeep fov_keep;
+    uint32_t fov_told = 0;
+
+    // the character a view is drawn for (its camera's, the camera's +0x23D the view), scoped with a gold weapon: the weapon, or -1
+    int gold_scoped_view(uint8_t* rdram, uint32_t view) {
+        if (!golds_made || (int32_t)MEM_W(0, (gpr)(int32_t)scene_now) != total_war || view > 3) {
+            return -1;
+        }
+        const uint32_t looks = (uint32_t)MEM_W(0, (gpr)(int32_t)0x800DBFF0);
+        for (uint32_t i = 0; kseg0(looks) && i < 4; i++) {
+            const gpr camera = (gpr)(int32_t)(looks + i * 0x9A0u);
+            if ((uint32_t)MEM_BU(0x23D, camera) != view) {
+                continue;
+            }
+            const uint32_t ch = (uint32_t)MEM_W(0x3D0, camera);
+            if (ch < characters || (ch - characters) % character_size != 0 || (ch - characters) / character_size >= 25) {
+                return -1;
+            }
+            const gpr aim = (gpr)(int32_t)MEM_W(0x31C, (gpr)(int32_t)ch);
+            if (!kseg0((uint32_t)aim) || MEM_BU(0x197, aim) == 0) {
+                return -1;
+            }
+            return gold_held(rdram, (int)((ch - characters) / character_size));
+        }
+        return -1;
+    }
+}
+
+// func_1510B128's start ($a0 the view, $a1 and $a2 the zoom, floats)
+extern "C" void conker_gold_fov_start(uint8_t* rdram, recomp_context* ctx) {
+    fov_keep.on = false;
+    const uint32_t view = (uint32_t)ctx->r4;
+    if (gold_scoped_view(rdram, view) < 0 || ((uint32_t)ctx->r5 == 0 && (uint32_t)ctx->r6 == 0)) {
+        return;
+    }
+    fov_keep = FovKeep{ true, view, (uint32_t)ctx->r5, (uint32_t)ctx->r6 };
+    ctx->r5 = 0;
+    ctx->r6 = 0;
+}
+
+// func_1510B128 at 0x1510B314 (its projection made, about to return)
+extern "C" void conker_gold_fov_end(uint8_t* rdram, recomp_context* ctx) {
+    (void)ctx;
+    if (!fov_keep.on) {
+        return;
+    }
+    fov_keep.on = false;
+    const uint32_t records = (uint32_t)MEM_W(0, (gpr)(int32_t)0x800BE628);
+    if (!kseg0(records)) {
+        return;
+    }
+    const gpr record = (gpr)(int32_t)(records + fov_keep.view * 0x180u);
+    auto f = [&](uint32_t bits) { float v; std::memcpy(&v, &bits, 4); return v; };
+    auto get = [&](gpr at, uint32_t off) { return f((uint32_t)MEM_W(off, at)); };
+    auto put = [&](gpr at, uint32_t off, float v) { uint32_t b; std::memcpy(&b, &v, 4); MEM_W(off, at) = (int32_t)b; };
+    const float extra = get((gpr)(int32_t)0x800C3648, 0);
+    const float across = get(record, 0x6C) + f(fov_keep.across) + extra;
+    const float up = get(record, 0x70) + f(fov_keep.up) + extra;
+    if (fov_told < 10) {
+        fov_told++;
+        say("[gold] view %u scoped with a gold weapon: drawn unzoomed (%.1f), its field of view kept zoomed for the aim (%.1f)", (unsigned)fov_keep.view,
+            get(record, 0x74), across);
+    }
+    put(record, 0x74, across);
+    put(record, 0x78, up);
+}
+
+// ---- (possess136) No reticle over a gold weapon's scope ----
+// What's drawn over a view for it alone (func_151674F8's objects of layer 4, $a1 4, $a2 the view, $a3 the part: D_800DCE50's lists, 0x1A0
+// a part, 4 bytes a type) has R-Look's reticle among it, a type whose setup list's +0x10 is D_8008AC70 (possess72-74). For a gold weapon's
+// holder, scoped, in their own view, the reticle's types are emptied for the call and put back as it returns (0x15167A38).
+namespace {
+    struct ReticleKeep { bool on = false; uint32_t part = 0; uint32_t heads[104] = {}; };
+    ReticleKeep reticle_keep;
+    uint32_t reticle_told = 0;
+}
+
+extern "C" void conker_gold_reticle_start(uint8_t* rdram, recomp_context* ctx) {
+    reticle_keep.on = false;
+    if ((uint32_t)ctx->r5 != 4 || (uint32_t)ctx->r7 > 1) {
+        return;
+    }
+    const uint32_t view = (uint32_t)(int32_t)(int16_t)(uint16_t)(uint32_t)ctx->r6;
+    if (gold_scoped_view(rdram, view) < 0) {
+        return;
+    }
+    reticle_keep.on = true;
+    reticle_keep.part = (uint32_t)ctx->r7;
+    uint32_t emptied = 0;
+    for (uint32_t t = 0; t < 104; t++) {
+        const gpr at = (gpr)(int32_t)(0x800DCE50u + reticle_keep.part * 0x1A0u + t * 4u);
+        reticle_keep.heads[t] = (uint32_t)MEM_W(0, at);
+        if ((uint32_t)MEM_W(0x10, (gpr)(int32_t)(0x8008B4A8u + t * 0x34u)) == 0x8008AC70u && reticle_keep.heads[t] != 0) {
+            MEM_W(0, at) = 0;
+            emptied++;
+        }
+    }
+    if (emptied != 0 && reticle_told < 10) {
+        reticle_told++;
+        say("[gold] view %u scoped with a gold weapon: its reticle left out (%u of the reticle's types, part %u)", (unsigned)view, (unsigned)emptied,
+            (unsigned)reticle_keep.part);
+    }
+}
+
+extern "C" void conker_gold_reticle_end(uint8_t* rdram, recomp_context* ctx) {
+    (void)ctx;
+    if (!reticle_keep.on) {
+        return;
+    }
+    reticle_keep.on = false;
+    for (uint32_t t = 0; t < 104; t++) {
+        MEM_W(0, (gpr)(int32_t)(0x800DCE50u + reticle_keep.part * 0x1A0u + t * 4u)) = (int32_t)reticle_keep.heads[t];
+    }
 }
