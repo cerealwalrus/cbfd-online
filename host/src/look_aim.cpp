@@ -241,7 +241,6 @@ namespace {
         const std::string stick_camera = "stick_free_camera";
         const std::string camera_fov = "camera_field_of_view_degrees";
         const std::string aim_swap_sticks = "aim_swap_sticks";
-        const std::string aim_steady_camera = "aim_steady_camera";   // (possess101)
         const std::string aim_lock_on = "aim_lock_on";
     }
 
@@ -312,13 +311,7 @@ namespace {
 // The Camera tab, its settings in alphabetical order (possess65).
 void conker::look_aim::add_camera_options(recomp::config::Config& config) {
     // (possess65) in alphabetical order
-    // (possess101)
-    config.add_enum_option(options::aim_steady_camera, "Aiming: Steady Camera",
-        "Stops the camera moving on its own while you hold R. In the original game the camera eases after Conker as he moves "
-        "while you aim, trailing a little behind him: walking tilts and swings the view, up a ramp it tilts the crosshair up and "
-        "down a ramp down, until you stop. <recomp-color primary>On</recomp-color>: the camera stays locked to Conker, and only your "
-        "aim turns it. It eases into the aim and back out, keeps out of walls, and Conker can walk right up to them while you aim. With Aiming: Swap Sticks he starts, stops and turns round smoothly as you walk, so the view never jolts. <recomp-color primary>Off</recomp-color> matches the original game. Online it is each player's own setting.",
-        toggle, Toggle::Off);
+    // (possess112) Aiming: Steady Camera has no setting now: it's always on, for every player online and offline (steady_camera)
     config.add_enum_option(options::aim_swap_sticks, "Aiming: Swap Sticks",
         "Controls aiming like a third-person shooter: while you aim, the right stick aims and the left stick moves, as "
         "the C-buttons do (e.g. the shotgun, the slingshot, the sniper scope, R-Look), in single player, and online with a gamepad (the SMG, the M4...). "
@@ -869,17 +862,11 @@ extern "C" void conker_shotgun_laser_walk(uint8_t* rdram, recomp_context* ctx) {
 extern std::atomic<int> walk_dx[aim_players], walk_dy[aim_players];
 
 #if defined(CONKER_RT64)
-// (possess101) Aiming: Steady Camera, for a camera: R-Look's second stage, Conker's, and the setting on for its player (online the
-// frame's input, a bit of that player's look flags, so every machine goes by the same; offline this machine's setting).
+// (possess101) Aiming: Steady Camera, for a camera: R-Look's second stage, Conker's. (possess112: always on, for every player, online,
+// in single player and offline alike; it was a setting, each player's own online, a bit of their look flags.)
 static bool steady_camera(uint8_t* rdram, gpr camera) {
     const gpr walker = (gpr)(int32_t)MEM_W(0x3D0, camera);
-    if (MEM_H(0x73C, camera) != 2 || ((uint32_t)walker & 0xFF000000u) != 0x80000000u) {
-        return false;
-    }
-    if (conker::netsession::active()) {
-        return (conker::netsession::look_flags((int)MEM_BU(0x23D, camera)) & 8u) != 0;
-    }
-    return option<Toggle>(options::aim_steady_camera) == Toggle::On;
+    return MEM_H(0x73C, camera) == 2 && ((uint32_t)walker & 0xFF000000u) == 0x80000000u;
 }
 
 // (possess109) The look record (D_800DBFF0, 0x9A0 each) whose Conker (+0x3D0) an object is, with Aiming: Steady Camera's view on it
@@ -1355,13 +1342,6 @@ namespace {
     uint32_t render_told = 0, width_told = 0, width_told_frame = 0xFFFFFFFFu, width_told_why = 0;   // (possess111: and why)
 }
 
-// (possess110) Aiming: Steady Camera's setting for a camera's player at any stage of the look (steady_camera's own is the second stage's).
-static bool steady_setting(uint8_t* rdram, gpr camera) {
-    if (conker::netsession::active()) {
-        return (conker::netsession::look_flags((int)MEM_BU(0x23D, camera)) & 8u) != 0;
-    }
-    return option<Toggle>(options::aim_steady_camera) == Toggle::On;
-}
 #endif
 
 // (possess110) Aiming: Steady Camera's view, drawn. func_1512C490 makes the view that's drawn (guLookAt, 0x1512C920) from its eye at +0xEC
@@ -1530,7 +1510,7 @@ extern "C" void conker_steady_width(uint8_t* rdram, recomp_context* ctx) {
         return;
     }
     const int stage = (int)MEM_H(0x73C, camera);
-    if (stage == 0 || !steady_setting(rdram, camera)) {
+    if (stage == 0) {   // (possess112: Steady Camera always on)
         return;
     }
     const float walking = ctx->f0.fl;
@@ -2013,7 +1993,7 @@ uint8_t conker::look_aim::sampled_look_flags() {
 #if defined(CONKER_RT64)
     return (uint8_t)((own_turn_stick_x() ? look_turn_x : 0) | (own_turn_stick_y() ? look_turn_y : 0) |
         (option<Response>(options::stick_response) == Response::Direct ? look_direct : 0) |
-        (option<Toggle>(options::aim_steady_camera) == Toggle::On ? look_steady : 0));
+        look_steady);   // (possess112: always, Aiming: Steady Camera being always on; nothing goes by it now)
 #else
     return 0;
 #endif
