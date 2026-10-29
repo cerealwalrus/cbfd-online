@@ -1719,8 +1719,8 @@ void conker::look_aim::no_weapon_walk(uint8_t* rdram, int port, uint16_t* button
     if (port < 0 || (port >= 4 && !fifth)) {
         return;
     }
-    const int dx = ((*buttons & 0x0001) ? 1 : 0) - ((*buttons & 0x0002) ? 1 : 0);
-    const int dy = ((*buttons & 0x0008) ? 1 : 0) - ((*buttons & 0x0004) ? 1 : 0);
+    int dx = ((*buttons & 0x0001) ? 1 : 0) - ((*buttons & 0x0002) ? 1 : 0);
+    int dy = ((*buttons & 0x0008) ? 1 : 0) - ((*buttons & 0x0004) ? 1 : 0);
     walk_dx[port] = 0;
     walk_dy[port] = 0;
     // Z throws a grenade here (the game holds and throws one with C-Down while R is up, and R-look has R held): from Z's press C-Down is held with R
@@ -1743,7 +1743,7 @@ void conker::look_aim::no_weapon_walk(uint8_t* rdram, int port, uint16_t* button
     grenade_held[port] = grenade_on[port];
     if (grenade_on[port]) {
         if (z_now) {
-            *buttons = (uint16_t)((*buttons & ~(c_buttons | 0x2000)) | 0x0010 | 0x0004);
+            *buttons = (uint16_t)((*buttons & ~(c_buttons | 0x2000 | 0x0F00)) | 0x0010 | 0x0004);
             return;
         }
         grenade_on[port] = false;
@@ -1762,6 +1762,27 @@ void conker::look_aim::no_weapon_walk(uint8_t* rdram, int port, uint16_t* button
         }
         if (MEM_BU(0x23E, camera) != 0x00) {
             return;
+        }
+        // (possess148) No weapon out (his +0x31C's +0x78 0), R held or in the look: the D-pad's way taken as the left stick's C-buttons'
+        // (dx, dy). His moving angle here is set from the way pressed (walk_dx, walk_dy: below and conker_look_targets), the game's strafe
+        // going by it and not setting it itself, so the D-pad given to the game's strafe alone (conker_dpad_strafe) left him walking the
+        // way the left stick last set (the possess147 test). It's kept from conker_dpad_strafe here. (With a weapon out, the D-pad is the
+        // game's strafe's, as before: the M4's and the tommy gun's, right in the possess147 test.)
+        const gpr brain = (gpr)(int32_t)MEM_W(0x3D4, camera);
+        const bool no_weapon = ((uint32_t)brain & 0xFF000000u) == 0x80000000u && MEM_BU(0x78, brain) == 0;
+        if (no_weapon && ((*buttons & 0x0010) != 0 || MEM_H(0x73C, camera) == 2) && (*buttons & 0x0F00u) != 0) {
+            const uint16_t pad = (uint16_t)(*buttons & 0x0F00u);
+            dx = ((*buttons & 0x0001) || (pad & 0x0100) ? 1 : 0) - ((*buttons & 0x0002) || (pad & 0x0200) ? 1 : 0);
+            dy = ((*buttons & 0x0008) || (pad & 0x0800) ? 1 : 0) - ((*buttons & 0x0004) || (pad & 0x0400) ? 1 : 0);
+            *buttons &= (uint16_t)~0x0F00u;
+            static uint32_t told = 0;
+            if (told < 6 && port == conker::netsession::player_of_port(conker::netsession::local_slot())) {
+                told++;
+                char line[160];
+                std::snprintf(line, sizeof(line), "[strafe] f=%u player %d: no weapon, R-Look: the D-pad walks as the left stick's C-buttons do (%d,%d)",
+                    (unsigned)conker::netsession::frame(), port + 1, dx, dy);
+                conker::netsession::log(line);
+            }
         }
         // 0.10.6: the look's first stage (about a second, as it zooms in), R held: he walks as in the second (below), the game given
         // C-Left or C-Right and his moving angle set from the way pressed (conker_look_targets), so the look doesn't stop him as he
