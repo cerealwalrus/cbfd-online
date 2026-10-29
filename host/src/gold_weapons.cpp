@@ -68,6 +68,9 @@ namespace {
     // stood together, never after). A source is a weapon's while its holders' loads are at least 10 times all the others'.
     struct Holders { uint32_t n[4] = {}; };
     std::unordered_map<uint32_t, Holders> vertex_holders;
+    // (possess141) the lists found to be a weapon's whole (every load its alone), kept for the level: a frame whose counts dipped drew the
+    // weapon in the hand silver again (the possess140 test)
+    std::unordered_map<uint32_t, int> whole_lists;
     bool weapons_own(const Holders& h, int g) {
         const uint32_t others = h.n[0] + h.n[1] + h.n[2] + h.n[3] - h.n[g];
         return h.n[g] >= 4 && others * 10u <= h.n[g];
@@ -115,6 +118,7 @@ extern "C" void conker_gold_props(uint8_t* rdram, recomp_context* ctx) {
         t.clear();
     }
     vertex_holders.clear();
+    whole_lists.clear();
     for (bool& b : vertex_baseline) {
         b = false;
     }
@@ -1116,6 +1120,14 @@ void conker::gold_weapons::frame_end(uint8_t* rdram, uint32_t start, uint32_t en
             }
             clone.whole = all_own;
         }
+        {
+            auto known = whole_lists.find(w.all[i].to);
+            if (clone.whole) {
+                whole_lists[w.all[i].to] = g;
+            } else if (known != whole_lists.end() && known->second == g) {
+                clone.whole = true;
+            }
+        }
         clone.hide_body = scoped && k == local_character;
         const uint32_t before_vertices = clone.vertices, before_hidden = clone.hidden, before_hidden_v = clone.hidden_vertices;
         const uint32_t before_combiners = clone.combiners;
@@ -1366,6 +1378,13 @@ extern "C" void conker_gold_reticle_end(uint8_t* rdram, recomp_context* ctx) {
         const float rx = (xl + xh) * 0.5f;
         const bool on_bar = bar_l >= 0.0f && rx >= bar_l && rx <= bar_r;
         if (on_bar) {
+            // (possess141) the zoom bar (and its marker) moved to the view's left edge, 6 pixels in
+            const int32_t shift = (int32_t)std::lround((left + 6.0f - (bar_l + 2.0f)) * 4.0f);
+            const int32_t nxl = (int32_t)((w0 >> 12) & 0xFFFu) + shift, nxh = (int32_t)((w1 >> 12) & 0xFFFu) + shift;
+            if (shift < 0 && nxl >= 0 && nxh >= 0) {
+                MEM_W(0, at) = (int32_t)((w0 & ~(0xFFFu << 12)) | ((uint32_t)nxl << 12));
+                MEM_W(4, at) = (int32_t)((w1 & ~(0xFFFu << 12)) | ((uint32_t)nxh << 12));
+            }
             kept++;
             continue;
         }
@@ -1401,9 +1420,24 @@ extern "C" void conker_gold_projection(uint8_t* rdram, recomp_context* ctx) {
         return;
     }
     if (gold_scoped_view(rdram, view) < 0) {
-        view_fov_up[view] = (uint32_t)ctx->r6;
-        view_fov_across[view] = (uint32_t)ctx->r7;
-        view_fov_have[view] = true;
+        // (possess141) kept only while the view's camera isn't aiming at all (its look's stage 0, its character not scoped): possess140 kept
+        // the last one before the gold scope, which the scope had begun narrowing (58 and 56 degrees across, not 60.6: the possess140 test)
+        const uint32_t looks = (uint32_t)MEM_W(0, (gpr)(int32_t)0x800DBFF0);
+        bool idle = false;
+        for (uint32_t i = 0; kseg0(looks) && i < 4; i++) {
+            const gpr camera = (gpr)(int32_t)(looks + i * 0x9A0u);
+            if ((uint32_t)MEM_BU(0x23D, camera) != view) {
+                continue;
+            }
+            const gpr ch = (gpr)(int32_t)MEM_W(0x3D0, camera);
+            const gpr aim = kseg0((uint32_t)ch) ? (gpr)(int32_t)MEM_W(0x31C, ch) : 0;
+            idle = MEM_H(0x73C, camera) == 0 && kseg0((uint32_t)aim) && MEM_BU(0x197, aim) == 0;
+        }
+        if (idle) {
+            view_fov_up[view] = (uint32_t)ctx->r6;
+            view_fov_across[view] = (uint32_t)ctx->r7;
+            view_fov_have[view] = true;
+        }
         return;
     }
     if (view_fov_have[view]) {
