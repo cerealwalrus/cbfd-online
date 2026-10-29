@@ -700,11 +700,12 @@ func = "func_1512C490"
 before_vram = 0x1512C844
 text = "{ extern void conker_steady_render_other(uint8_t*, recomp_context*); conker_steady_render_other(rdram, ctx); }"
 
-# (possess110) Aiming: Steady Camera keeps Conker as wide as walking in the look: func_1507C3E0 doubles his width for his collisions
-# while his look record (+0x318) has a look going ($t8 its stage, checked at 0x1507C62C; conker_steady_width).
+# (possess110, possess111) Aiming: Steady Camera keeps Conker as wide as walking in the look: func_1507C3E0 doubles his width for his
+# collisions while his look record (+0x318) has a look going, and while his +0x31C's +0x197 or +0x1B3 is set (+0x1B3: walking with a
+# gun in the look); both widths are put back where every way through the doubling meets (0x1507C65C; conker_steady_width).
 [[patches.hook]]
 func = "func_1507C3E0"
-before_vram = 0x1507C62C
+before_vram = 0x1507C65C
 text = "{ extern void conker_steady_width(uint8_t*, recomp_context*); conker_steady_width(rdram, ctx); }"
 
 # (possess110) Aiming: Steady Camera's eye through the game's camera collision: put in as the eye wanted before func_1512BB10 reads it

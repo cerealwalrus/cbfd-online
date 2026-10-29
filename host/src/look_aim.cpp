@@ -1352,7 +1352,7 @@ namespace {
         s.height = to.height + gap.height * part;
         return s;
     }
-    uint32_t render_told = 0, width_told = 0, width_told_frame = 0xFFFFFFFFu;
+    uint32_t render_told = 0, width_told = 0, width_told_frame = 0xFFFFFFFFu, width_told_why = 0;   // (possess111: and why)
 }
 
 // (possess110) Aiming: Steady Camera's setting for a camera's player at any stage of the look (steady_camera's own is the second stage's).
@@ -1514,40 +1514,48 @@ extern "C" void conker_steady_render_other(uint8_t* rdram, recomp_context* ctx) 
 #endif
 }
 
-// (possess110) Aiming: Steady Camera keeps Conker as wide as he is walking while he looks. func_1507C3E0 works out how wide and tall an
-// object is for its collisions; for Conker (L_1507C574) 60 across, doubled to 120 while his look record (+0x318) has its look going (+0x73C),
-// and whenever a look began by a wall he was pushed 30 off it at once (possess109's [look] lines: 642.8 to 672.8 the frame the look began,
-// every look at that wall, with a gun and with no weapon, back to 0.10.8's logs), and couldn't walk any nearer it while he looked. Here,
-// before its check (0x1507C62C: $t8 the look's stage, $v0 the record, $a0 him), the stage counts as none with Steady Camera on, so he stays
-// as wide as walking (the game's other doublings, +0x197 and +0x1B3 of his +0x31C, as they were). Every machine alike, from the game's
-// memory and the frame's agreed look flags.
+// (possess110, possess111) Aiming: Steady Camera keeps Conker as wide as he is walking while he looks. func_1507C3E0 works out how wide
+// and tall an object is for its collisions; for Conker (L_1507C574) 60 across ($f0), doubled to 120 ($f20 and +0x98 of its stack, the
+// two widths it gives back) while his look record (+0x318, $v0) has its look going (+0x73C), and while his +0x31C's +0x197 or +0x1B3 is
+// set (+0x1B3: walking with a gun in the look, func_1504CB98). possess110 took off only the first: standing by a wall in the look he
+// stayed there, but the frame he started walking he was pushed 30 off it (possess110's [look] lines: 643.3 to 673.3 at the look's 18th
+// frame, 643.1 to 673.0 at its 3rd, his walk starting both times), and walking in the look he stayed 30 further off the wall than
+// walking (673 against 643, possess110's [pos] lines). Here, where every way through the doubling meets (0x1507C65C, $v1 his +0x31C),
+// with Steady Camera on and his look going, both widths are put back to walking's. Every machine alike, from the game's memory and
+// the frame's agreed look flags.
 extern "C" void conker_steady_width(uint8_t* rdram, recomp_context* ctx) {
 #if defined(CONKER_RT64)
-    if ((int16_t)(uint16_t)ctx->r24 == 0) {
-        return;
-    }
     const gpr camera = ctx->r2;
     if (((uint32_t)camera & 0xFF000000u) != 0x80000000u || (uint32_t)MEM_W(0x3D0, camera) != (uint32_t)ctx->r4) {
         return;
     }
-    if (!steady_setting(rdram, camera)) {
+    const int stage = (int)MEM_H(0x73C, camera);
+    if (stage == 0 || !steady_setting(rdram, camera)) {
         return;
     }
-    const int stage = (int)(int16_t)(uint16_t)ctx->r24;
-    ctx->r24 = 0;
+    const float walking = ctx->f0.fl;
+    const float worked_out = ctx->f20.fl;
+    if (!(worked_out > walking)) {
+        return;
+    }
+    ctx->f20.fl = walking;
+    write_float(rdram, ctx->r29, 0x98, walking);
     if (conker::netsession::active() && camera_player(rdram, camera) == conker::netsession::local_player()) {
-        // (this machine's player, once each look: the first frame of a run of frames it's kept)
+        // (this machine's player: as each look begins, and each time what doubled it changes)
+        const gpr aim = ctx->r3;
+        const uint32_t why = (MEM_BU(0x197, aim) != 0 ? 1u : 0u) | (MEM_BU(0x1B3, aim) != 0 ? 2u : 0u);
         const uint32_t now = conker::netsession::frame();
         const bool begins = width_told_frame == 0xFFFFFFFFu || (now != width_told_frame && now != width_told_frame + 1);
         width_told_frame = now;
-        if (!begins || width_told >= 300) {
-            return;
+        if ((begins || why != width_told_why) && width_told < 300) {
+            width_told++;
+            char line[200];
+            std::snprintf(line, sizeof(line), "[steady] f=%u his width kept as walking in the look (stage %d, +0x197 %u, +0x1B3 %u): %.0f, not %.0f, at %.1f %.1f",
+                now, stage, (unsigned)MEM_BU(0x197, aim), (unsigned)MEM_BU(0x1B3, aim), walking, worked_out,
+                read_float(rdram, ctx->r4, 0x14), read_float(rdram, ctx->r4, 0x1C));
+            conker::netsession::log(line);
         }
-        width_told++;
-        char line[160];
-        std::snprintf(line, sizeof(line), "[steady] f=%u his width kept as walking in the look (stage %d) at %.1f %.1f", conker::netsession::frame(), stage,
-            read_float(rdram, ctx->r4, 0x14), read_float(rdram, ctx->r4, 0x1C));
-        conker::netsession::log(line);
+        width_told_why = why;
     }
 #endif
 }
