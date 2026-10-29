@@ -3412,6 +3412,19 @@ func = "func_1508E89C"
 before_vram = 0x1508E89C
 text = "{ extern int conker_possess_takeover(uint8_t*, recomp_context*); if (conker_possess_takeover(rdram, ctx)) { ctx->r2 = 0; return; } }"
 
+# possess116: Total War's gold weapons (host/src/gold_weapons.cpp). func_150039E0 (the level's props made): both setup lists read at
+# 0x15003AB0 ($v0 the second's size, the stack's +0xA0 and +0x9C), where the gold weapons' records are added (conker_gold_props); and
+# the match's script (func_1508DC24, once a frame) at its start, where their pickups are added (conker_gold_pickups).
+[[patches.hook]]
+func = "func_150039E0"
+before_vram = 0x15003AB0
+text = "{ extern void conker_gold_props(uint8_t*, recomp_context*); conker_gold_props(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_1508DC24"
+before_vram = 0x1508DC24
+text = "{ extern void conker_gold_pickups(uint8_t*, recomp_context*); conker_gold_pickups(rdram, ctx); }"
+
 # possess114: a view's passes go by its player's bit of D_800D18A0 (the match's characters out of it): for a player out of the match
 # func_15019464 (the first pass) draws the sky alone, func_150195A0 (the 3D) none of the characters and objects, and func_1510B9D0 (the
 # level) looks again. The extra camera's view is drawn as view 1, so once player 1 was out the 5th player's view was the sky alone. As

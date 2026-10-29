@@ -463,6 +463,12 @@ namespace conker {
     }
 
     // menu_skin.cpp: optional PNGs for the launcher (assets/menu_skin/), see that file.
+
+    // (possess116) Total War's gold weapons (gold_weapons.cpp)
+    namespace gold_weapons {
+        // a prop or pickup id of one of the gold weapons, this level
+        bool is_gold_id(int id);
+    }
 }
 namespace recompui { class LauncherMenu; class GameOptionsMenu; class GameOption; }
 namespace conker {

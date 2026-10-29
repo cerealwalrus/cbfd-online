@@ -198,7 +198,7 @@ if (CONKER_RT64)
     add_custom_command(TARGET ConkerRecomp POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/assets" "$<TARGET_FILE_DIR:ConkerRecomp>/assets")
 
-    target_sources(ConkerRecomp PRIVATE src/frontend.cpp src/conker_config.cpp src/audio_output.cpp src/rumble.cpp src/fps_counter.cpp src/pad_mappings.cpp src/texture_packs.cpp src/gliden64_packs.cpp src/notices.cpp src/local_achievements.cpp src/save_states.cpp src/netplay.cpp src/net_session.cpp src/net_view.cpp src/net_menu.cpp src/net_lobby.cpp src/menu_skin.cpp src/net_chat.cpp src/update_check.cpp src/default_settings.cpp src/net_transport.cpp src/local_audio.cpp src/heap_watch.cpp src/mp_characters.cpp src/background_video.cpp src/window_chrome.cpp src/hq_ping.cpp src/upnp_port.cpp src/possess_test.cpp)
+    target_sources(ConkerRecomp PRIVATE src/frontend.cpp src/conker_config.cpp src/audio_output.cpp src/rumble.cpp src/fps_counter.cpp src/pad_mappings.cpp src/texture_packs.cpp src/gliden64_packs.cpp src/notices.cpp src/local_achievements.cpp src/save_states.cpp src/netplay.cpp src/net_session.cpp src/net_view.cpp src/net_menu.cpp src/net_lobby.cpp src/menu_skin.cpp src/net_chat.cpp src/update_check.cpp src/default_settings.cpp src/net_transport.cpp src/local_audio.cpp src/heap_watch.cpp src/mp_characters.cpp src/background_video.cpp src/window_chrome.cpp src/hq_ping.cpp src/upnp_port.cpp src/possess_test.cpp src/gold_weapons.cpp)
 
     # CONKER_RT64 selects the window build; the rest are what rt64 compiles its own headers with.
     target_compile_definitions(ConkerRecomp PRIVATE CONKER_RT64 HLSL_CPU)
