@@ -943,6 +943,52 @@ extern "C" int conker_steady_ease(uint8_t*, recomp_context*) {
 }
 #endif
 
+// (possess134) The shotgun's look (kind 0x3B, the co-op mansion's) at Conker's height for every player: its look-at point (and its eye with
+// it) is placed over the character by the character's own height, 106.5 over Conker, but the co-op players are 4 characters (12 to 15) and
+// player 2's (13) is taller: 173 over his feet (the possess133 test, f=3765 against player 1's f=890), so his view sat inside his head, his
+// helmet over half of it. The view drawn (func_1512C490's eye and look-at point on its stack, +0xEC and +0xE0, before 0x1512C844 where
+// every way to the view passes, as Steady Camera's goes in: conker_steady_render_other) is moved up or down, eye and look-at point
+// together, by the character's own height (learnt from the game's look-at point over him in the look, slowly) less Conker's: the same view
+// over every player as player 1's, its pitch as it was. The game's own camera as it was. Every camera on every machine alike.
+namespace {
+    constexpr float conker_look_height = 106.5f;
+    float look_height[aim_players] = {};
+    bool look_height_have[aim_players] = {};
+    uint32_t look_height_told = 0;
+}
+static void shotgun_view_height(uint8_t* rdram, gpr camera, int player, gpr sp) {
+    if (!conker::netsession::active() || player < 0 || player >= aim_players || MEM_BU(0x23E, camera) != 0x3B || MEM_H(0x73C, camera) == 0) {
+        return;
+    }
+    const gpr walker = (gpr)(int32_t)MEM_W(0x3D0, camera);
+    if (((uint32_t)walker & 0xFF000000u) != 0x80000000u) {
+        return;
+    }
+    const float over = read_float(rdram, sp, 0xE4) - read_float(rdram, walker, 0x18);
+    if (!(over > 40.0f && over < 400.0f)) {
+        return;
+    }
+    if (!look_height_have[player]) {
+        look_height[player] = over;
+        look_height_have[player] = true;
+    } else if (std::fabs(over - look_height[player]) < 40.0f) {
+        look_height[player] += (over - look_height[player]) * 0.05f;
+    }
+    const float shift = look_height[player] - conker_look_height;
+    if (std::fabs(shift) < 2.0f) {
+        return;
+    }
+    write_float(rdram, sp, 0xE4, read_float(rdram, sp, 0xE4) - shift);
+    write_float(rdram, sp, 0xF0, read_float(rdram, sp, 0xF0) - shift);
+    if (player == conker::netsession::local_player() && look_height_told < 6) {
+        look_height_told++;
+        char line[200];
+        std::snprintf(line, sizeof(line), "[look] f=%u the shotgun's view over player %d's character at Conker's height: its look-at point %.1f over him, moved %+.1f",
+            conker::netsession::frame(), player + 1, look_height[player], -shift);
+        conker::netsession::log(line);
+    }
+}
+
 extern "C" void conker_look_view(uint8_t* rdram, recomp_context* ctx) {
 #if defined(CONKER_RT64)
     const gpr camera = ctx->r16;
@@ -1513,6 +1559,7 @@ extern "C" void conker_steady_render(uint8_t* rdram, recomp_context* ctx) {
 extern "C" void conker_steady_render_other(uint8_t* rdram, recomp_context* ctx) {
 #if defined(CONKER_RT64)
     steady_render_view(rdram, ctx, false);
+    shotgun_view_height(rdram, ctx->r16, camera_player(rdram, ctx->r16), ctx->r29);   // (possess134)
 #endif
 }
 
