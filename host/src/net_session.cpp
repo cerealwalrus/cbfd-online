@@ -3855,6 +3855,33 @@ bool conker::netsession::input_for_game(int port, bool* plugged, uint16_t* butto
         swapped = port >= 0 && port < max_players && current.p[port].swap != 0;
         rdram = ram;
     }
+    // (possess145) The D-pad strafes in a match, as the C-buttons do on the N64 with a gun out (C-Left and C-Right to the side, C-Up and
+    // C-Down forward and back): its directions go to the game as the C-buttons, before everything below, so Swap Sticks' handling of the
+    // C-buttons (around R and the look) takes them as it takes the left stick's. In the multiplayer arenas (D_800BE616) and not paused
+    // (D_800BEAC0): the game has no use for the D-pad there. From the frame's agreed buttons and the game's memory, the same on every
+    // machine. (A watcher's D-pad, choosing whom to watch, is read from this machine's own controller: spectate_poll.)
+    if (rdram != nullptr && (*buttons & 0x0F00u) != 0 && rdram[(0x800BE616u ^ 3u) & 0x7FFFFFu] != 0 && rdram[(0x800BEAC0u ^ 3u) & 0x7FFFFFu] == 0) {
+        const uint16_t pad = *buttons;
+        uint16_t c = 0;
+        if (pad & 0x0800u) {
+            c |= 0x0008u;   // up: C-Up
+        }
+        if (pad & 0x0400u) {
+            c |= 0x0004u;   // down: C-Down
+        }
+        if (pad & 0x0200u) {
+            c |= 0x0002u;   // left: C-Left
+        }
+        if (pad & 0x0100u) {
+            c |= 0x0001u;   // right: C-Right
+        }
+        *buttons = (uint16_t)((pad & ~0x0F00u) | c);
+        static uint32_t told = 0;
+        if (told < 6 && port == local_slot()) {
+            told++;
+            log("[input] the D-pad strafes: its directions given to the game as the C-buttons");
+        }
+    }
     // Swap Sticks: the left stick is the C-buttons while aiming (R held). Letting go of R with the stick still held made C-Down arrive
     // with R up, and the game threw a grenade. After R is let go the C-buttons are held back until none is pressed any more.
     static bool prev_r[max_players] = {};
