@@ -432,6 +432,10 @@ namespace conker {
         // (possess34) the extra camera's view being drawn (as view 1, on this machine alone)
         bool drawing_extra_view();
         int fifth_object();
+        // (possess155) the 5th player's HUD being drawn (his character's state in character 1's place meanwhile)
+        bool fifth_hud_swapped();
+        // (possess155) a copy of view 1's projection the 5th player's view loads (net_view.cpp widens it for the full screen)
+        bool fifth_projection_copy(uint32_t address);
         // (possess37 diagnostics) an object's drawing in the extra camera's view: where its commands start, and end
         void note_drawn(uint32_t kind, uint32_t object, uint32_t start, bool extra_view);
         void note_drawn_end(uint32_t end, bool extra_view);

@@ -1083,7 +1083,10 @@ namespace {
                     ((mask & 8u) != 0 && (scale_x != 1.0f || scale_y != 1.0f) && w1 >= own && w1 < own + camera_size) ? " scaled" : "");
                 projection_notes += note;
             }
-            if ((mask & 8u) != 0 && chain_op == 0xDA && (w0 & 0x04u) != 0 && (scale_x != 1.0f || scale_y != 1.0f) && w1 >= own && w1 < own + camera_size) {
+            // (possess155) and the 5th player's view's copies of view 1's projection (possess_test.cpp), widened as view 1's own: zoomed,
+            // his view's was a copy and came out twice as zoomed
+            if ((mask & 8u) != 0 && chain_op == 0xDA && (w0 & 0x04u) != 0 && (scale_x != 1.0f || scale_y != 1.0f) &&
+                ((w1 >= own && w1 < own + camera_size) || (fifth_from != 0 && conker::possess_test::fifth_projection_copy(w1)))) {
                 // Every load of this machine's camera's projection, in whatever pass: the game draws its characters in passes of
                 // their own after the cameras' (marked for no camera), with the same projection and the same viewport, and a
                 // viewport made full-screen needs the projection widened with it or what is drawn there doesn't fit the rest.

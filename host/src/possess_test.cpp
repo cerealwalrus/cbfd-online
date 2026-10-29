@@ -1686,6 +1686,15 @@ namespace {
     bool extra_fades_kept = false;
 }
 
+namespace {
+    // (possess155) true while the 5th player's HUD is drawn: his character's state swapped into character 1's place (swap_character_state)
+    bool fifth_hud_swapped_now = false;
+    // (possess155) the copies of view 1's projection his view loads (ours, from copies_start), a half of that room each (this frame's and
+    // the last's, as the renderer may read the last's yet): net_view.cpp widens them for the full screen as it does view 1's own
+    uint32_t projection_copies[2][8] = {};
+    uint32_t projection_copy_count[2] = {};
+}
+
 // (possess78) the character the extra camera plays (its index among the characters), -1 without the extra camera
 int conker::possess_test::fifth_object() {
     return extra_ready ? ch5 : -1;
@@ -1693,6 +1702,24 @@ int conker::possess_test::fifth_object() {
 
 bool conker::possess_test::drawing_extra_view() {
     return extra_view_now;
+}
+
+// (possess155) the 5th player's HUD being drawn, his character's state in character 1's place meanwhile (swap_character_state): what
+// reads his character's scope for his HUD (gold_weapons.cpp's scoped_hud_character) reads it from character 1's place then
+bool conker::possess_test::fifth_hud_swapped() {
+    return fifth_hud_swapped_now;
+}
+
+// (possess155) a copy (ours, 0x80E00000 on) of view 1's projection that the 5th player's view loads, made this frame or the last
+bool conker::possess_test::fifth_projection_copy(uint32_t address) {
+    for (uint32_t h = 0; h < 2; h++) {
+        for (uint32_t i = 0; i < projection_copy_count[h]; i++) {
+            if (projection_copies[h][i] == address) {
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 // (possess114) The extra camera's view is drawn as view 1 (index 0, conker_possess_view_local_body), and a view's passes go by its
@@ -2799,6 +2826,7 @@ namespace {
         const int8_t was_blur = MEM_B(0, (gpr)(int32_t)blur_where);
         const int32_t was_view = MEM_W(0, (gpr)(int32_t)view_now);
         swap_character_state(rdram, ch5);
+        fifth_hud_swapped_now = true;
         if (!fifth_split(rdram)) {
             // (possess59: with a split screen the game's own players and layout, view 1's part's HUD: see fifth_split)
             MEM_W(0, (gpr)(int32_t)last_player) = 0;
@@ -2886,6 +2914,7 @@ namespace {
         MEM_B(0, (gpr)(int32_t)humans_now) = was_humans;
         MEM_W(0, (gpr)(int32_t)last_player) = was_last;
         swap_character_state(rdram, ch5);
+        fifth_hud_swapped_now = false;
         fifth_huds++;
         if (fifth_huds <= 3 || fifth_huds % 600 == 0) {
             log("f=%u the 5th player's HUD drawn over its view (%u times): %u commands", (unsigned)frames, (unsigned)fifth_huds,
@@ -3493,7 +3522,19 @@ static void conker_possess_view_local_body(uint8_t* rdram, recomp_context* ctx) 
         size = std::min(size, 0x80000000u + game_size - at);
         return std::memcmp(local_copy.data() + (at - 0x80000000u), rdram + (at - 0x80000000u), size) != 0;
     };
+    const uint32_t copies_half_now = copies_frame & 1u;
     const uint32_t copies = copies_start + (copies_frame++ & 1u) * copies_half;
+    projection_copy_count[copies_half_now] = 0;
+    // (possess155) a load of view 1's projection (its record's, D_800BE628's first: a G_MTX of the projection) on the 5th player's
+    // machine with a split screen
+    const bool split_view = fifth_split(rdram);
+    auto view_projection_ref = [&](uint32_t command, uint32_t at) {
+        if (!split_view || at < views || at + 0x40u > views + 0x180u) {
+            return false;
+        }
+        const uint32_t w0 = mem_word(rdram, command);
+        return (w0 >> 24) == 0xDA && (w0 & 0x04u) != 0;
+    };
     uint32_t copies_used = 0;
     auto copy_out = [&](uint32_t at, uint32_t size) -> uint32_t {
         const uint32_t room = (size + 15u) & ~15u;
@@ -3564,7 +3605,11 @@ static void conker_possess_view_local_body(uint8_t* rdram, recomp_context* ctx) 
                     (unsigned)frames, (unsigned)ref_op, (unsigned)r.at, (unsigned)r.size, (unsigned)r.command, ranges.c_str());
             }
         }
-        if (changed(r.at, r.size)) {
+        // (possess155) view 1's projection, as his view loads it, copied always (with a split screen: his own zoom's, fifth_view_projection),
+        // so that it's widened for the full screen whatever his zoom (below, net_view.cpp): unzoomed it was the same as the game's and was
+        // left in view 1's record, which net_view.cpp widens; zoomed it was copied, and drawn without the widening, twice as zoomed (the
+        // possess154 test's player5sniperzoom.mp4: his view jumped to twice the zoom as each zoom began, and back as it ended)
+        if (view_projection_ref(r.command, r.at) || changed(r.at, r.size)) {
             ref_changed[i] = 1;
             if (r.body >= 0) {
                 need[r.body] = 1;
@@ -3619,6 +3664,9 @@ static void conker_possess_view_local_body(uint8_t* rdram, recomp_context* ctx) 
             patches.push_back({ at + 4, to });
             ref_to[i] = to;
             relocated++;
+            if (view_projection_ref(r.command, r.at) && projection_copy_count[copies_half_now] < 8) {
+                projection_copies[copies_half_now][projection_copy_count[copies_half_now]++] = to;
+            }
         } else {
             keep_ranges.push_back({ r.at, r.size });
         }

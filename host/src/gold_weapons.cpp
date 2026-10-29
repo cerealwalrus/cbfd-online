@@ -1530,12 +1530,19 @@ namespace {
         // (possess150) view 4 the 5th player's own, scoped: no look camera has view 4 (+0x23D) while his HUD is drawn (his camera's copy
         // in camera 1's place is view 0 then), so possess149's [fifth] lines of his scope's HUD never came. (possess154: with a gold weapon
         // too, so his gold scope's HUD is the others': no reticle, the zoom bar at the view's left edge; possess150 left it out for those.)
+        // (possess155) his HUD is drawn with his character's state in character 1's place (possess_test.cpp's swap_character_state, for
+        // the game's HUD of player 1): his scope read from there then. possess154 read character 5's place, player 1's state meanwhile, so
+        // his gold scope's HUD was never seen as his (the possess154 test: the reticle there, the zoom bar where it was; no [fifth] scope
+        // HUD lines of his view). The character given back is his own (5th), for the weapon he holds (the pickups go by the character).
         if (view == 4) {
-            const uint32_t ch5 = characters + 4u * character_size;
+            const int k5 = conker::possess_test::fifth_object() >= 0 ? conker::possess_test::fifth_object() : 4;
+            const uint32_t slot = conker::possess_test::fifth_hud_swapped() ? 0u : (uint32_t)k5;
+            const uint32_t ch5 = characters + slot * character_size;
             const gpr aim5 = (gpr)(int32_t)MEM_W(0x31C, (gpr)(int32_t)ch5);
             if (kseg0((uint32_t)aim5) && MEM_BU(0x197, aim5) != 0) {
-                return 4;
+                return k5;
             }
+            return -1;
         }
         const uint32_t looks = (uint32_t)MEM_W(0, (gpr)(int32_t)0x800DBFF0);
         for (uint32_t i = 0; kseg0(looks) && i < (fifth ? 5u : 4u); i++) {
@@ -2072,6 +2079,11 @@ namespace {
     struct BeamDiag { bool on = false; uint32_t beam = 0; int view = -1, holder = -1; };
     BeamDiag beam_diag;
     uint32_t beam_diag_told = 0;
+    // (possess155) the 5th player's own laser's beam or glow at the gun, drawn in his view (the extra view) while he's scoped with a
+    // weapon not gold: left out as it returns (conker_gold_beam_end)
+    uint32_t fifth_glow_out = 0;
+    uint32_t fifth_glow_out_count = 0, fifth_glow_out_told = 0;
+    bool fifth_scoped_plain_at(uint8_t* rdram);   // (below)
 }
 
 extern "C" void conker_gold_beam_start(uint8_t* rdram, recomp_context* ctx) {
@@ -2083,6 +2095,24 @@ extern "C" void conker_gold_beam_start(uint8_t* rdram, recomp_context* ctx) {
         const uint32_t c = kseg0(laser) ? (uint32_t)MEM_W(0x110, (gpr)(int32_t)laser) : 0u;
         if (c >= characters && (c - characters) % character_size == 0 && (c - characters) / character_size < 25) {
             beam_diag = BeamDiag{ true, (uint32_t)ctx->r4, (int)(int16_t)(uint16_t)(uint32_t)ctx->r5, (int)((c - characters) / character_size) };
+        }
+    }
+    // (possess155) the possess154 test's player5sniperzoom.mp4: his laser's beam still showed in his scoped view as he fired (a great green
+    // glow from his gun to the dot), though possess151 took the beam's and the glow's bits off at the view's start and again after the
+    // laser sight ran inside it. Now his own laser's beam (the laser sight's +0x110's +0x30, this light's +0x170 the laser sight) and its
+    // glow at the gun (+0x24, its +0xD0 the laser sight) are left out of his view while he's scoped with a weapon not gold, as they're
+    // drawn: its dot, light and end's glow as they were (players 1 to 4 see theirs)
+    fifth_glow_out = 0;
+    if (conker::possess_test::drawing_extra_view() && kseg0((uint32_t)ctx->r4) && fifth_scoped_plain_at(rdram)) {
+        const uint32_t light = (uint32_t)ctx->r4;
+        const uint32_t fifth_c = characters + 4u * character_size;
+        const uint32_t as_beam = (uint32_t)MEM_W(0x170, (gpr)(int32_t)light), as_glow = (uint32_t)MEM_W(0xD0, (gpr)(int32_t)light);
+        const bool beam = kseg0(as_beam) && (uint32_t)MEM_W(0x110, (gpr)(int32_t)as_beam) == fifth_c &&
+            (uint32_t)MEM_W(0x110 + 0x30, (gpr)(int32_t)as_beam) == light;
+        const bool glow = !beam && kseg0(as_glow) && (uint32_t)MEM_W(0x110, (gpr)(int32_t)as_glow) == fifth_c &&
+            (uint32_t)MEM_W(0x110 + 0x24, (gpr)(int32_t)as_glow) == light;
+        if (beam || glow) {
+            fifth_glow_out = light;
         }
     }
     // (possess147: not in the 5th player's view, the extra view: a gold weapon's holder's beam there as the others see it)
@@ -2155,6 +2185,19 @@ extern "C" void conker_gold_beam_listed(uint8_t* rdram, recomp_context* ctx) {
 
 // func_151408A4 at 0x15141194, returning ($v0 its list for the view, 0 if left out; $s0 the beam, $sp its frame: +0x114 its 4th vertex)
 extern "C" void conker_gold_beam_end(uint8_t* rdram, recomp_context* ctx) {
+    if (fifth_glow_out != 0 && (uint32_t)ctx->r16 == fifth_glow_out) {
+        const bool was_drawn = (uint32_t)ctx->r2 != 0;
+        fifth_glow_out = 0;
+        if (was_drawn) {
+            ctx->r2 = 0;
+            fifth_glow_out_count++;
+            if (fifth_glow_out_told < 6 || fifth_glow_out_count % 600 == 0) {
+                fifth_glow_out_told++;
+                say("[fifth] f=%u the 5th player scoped (a weapon not gold): his laser's beam or glow at the gun left out of his view as it was "
+                    "drawn (%u times so far)", (unsigned)conker::netsession::frame(), (unsigned)fifth_glow_out_count);
+            }
+        }
+    }
     if (beam_diag.on && (uint32_t)ctx->r16 == beam_diag.beam) {
         beam_diag.on = false;
         static int told_key[25];
@@ -2297,6 +2340,10 @@ namespace {
         const uint32_t c = characters + (uint32_t)fifth_character * character_size;
         const uint32_t aim = (uint32_t)MEM_W(0x31C, (gpr)(int32_t)c);
         return kseg0(aim) && MEM_BU(0x197, (gpr)(int32_t)aim) != 0 && gold_held(rdram, fifth_character) < 0;
+    }
+
+    bool fifth_scoped_plain_at(uint8_t* rdram) {
+        return fifth_scoped_plain(rdram);
     }
 
     void fifth_say(const char* what) {
