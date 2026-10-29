@@ -12,6 +12,7 @@
 // match's script (func_1508DC24, once a frame) gives and brings back by id: conker_gold_pickups adds one for each gold weapon, a copy of
 // a pickup of its kind, as the script runs. Every machine alike: the level's data and the game's memory, at the same frame.
 
+#include <algorithm>
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
@@ -228,5 +229,38 @@ extern "C" void conker_gold_pickups(uint8_t* rdram, recomp_context* ctx) {
             (unsigned)MEM_W(0x11F4 + 4 * (uint32_t)count, b));
         count++;
         MEM_W(0xEA4, b) = count;
+    }
+}
+
+// (possess120) func_15113E54 runs the props each frame: those of the level's first list one by one (0 to D_800DBEF0 less D_800DBF98, the
+// second list's count), and the second list's only through the groups of D_800D23C0 (the level's own, by index). The gold weapons are
+// at the second list's end, in no group, so they were never run (the possess119 test: lying on the floor, not spinning, never taken;
+// their +0x7C, the behaviour's own block, never made). Here, at 0x15113F00 (the first loop done), each is run as that loop runs a
+// prop: in sight of a view the frame before (+0x6F's 0x40) and not hidden (+0x6E), its behaviour (+0x38, the weapons' func_1511DF6C).
+extern "C" void func_1511DF6C(uint8_t* rdram, recomp_context* ctx);
+extern "C" void conker_gold_run(uint8_t* rdram, recomp_context* ctx) {
+    if (!golds_made || (int32_t)MEM_W(0, (gpr)(int32_t)scene_now) != total_war) {
+        return;
+    }
+    const uint32_t list = (uint32_t)MEM_W(0, (gpr)(int32_t)0x800DBEF4);
+    const uint32_t count = (uint32_t)MEM_W(0, (gpr)(int32_t)first_count);
+    if (!kseg0(list) || count == 0 || count > 1024 || !kseg0(list + count * 0xA0u)) {
+        return;
+    }
+    const uint32_t first = count - std::min(count, (uint32_t)MEM_W(0, (gpr)(int32_t)0x800DBF98));
+    for (uint32_t i = first; i < count; i++) {
+        const uint32_t prop = list + i * 0xA0u;
+        const gpr p = (gpr)(int32_t)prop;
+        bool gold = false;
+        for (const Gold& g : golds) {
+            gold = gold || (g.id != 0 && MEM_BU(0x72, p) == g.id);
+        }
+        if (!gold || (uint32_t)MEM_W(0x38, p) != weapon_behaviour || (MEM_BU(0x6F, p) & 0x40u) == 0 || MEM_BU(0x6E, p) != 0) {
+            continue;
+        }
+        const recomp_context saved = *ctx;
+        ctx->r4 = p;
+        func_1511DF6C(rdram, ctx);
+        *ctx = saved;
     }
 }

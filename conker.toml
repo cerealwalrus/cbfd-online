@@ -3425,6 +3425,13 @@ func = "func_1508DC24"
 before_vram = 0x1508DC24
 text = "{ extern void conker_gold_pickups(uint8_t*, recomp_context*); conker_gold_pickups(rdram, ctx); }"
 
+# possess120: the gold weapons run each frame: func_15113E54 runs the first list's props one by one and the second list's only through
+# the level's groups, which the gold weapons (at the second list's end) aren't in; at 0x15113F00, the first loop done (conker_gold_run).
+[[patches.hook]]
+func = "func_15113E54"
+before_vram = 0x15113F00
+text = "{ extern void conker_gold_run(uint8_t*, recomp_context*); conker_gold_run(rdram, ctx); }"
+
 # possess114: a view's passes go by its player's bit of D_800D18A0 (the match's characters out of it): for a player out of the match
 # func_15019464 (the first pass) draws the sky alone, func_150195A0 (the 3D) none of the characters and objects, and func_1510B9D0 (the
 # level) looks again. The extra camera's view is drawn as view 1, so once player 1 was out the 5th player's view was the sky alone. As
