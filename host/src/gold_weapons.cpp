@@ -829,7 +829,8 @@ namespace {
         // (possess131) every call of a list from the frame's list: its first matrix inside (a character's is at the character), its segments,
         // its vertex loads' sources, and a short listing of it (for the [hand] lines)
         struct Call { uint32_t call, to, matrix; uint32_t seg[16]; std::vector<uint32_t> vertices; std::string listing; uint32_t listed;
-            uint32_t fc0 = 0, fc1 = 0; };   // (possess136) the colour combiner set when it was called
+            uint32_t fc0 = 0, fc1 = 0;      // (possess136) the colour combiner set when it was called
+            std::vector<uint32_t> textures; };   // (possess153) the textures it loads
         uint32_t last_fc0 = 0, last_fc1 = 0;
         std::vector<Call> all;
         int cur = -1;
@@ -902,6 +903,10 @@ namespace {
                 }
                 if (op == 0xFD) {
                     const uint32_t t = resolve(w1);
+                    if (cur >= 0 && all[(size_t)cur].textures.size() < 32 &&
+                        std::find(all[(size_t)cur].textures.begin(), all[(size_t)cur].textures.end(), t) == all[(size_t)cur].textures.end()) {
+                        all[(size_t)cur].textures.push_back(t);
+                    }
                     for (int g = 0; g < 3; g++) {
                         auto& known = textures[g];
                         const bool is_known = std::find(known.begin(), known.end(), t) != known.end();
@@ -1134,6 +1139,10 @@ void conker::gold_weapons::frame_end(uint8_t* rdram, uint32_t start, uint32_t en
                 local_character = (int)((ch - characters) / character_size);
             }
         }
+        // (possess153) the 5th player's machine: his character, the extra camera's (no camera of the game's 4 is his)
+        if (local_character < 0 && me >= 4 && conker::possess_test::online_extra_camera()) {
+            local_character = conker::possess_test::fifth_object();
+        }
     }
     std::string made;
     static bool listed[3] = {};
@@ -1160,15 +1169,42 @@ void conker::gold_weapons::frame_end(uint8_t* rdram, uint32_t start, uint32_t en
             }
             clone.whole = all_own;
         }
+        // (possess153) by the textures it loads too, once the weapon's are known (from its model lying about): a list loading none of the
+        // weapon's own textures isn't the weapon, and one loading others isn't the weapon's whole. The possess152 test (two players, both
+        // holding the gold sniper rifle, the others none): every vertex the characters' bodies load was only ever seen with sniper rifle
+        // holders, so each holder's body (2503F8, 35 loads; 258740, 21) was taken for a weapon's whole list, drawn gold, and never left out
+        // scoped (0 body vertices left out): players 1 and 5 saw their own body through the gold scope.
+        const bool textures_known = !textures[g].empty();
+        bool weapon_texture = false, only_weapon_textures = !w.all[i].textures.empty();
+        for (uint32_t t : w.all[i].textures) {
+            const bool its = std::find(textures[g].begin(), textures[g].end(), t) != textures[g].end();
+            weapon_texture = weapon_texture || its;
+            only_weapon_textures = only_weapon_textures && its;
+        }
+        if (textures_known && !only_weapon_textures) {
+            clone.whole = false;
+        }
         {
             auto known = whole_lists.find(w.all[i].to);
             if (clone.whole) {
                 whole_lists[w.all[i].to] = g;
+            } else if (textures_known && !only_weapon_textures) {
+                if (known != whole_lists.end()) {
+                    whole_lists.erase(known);
+                }
             } else if (known != whole_lists.end() && known->second == g) {
                 clone.whole = true;
             }
         }
         clone.hide_body = scoped && k == local_character;
+        if (textures_known && !weapon_texture) {
+            // (possess153) not the weapon: nothing of it gold; copied only to leave the body out, scoped (every vertex load of it)
+            if (!clone.hide_body) {
+                continue;
+            }
+            clone.by_vertices = false;
+            clone.whole = false;
+        }
         const uint32_t before_vertices = clone.vertices, before_hidden = clone.hidden, before_hidden_v = clone.hidden_vertices;
         const uint32_t before_combiners = clone.combiners;
         // (possess150) the same list called again (the same character's in the next view: each is drawn in all 4 views), with the same
