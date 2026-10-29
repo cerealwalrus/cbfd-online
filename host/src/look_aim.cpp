@@ -2934,3 +2934,70 @@ extern "C" void conker_coop_camera_height(uint8_t* rdram, recomp_context* ctx) {
     }
 #endif
 }
+
+// ---- (possess146) The D-pad's strafe ----
+// The game's own strafe is in each character's movement (func_1504CB98, 0x1504DC3C to 0x1504DE70): on the ground, in the first or the
+// second aiming mode (+0x31C's +0x11A 0 or 2), and in a multiplayer arena with any weapon (D_800BE616; elsewhere the M4's, the
+// bazooka's and the shotgun's only), the C-buttons held are masked to C-Left and C-Right (all four with a weapon out, not scoped), and
+// if any is held: the way they make (D_8009917C's halfwords: C-Up the way he faces, C-Left a quarter turn to the left...; the stick's
+// forward or back added when not scoped) is where he walks, at 34 (sp+0x1BC, sp+0x1B4), his facing kept (the stick's X turns it), and
+// his strafe's flag set (+0x31C's +0x52, 2). possess145 gave the game the D-pad as the C-buttons, so everything else that reads them
+// (the look's zoom, a grenade on C-Down, the shotgun's aim with Z) read them too. Here the D-pad is that strafe's alone: at 0x1504DD1C
+// ($a0 the C-buttons held masked by $v0, $a1 the buttons held, $s0 the character) its directions (up C-Up, down C-Down, left C-Left,
+// right C-Right) are added to $a0 under the same mask, and nothing else in the game sees them as C-buttons. Online, in the arenas and
+// the co-op campaign, for the players' characters (the first 5). From the frame's agreed buttons, the same on every machine.
+extern "C" void conker_dpad_strafe(uint8_t* rdram, recomp_context* ctx) {
+#if defined(CONKER_RT64)
+    if (!conker::netsession::active()) {
+        return;
+    }
+    const uint32_t held = (uint32_t)ctx->r5 & 0xFFFFu;
+    if ((held & 0x0F00u) == 0) {
+        return;
+    }
+    if (MEM_BU(0, (gpr)(int32_t)0x800BE616) == 0 && !conker::netmenu::coop_running(rdram)) {
+        return;
+    }
+    const uint32_t c = (uint32_t)ctx->r16;
+    constexpr uint32_t characters = 0x800CC2D0, character_size = 0x32C;
+    if (c < characters || (c - characters) % character_size != 0 || (c - characters) / character_size >= 5) {
+        return;
+    }
+    uint32_t pad = 0;
+    if (held & 0x0800u) {
+        pad |= 0x0008u;   // up: C-Up, forward
+    }
+    if (held & 0x0400u) {
+        pad |= 0x0004u;   // down: C-Down, back
+    }
+    if (held & 0x0200u) {
+        pad |= 0x0002u;   // left: C-Left
+    }
+    if (held & 0x0100u) {
+        pad |= 0x0001u;   // right: C-Right
+    }
+    const uint32_t mask = (uint32_t)ctx->r2 & 0xFu;
+    const uint32_t before = (uint32_t)ctx->r4 & 0xFFFFu;
+    const uint32_t now = before | (pad & mask);
+    ctx->r4 = (gpr)(int32_t)now;
+    static uint32_t told = 0;
+    static uint32_t told_mask[5] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
+    const uint32_t k = (c - characters) / character_size;
+    if (told < 20 && told_mask[k] != mask) {
+        told++;
+        told_mask[k] = mask;
+        const uint32_t aim = (uint32_t)MEM_W(0x31C, (gpr)(int32_t)c);
+        const bool aim_ok = (aim >> 24) == 0x80 && (aim & 0x00FFFFFFu) < 0x007F0000u;
+        const unsigned weapon = aim_ok ? (unsigned)MEM_BU(0x78, (gpr)(int32_t)aim) : 0u, scoped = aim_ok ? (unsigned)MEM_BU(0x197, (gpr)(int32_t)aim) : 0u;
+        char line[220];
+        std::snprintf(line, sizeof(line), "[strafe] f=%u character %u: the D-pad strafes (%s%s%s%s), the game's strafe taking %s of the C-buttons "
+            "(weapon %02X, scoped %u)", (unsigned)conker::netsession::frame(), (unsigned)k, (held & 0x0800u) ? "up " : "", (held & 0x0400u) ? "down " : "",
+            (held & 0x0200u) ? "left " : "", (held & 0x0100u) ? "right" : "", mask == 0xF ? "all four" : "C-Left and C-Right",
+            weapon, scoped);
+        conker::netsession::log(line);
+    }
+#else
+    (void)rdram;
+    (void)ctx;
+#endif
+}
