@@ -146,7 +146,7 @@ strafe whichever way the left stick points; conker_look_targets then sets his mo
 
 Swap Sticks, letting go of R: the left stick's C-buttons are held back from the game (net_session.cpp, input_for_game) from the frame R is let go until no C-button is pressed, so C-Down held on the stick does not throw a grenade.
 
-Swap Sticks, no weapon, R held: Z holds a grenade (look_aim.cpp, no_weapon_walk): C-Down is held with R for as long as Z is (the throw is on its release). While the look is being entered or left with R held, the stick's C-buttons are not passed on (C-Down with R started a grenade).
+The Grenade button (Controls: Grenade, the controller's 0x0040): taken as C-Down by the game's grenade alone (look_aim.cpp, conker_grenade_start and conker_grenade_hold): pressed it starts one, held it keeps it in the hand, let go it throws it. (Z in the no-weapon R-Look no longer throws one; it goes to the game as it is.) While the look is being entered or left with R held, the stick's C-buttons are not passed on (C-Down with R starts a grenade).
 
 Swap Sticks, the grenade's look (kind 0x26): the stick-walking is not applied (it read the held C-Down as walking back and turned the view each frame).
 

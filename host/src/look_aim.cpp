@@ -1698,8 +1698,6 @@ bool conker::look_aim::online_swap_enabled() {
 // game's own strafe; the way pressed is kept (walk_dx, walk_dy) and conker_look_targets sets his moving angle to it from the view,
 // as with a gun. Everything it goes by is in the game's memory and the frame's agreed buttons.
 std::atomic<int> walk_dx[aim_players], walk_dy[aim_players];
-// A player holding a grenade that Z started in the no weapon R-look (C-Down held for it, below), from the frame's agreed buttons.
-std::atomic<bool> grenade_held[aim_players];
 
 namespace {
     // (possess47) the 5th player's input (slot 4, net_session.cpp's fifth_input) while its extra camera is there: its look record is
@@ -1723,33 +1721,9 @@ void conker::look_aim::no_weapon_walk(uint8_t* rdram, int port, uint16_t* button
     int dy = ((*buttons & 0x0008) ? 1 : 0) - ((*buttons & 0x0004) ? 1 : 0);
     walk_dx[port] = 0;
     walk_dy[port] = 0;
-    // Z throws a grenade here (the game holds and throws one with C-Down while R is up, and R-look has R held): from Z's press C-Down is held with R
-    // (logged: R and C-Down together start the grenade in the look, with its zoomed view) for as long as Z is, so the grenade is held to blow
-    // up in the hand, or thrown on Z's release.
-    // Z itself is not passed on.
-    static bool grenade_on[aim_players] = {};
-    static bool prev_z[aim_players] = {};
-    static uint32_t grenade_generation = 0;
-    if (grenade_generation != conker::netsession::hook_generation()) {
-        grenade_generation = conker::netsession::hook_generation();
-        for (int k = 0; k < aim_players; k++) {
-            grenade_on[k] = false;
-            prev_z[k] = false;
-        }
-    }
-    const bool z_now = (*buttons & 0x2000) != 0;
-    const bool z_edge = z_now && !prev_z[port];
-    prev_z[port] = z_now;
-    grenade_held[port] = grenade_on[port];
-    if (grenade_on[port]) {
-        if (z_now) {
-            *buttons = (uint16_t)((*buttons & ~(c_buttons | 0x2000 | 0x0F00)) | 0x0010 | 0x0004);
-            return;
-        }
-        grenade_on[port] = false;
-        grenade_held[port] = false;
-        *buttons &= (uint16_t)~c_buttons;
-    }
+    // (possess151) Z no longer throws a grenade here (0.10.x to possess150: from Z's press C-Down was held with R for as long as Z was, the
+    // grenade held to blow up in the hand or thrown on Z's release, and Z itself kept from the game): the Grenade button does it now
+    // (conker_grenade_start), and Z goes to the game as it is.
     const uint32_t base = (uint32_t)MEM_W(0, (gpr)(int32_t)0x800DBFF0);
     if ((base & 0xFF000000u) != 0x80000000u) {
         return;
@@ -1816,15 +1790,6 @@ void conker::look_aim::no_weapon_walk(uint8_t* rdram, int port, uint16_t* button
         const gpr conker = (gpr)(int32_t)MEM_W(0x3D0, camera);
         if (((uint32_t)conker & 0xFF000000u) != 0x80000000u) {
             return;
-        }
-        if (z_edge && (*buttons & 0x0010) != 0) {
-            grenade_on[port] = true;
-            grenade_held[port] = true;
-            *buttons = (uint16_t)((*buttons & ~(c_buttons | 0x2000)) | 0x0010 | 0x0004);
-            return;
-        }
-        if (z_now) {
-            *buttons &= (uint16_t)~0x2000;
         }
         if (dx == 0 && dy == 0) {
             *buttons &= (uint16_t)~c_buttons;
@@ -2503,7 +2468,7 @@ extern "C" void conker_steady_walk(uint8_t* rdram, recomp_context* ctx) {
     const gpr own = (gpr)(int32_t)MEM_W(0x31C, object);
     const bool game_turning = MEM_BU(0x127, object) != 0xFF && kseg0(own) && MEM_H(0x46, own) > 0;
     const float speed = read_float(rdram, object, 0x3C);
-    if (kind == 0x26 || kind == 0x14 || grenade_held[player].load() || hit_hold_state[player].holding || game_turning || !(speed >= 0.0f && speed < 100.0f)) {
+    if (kind == 0x26 || kind == 0x14 || hit_hold_state[player].holding || game_turning || !(speed >= 0.0f && speed < 100.0f)) {
         w.have = false;
         return;
     }
@@ -2630,12 +2595,9 @@ extern "C" void conker_look_targets(uint8_t* rdram, recomp_context* ctx) {
     // Left to the game, he turned his body toward the way he walked, the aim making up the difference, but only
     // to +-9000 units (about 49 degrees): strafing came out as a diagonal, walking back as forward, and with the
     // mouse turning the aim held at its limit on the turn's side, so he went the wrong way or ran on the spot.
-    // (Not in the grenade's look, kind 0x26: C-Down is held for it (Z, no_weapon_walk), and walking back turned his facing, and the view
-    // with it, every frame.)
-    // The grenade's look is 0x26 in War and 0x14 in The Vault: there, with no weapon, R and Z had Conker spin on the spot. Whatever its
-    // kind, not while a grenade Z started is held.
+    // (Not in the grenade's look, kind 0x26: C-Down is held for it, and walking back turned his facing, and the view with it, every
+    // frame.) The grenade's look is 0x26 in War and 0x14 in The Vault. (possess151: Z no longer starts one, the Grenade button does.)
     const int look_player = camera_player(rdram, ctx->r16);
-    const bool holding_grenade = look_player >= 0 && look_player < aim_players && grenade_held[look_player].load();
     const uint8_t look_kind = MEM_BU(0x23E, ctx->r16);
     // (0.10.8: not while a hit in the look plays, hit_holding)
     const bool hit_hold_now = hit_holding(rdram, ctx->r16, look_player, true);
@@ -2647,7 +2609,7 @@ extern "C" void conker_look_targets(uint8_t* rdram, recomp_context* ctx) {
     if (look_player >= 0 && look_player < aim_players && hit_hold_now) {
         release_frames[look_player] = 0;
     }
-    if ((units_per_degree != 0.0f) && swap_state(look_player) && look_kind != 0x26 && look_kind != 0x14 && !holding_grenade && !hit_hold_now) {
+    if ((units_per_degree != 0.0f) && swap_state(look_player) && look_kind != 0x26 && look_kind != 0x14 && !hit_hold_now) {
         constexpr uint32_t c_up = 0x0008, c_down = 0x0004, c_left = 0x0002, c_right = 0x0001;
         // The buttons this camera's player holds (+0x36C points at them).
         const uint32_t held = (uint32_t)MEM_HU(0, (gpr)(int32_t)MEM_W(0x36C, ctx->r16));
@@ -2890,7 +2852,6 @@ void conker::look_aim::reset_online_state() {
         hit_hold_state[p] = HitHold{};
         walk_dx[p] = 0;
         walk_dy[p] = 0;
-        grenade_held[p] = false;
         gun_walk_dx[p] = 0;
         gun_walk_dy[p] = 0;
         gun_walk_set[p] = false;

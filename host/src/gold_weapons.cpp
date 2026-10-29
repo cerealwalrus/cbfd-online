@@ -1342,6 +1342,22 @@ extern "C" void conker_gold_fov_start(uint8_t* rdram, recomp_context* ctx) {
         std::memcpy(&across, &bits, 4);
         zoom_given[view] = std::isfinite(across) ? std::fabs(across) : 0.0f;
     }
+    // (possess151 diagnostics) a view's zoom handed out inside the 5th player's view (the extra view), or for a view past the 4
+    if (conker::possess_test::drawing_extra_view() || view >= 4) {
+        static uint32_t told = 0;
+        static uint32_t told_bits[2] = { 1u, 1u };
+        const int w = conker::possess_test::drawing_extra_view() ? 0 : 1;
+        if (told < 60 && told_bits[w] != (uint32_t)ctx->r5) {
+            told++;
+            told_bits[w] = (uint32_t)ctx->r5;
+            float a, u;
+            const uint32_t ab = (uint32_t)ctx->r5, ub = (uint32_t)ctx->r6;
+            std::memcpy(&a, &ab, 4);
+            std::memcpy(&u, &ub, 4);
+            say("[zoom] f=%u the game makes view %u's zoom %.2f %.2f%s (from %08X)", (unsigned)conker::netsession::frame(), (unsigned)view, a, u,
+                w == 0 ? ", inside the 5th player's view" : "", (unsigned)(uint32_t)ctx->r31);
+        }
+    }
     if (gold_scoped_view(rdram, view) < 0 || ((uint32_t)ctx->r5 == 0 && (uint32_t)ctx->r6 == 0)) {
         return;
     }
@@ -1810,6 +1826,19 @@ extern "C" void conker_gold_projection_made(uint8_t* rdram, recomp_context* ctx)
     }
     const uint32_t record = records + view * 0x180u;
     const gpr r = (gpr)(int32_t)record;
+    // (possess151 diagnostics) view 1's projection made again inside the 5th player's view: at what field of view, by whom
+    if (view == 0 && conker::possess_test::drawing_extra_view()) {
+        static uint32_t told = 0;
+        static float told_across = -1.0f;
+        const float a = record_float(r, rdram, 0x74);
+        if (told < 80 && std::fabs(a - told_across) > 0.05f) {
+            told++;
+            told_across = a;
+            say("[zoom] f=%u inside the 5th player's view the game made view 1's projection again: %.2f by %.2f degrees (by %08X), across %.3f",
+                (unsigned)conker::netsession::frame(), a, record_float(r, rdram, 0x78), (unsigned)projection_caller[0],
+                fixed_element(rdram, record + 0x100u + (uint32_t)(MEM_BU(0, (gpr)(int32_t)0x800BE9C0) & 1u) * 0x40u, 0));
+        }
+    }
     const uint32_t fixed = record + 0x100u + (uint32_t)(MEM_BU(0, (gpr)(int32_t)0x800BE9C0) & 1u) * 0x40u;
     const uint32_t floats = record + 0xBCu;
     const float extra = record_float((gpr)(int32_t)0x800C3648, rdram, 0);
@@ -2228,6 +2257,17 @@ void conker::gold_weapons::fifth_view_projection(uint8_t* rdram, uint32_t camera
     MEM_W(0x74, r) = (int32_t)b;
     std::memcpy(&b, &fy, 4);
     MEM_W(0x78, r) = (int32_t)b;
+    // (possess151 diagnostics) each frame his zoom changes: what his view is made at
+    {
+        static float last_fx = -1.0f;
+        static uint32_t told = 0;
+        if (std::fabs(fx - last_fx) > 0.05f && told < 160) {
+            told++;
+            say("[zoom] f=%u the 5th player's view made at %.2f by %.2f (his camera's %.2f %.2f; %+.2f since the last)", (unsigned)conker::netsession::frame(),
+                fx, fy, across, up, last_fx < 0.0f ? 0.0f : fx - last_fx);
+        }
+        last_fx = fx;
+    }
     // (possess150: 8 of these at most, apart from the other [fifth] lines: possess149's 24 lines all went on them, as he zoomed in and out)
     static int told_zoom = -1000;
     static uint32_t zoom_told = 0;
@@ -2241,15 +2281,16 @@ void conker::gold_weapons::fifth_view_projection(uint8_t* rdram, uint32_t camera
     }
 }
 
-// ---- (possess150) The 5th player's own laser out of his view while he's scoped (a weapon not gold), all of it ----
-// The possess149 test's p5normalsniper.mp4 (the laser on, scoped): green light across his view from where he aimed, and the wall there
-// lit green, with his laser's glow at the gun and its beam already left out of his view (0x15102834, 0x151028C4); player 1's own video
-// shows none of his laser at all, scoped. The laser sight (func_15101378, each frame) has five parts: the glow at the gun (+0x24 of its
-// +0x110), the dot where it hits (+0x28), a light there (+0x2C: its +0x14's +0x9, 1 off), the beam (+0x30) and a glow where it ends on
-// a character (+0x34). In the 5th player's view (the extra view: the game's memory is put back after it) they're all taken as off, as
-// the laser sight's own off does it (its +0x133's bit 0 too): as the view begins (fifth_view_begin, from possess_test.cpp), and again
-// should the laser sight be run inside it (0x151019B0, its end). The laser is the one whose checks (func_151028AC, func_1510281C) name
-// the 5th player's character as its holder. [fifth] lines of what was on and taken off.
+// ---- (possess150, possess151) The 5th player's own laser in his view while he's scoped (a weapon not gold): the dot, not the beam ----
+// The laser sight (func_15101378, each frame) has five parts: the glow at the gun (+0x24 of its +0x110), the dot where it hits (+0x28),
+// a light there (+0x2C: its +0x14's +0x9, 1 off), the beam (+0x30) and a glow where it ends on a character (+0x34). Scoped, player 1
+// sees his dot and the light it casts on the wall, not the beam or the glow at the gun (the possess150 test's screenshots). possess150
+// took all five out of the 5th player's view; now only the beam and the glow at the gun are. The possess150 test's logs show the laser
+// sight run again inside his view (the extra view: the game's memory is put back after it), worked out from what the view's passes left
+// (the possess149 test: green beams across his view from where he aimed): there, the dot, the light and the end's glow are put back
+// where the frame's own run had them (their places and the dot's surface, kept as the view begins: fifth_view_begin), and the beam and
+// the glow at the gun taken off again (0x151019B0, its end). The laser is the one whose checks (func_151028AC, func_1510281C) name the
+// 5th player's character as its holder. [fifth] lines of what was on, and how far the run inside the view moved the dot.
 namespace {
     uint32_t fifth_laser = 0;          // the 5th player's character's laser sight (its object), as last seen
     uint32_t fifth_laser_told = 0;
@@ -2258,26 +2299,76 @@ namespace {
         return kseg0(laser) && (uint32_t)MEM_W(0x110, (gpr)(int32_t)laser) == characters + (uint32_t)fifth_character * character_size;
     }
 
-    // the laser sight's parts taken as off; what was on (a bit a part: 1 the glow, 2 the dot, 4 the light, 8 the beam, 16 the end's glow)
-    uint32_t laser_parts_off(uint8_t* rdram, uint32_t laser) {
+    // the laser sight's parts as the frame's own run left them, kept as the extra view begins
+    struct LaserKept {
+        bool have = false;
+        uint32_t laser = 0, dot = 0, light_data = 0, end_glow = 0;
+        uint8_t ends[0x18] = {};          // the laser's +0x34 to +0x4C: where it starts and ends
+        uint8_t dot_place[0xC] = {};      // the dot's +0x34 to +0x40
+        uint8_t dot_surface[0x14] = {};   // the dot's +0x110 to +0x124: its bit, and the surface it's on
+        uint8_t light[0x14] = {};         // the light's own (+0x14's): its place and its off bit
+        uint8_t end_place[0xC] = {};      // the end's glow's +0x40 to +0x4C
+    };
+    LaserKept laser_kept;
+
+    void copy_out(uint8_t* rdram, uint32_t at, uint8_t* to, uint32_t n) {
+        for (uint32_t i = 0; i < n; i++) {
+            to[i] = MEM_BU(i, (gpr)(int32_t)at);
+        }
+    }
+    void copy_in(uint8_t* rdram, uint32_t at, const uint8_t* from, uint32_t n) {
+        for (uint32_t i = 0; i < n; i++) {
+            MEM_B(i, (gpr)(int32_t)at) = (int8_t)from[i];
+        }
+    }
+    float kept_float(const uint8_t* bytes, uint32_t off) {
+        // (bytes as MEM_BU read them: the game's own order, a word's bytes most significant first)
+        const uint32_t b = ((uint32_t)bytes[off] << 24) | ((uint32_t)bytes[off + 1] << 16) | ((uint32_t)bytes[off + 2] << 8) | bytes[off + 3];
+        float v;
+        std::memcpy(&v, &b, 4);
+        return v;
+    }
+
+    void keep_laser(uint8_t* rdram, uint32_t laser) {
+        const gpr b = (gpr)(int32_t)(laser + 0x110u);
+        LaserKept k;
+        k.have = true;
+        k.laser = laser;
+        copy_out(rdram, laser + 0x34u, k.ends, sizeof(k.ends));
+        k.dot = (uint32_t)MEM_W(0x28, b);
+        if (kseg0(k.dot)) {
+            copy_out(rdram, k.dot + 0x34u, k.dot_place, sizeof(k.dot_place));
+            copy_out(rdram, k.dot + 0x110u, k.dot_surface, sizeof(k.dot_surface));
+        }
+        const uint32_t light = (uint32_t)MEM_W(0x2C, b);
+        k.light_data = kseg0(light) ? (uint32_t)MEM_W(0x14, (gpr)(int32_t)light) : 0u;
+        if (kseg0(k.light_data)) {
+            copy_out(rdram, k.light_data, k.light, sizeof(k.light));
+        }
+        k.end_glow = (uint32_t)MEM_W(0x34, b);
+        if (kseg0(k.end_glow)) {
+            copy_out(rdram, k.end_glow + 0x40u, k.end_place, sizeof(k.end_place));
+        }
+        laser_kept = k;
+    }
+
+    // the beam and the glow at the gun taken off; what was on (a bit a part: 1 the glow, 2 the dot, 4 the light, 8 the beam, 16 the end's)
+    uint32_t beam_off(uint8_t* rdram, uint32_t laser) {
         const gpr b = (gpr)(int32_t)(laser + 0x110u);
         uint32_t was_on = 0;
-        auto part = [&](uint32_t off) { return (uint32_t)MEM_W(off, b); };
-        MEM_B(0x23, b) = (int8_t)(MEM_BU(0x23, b) & ~1u);
-        const uint32_t glow = part(0x24), dot = part(0x28), light = part(0x2C), beam = part(0x30), end_glow = part(0x34);
+        const uint32_t glow = (uint32_t)MEM_W(0x24, b), dot = (uint32_t)MEM_W(0x28, b), light = (uint32_t)MEM_W(0x2C, b);
+        const uint32_t beam = (uint32_t)MEM_W(0x30, b), end_glow = (uint32_t)MEM_W(0x34, b);
         if (kseg0(glow) && (MEM_BU(0xD4, (gpr)(int32_t)glow) & 1u) != 0) {
             was_on |= 1u;
             MEM_B(0xD4, (gpr)(int32_t)glow) = (int8_t)(MEM_BU(0xD4, (gpr)(int32_t)glow) & ~1u);
         }
         if (kseg0(dot) && (MEM_BU(0x110, (gpr)(int32_t)dot) & 1u) != 0) {
             was_on |= 2u;
-            MEM_B(0x110, (gpr)(int32_t)dot) = (int8_t)(MEM_BU(0x110, (gpr)(int32_t)dot) & ~1u);
         }
         if (kseg0(light)) {
             const uint32_t l = (uint32_t)MEM_W(0x14, (gpr)(int32_t)light);
             if (kseg0(l) && MEM_BU(0x9, (gpr)(int32_t)l) == 0) {
                 was_on |= 4u;
-                MEM_B(0x9, (gpr)(int32_t)l) = 1;
             }
         }
         if (kseg0(beam) && (MEM_BU(0x174, (gpr)(int32_t)beam) & 1u) != 0) {
@@ -2286,29 +2377,40 @@ namespace {
         }
         if (kseg0(end_glow) && (MEM_BU(0xAC, (gpr)(int32_t)end_glow) & 1u) != 0) {
             was_on |= 16u;
-            MEM_B(0xAC, (gpr)(int32_t)end_glow) = (int8_t)(MEM_BU(0xAC, (gpr)(int32_t)end_glow) & ~1u);
         }
         return was_on;
     }
 
-    void fifth_laser_off_told(uint32_t was_on, int where) {
+    void fifth_laser_told_line(uint32_t was_on, int where, float dot_moved, float start_moved) {
         static uint32_t told_on[2] = { 0xFFFFFFFFu, 0xFFFFFFFFu };
-        if (fifth_laser_told < 16 && told_on[where & 1] != was_on) {
+        static uint32_t moved_told = 0;
+        const bool moved = where == 1 && (dot_moved > 1.0f || start_moved > 1.0f) && moved_told < 12;
+        if (fifth_laser_told < 24 && (told_on[where & 1] != was_on || moved)) {
             told_on[where & 1] = was_on;
             fifth_laser_told++;
-            say("[fifth] the 5th player scoped (a weapon not gold): his laser taken off in his own view %s; of it on:%s%s%s%s%s%s",
-                where == 0 ? "as it begins" : "after the laser sight ran again inside it", (was_on & 1u) ? " the glow at the gun" : "",
-                (was_on & 2u) ? " the dot" : "", (was_on & 4u) ? " the light" : "", (was_on & 8u) ? " the beam" : "",
-                (was_on & 16u) ? " the glow at its end" : "", was_on == 0 ? " none" : "");
+            if (moved) {
+                moved_told++;
+            }
+            say("[fifth] the 5th player scoped (a weapon not gold): his laser's beam and glow at the gun taken off in his own view %s; of it on:%s%s%s%s%s%s"
+                "%s", where == 0 ? "as it begins" : "after the laser sight ran again inside it (its dot, light and end put back as the frame had them)",
+                (was_on & 1u) ? " the glow at the gun" : "", (was_on & 2u) ? " the dot" : "", (was_on & 4u) ? " the light" : "",
+                (was_on & 8u) ? " the beam" : "", (was_on & 16u) ? " the glow at its end" : "", was_on == 0 ? " none" : "",
+                where == 1 ? (std::string("; the run inside it had moved the dot ") + std::to_string((int)dot_moved) + " and the laser's start " +
+                    std::to_string((int)start_moved)).c_str() : "");
         }
     }
 }
 
 void conker::gold_weapons::fifth_view_begin(uint8_t* rdram) {
-    if (!fifth_laser_ok(rdram, fifth_laser) || !fifth_scoped_plain(rdram)) {
+    laser_kept.have = false;
+    if (!fifth_laser_ok(rdram, fifth_laser)) {
         return;
     }
-    fifth_laser_off_told(laser_parts_off(rdram, fifth_laser), 0);
+    keep_laser(rdram, fifth_laser);
+    if (!fifth_scoped_plain(rdram)) {
+        return;
+    }
+    fifth_laser_told_line(beam_off(rdram, fifth_laser), 0, 0.0f, 0.0f);
 }
 
 // func_15101378 at 0x151019B0, its end ($s0 the laser sight): run inside the 5th player's view
@@ -2324,7 +2426,32 @@ extern "C" void conker_fifth_laser_update(uint8_t* rdram, recomp_context* ctx) {
     if (!fifth_scoped_plain(rdram)) {
         return;
     }
-    fifth_laser_off_told(laser_parts_off(rdram, laser), 1);
+    float dot_moved = 0.0f, start_moved = 0.0f;
+    const LaserKept& k = laser_kept;
+    if (k.have && k.laser == laser) {
+        auto dist = [&](uint32_t at, const uint8_t* kept) {
+            float d2 = 0.0f;
+            for (uint32_t i = 0; i < 3; i++) {
+                const float now = float_at(rdram, at + 4u * i), was = kept_float(kept, 4u * i);
+                d2 += (now - was) * (now - was);
+            }
+            return std::isfinite(d2) ? std::sqrt(d2) : 1e9f;
+        };
+        start_moved = dist(laser + 0x34u, k.ends);
+        copy_in(rdram, laser + 0x34u, k.ends, sizeof(k.ends));
+        if (kseg0(k.dot) && (uint32_t)MEM_W(0x28, (gpr)(int32_t)(laser + 0x110u)) == k.dot) {
+            dot_moved = dist(k.dot + 0x34u, k.dot_place);
+            copy_in(rdram, k.dot + 0x34u, k.dot_place, sizeof(k.dot_place));
+            copy_in(rdram, k.dot + 0x110u, k.dot_surface, sizeof(k.dot_surface));
+        }
+        if (kseg0(k.light_data)) {
+            copy_in(rdram, k.light_data, k.light, sizeof(k.light));
+        }
+        if (kseg0(k.end_glow) && (uint32_t)MEM_W(0x34, (gpr)(int32_t)(laser + 0x110u)) == k.end_glow) {
+            copy_in(rdram, k.end_glow + 0x40u, k.end_place, sizeof(k.end_place));
+        }
+    }
+    fifth_laser_told_line(beam_off(rdram, laser), 1, dot_moved, start_moved);
 }
 
 // func_1502E4C4 at 0x1502E9D0, its end ($s1 the character, its +0x74 the views it's left out of): in the 5th player's view (the extra
