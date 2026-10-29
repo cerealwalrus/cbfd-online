@@ -1651,6 +1651,33 @@ bool conker::possess_test::drawing_extra_view() {
     return extra_view_now;
 }
 
+// (possess114) The extra camera's view is drawn as view 1 (index 0, conker_possess_view_local_body), and a view's passes go by its
+// player's bit of D_800D18A0 (the match's characters out of it, a bit a character, a player's its number): for a player out of the
+// match func_15019464 draws the sky alone (func_1510FEA0) and none of the level (func_1510B9D0, which looks again), and func_150195A0
+// none of the characters and objects. So once player 1 was out (possess113's test: its last life gone, taken 0000->0001 at f=2847,
+// no computer player of its team to take over), the 5th player's view was the sky and nothing else to the match's end (381 commands a
+// frame, not 1450, and 0 objects drawn), through its own deaths and comebacks too, though its camera turned and moved as ever. Here,
+// at those three reads of D_800D18A0 (*bits the halfword as loaded, view the view's index), while the extra camera's view is drawn,
+// view 1's bit is the 5th player's own character's: its view is drawn as a player's own is, out of the match or in. Every machine
+// alike (each draws the view for what it marks as in sight, from the game's memory).
+extern "C" void conker_possess_view_out(uint8_t* rdram, gpr* bits, gpr view) {
+    if (!extra_view_now || (int16_t)(uint16_t)view != 0 || ch5 < 0 || ch5 >= 16) {
+        return;
+    }
+    const uint32_t loaded = (uint32_t)*bits & 0xFFFFu;
+    const uint32_t own = ((uint32_t)MEM_HU(0, (gpr)(int32_t)0x800D18A0) >> ch5) & 1u;
+    *bits = (gpr)((loaded & ~1u) | own);
+    // (each time the bits change: as loaded, and whose bit view 1 has)
+    static uint32_t told_loaded = 0xFFFFFFFFu, told = 0;
+    if (loaded != told_loaded && told < 40) {
+        told++;
+        told_loaded = loaded;
+        log("f=%u [view] the extra camera's view, drawn as view 1: the match's characters out %04X (player 1 %s, the 5th player's character %d %s)%s",
+            (unsigned)frames, (unsigned)loaded, (loaded & 1u) != 0 ? "out" : "in", ch5, own != 0 ? "out" : "in",
+            (loaded & 1u) != own ? ": view 1's bit as the 5th player's" : "");
+    }
+}
+
 int conker::possess_test::played_camera() {
     return extra_played && extra_ready ? extra : 0;
 }

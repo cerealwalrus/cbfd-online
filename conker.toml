@@ -3412,6 +3412,26 @@ func = "func_1508E89C"
 before_vram = 0x1508E89C
 text = "{ extern int conker_possess_takeover(uint8_t*, recomp_context*); if (conker_possess_takeover(rdram, ctx)) { ctx->r2 = 0; return; } }"
 
+# possess114: a view's passes go by its player's bit of D_800D18A0 (the match's characters out of it): for a player out of the match
+# func_15019464 (the first pass) draws the sky alone, func_150195A0 (the 3D) none of the characters and objects, and func_1510B9D0 (the
+# level) looks again. The extra camera's view is drawn as view 1, so once player 1 was out the 5th player's view was the sky alone. As
+# each loads the halfword ($t8, $t2, $t5; the view in $s1, $s1, $a1), view 1's bit is the 5th player's own while the extra camera's
+# view is drawn (host/src/possess_test.cpp, conker_possess_view_out).
+[[patches.hook]]
+func = "func_15019464"
+before_vram = 0x15019554
+text = "{ extern void conker_possess_view_out(uint8_t*, gpr*, gpr); conker_possess_view_out(rdram, &ctx->r24, ctx->r17); }"
+
+[[patches.hook]]
+func = "func_150195A0"
+before_vram = 0x15019630
+text = "{ extern void conker_possess_view_out(uint8_t*, gpr*, gpr); conker_possess_view_out(rdram, &ctx->r10, ctx->r17); }"
+
+[[patches.hook]]
+func = "func_1510B9D0"
+before_vram = 0x1510BA54
+text = "{ extern void conker_possess_view_out(uint8_t*, gpr*, gpr); conker_possess_view_out(rdram, &ctx->r13, ctx->r5); }"
+
 # possess51: online, the 5th player on the teams screen as a player (host/src/possess_test.cpp, conker_possess_teams): put in the list
 # after the players as the screen's frame starts ($a2 the players, about to be kept), its presses from ours (the list's entry $v0, $a1
 # its presses' place), its icon's text entry noted (the P5 icon) and, as the frame ends, taken out of the list again.
