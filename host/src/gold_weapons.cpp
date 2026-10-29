@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <string>
 
 #include "recomp.h"
 
@@ -239,25 +240,31 @@ extern "C" void conker_gold_pickups(uint8_t* rdram, recomp_context* ctx) {
 // prop: in sight of a view the frame before (+0x6F's 0x40) and not hidden (+0x6E), its behaviour (+0x38, the weapons' func_1511DF6C).
 extern "C" void func_1511DF6C(uint8_t* rdram, recomp_context* ctx);
 
-// (possess121) Gold, lying about. A prop's model is its vertices (+0x28, +0x16 of them, 0x10 each: x, y, z, flags, s, t, then its
-// colour, r g b a at +0xC) and the lists drawing them; a prop that moves (+0x70's 0x1, the weapons, spinning) has its vertices put
-// where it is each frame (func_150A44F0: their places alone, x y z, into its buffer in D_800DBEF8's table, or +0x20 and +0x24, copies
-// made as the level loads), the rest of each vertex as it was copied. The gold weapons share their model with the ones they were copied
-// from, so each gets vertices of its own in ours, their colours made gold (as bright as they were, in the Rare logo's gold), and its
-// buffers' colours made the same, each frame. Only the gold weapons' own copies: the level's model, and every other weapon, as they are.
+// (possess121, possess122) Gold, lying about. A weapon's model (its prop's +0xC, shared by every prop of its kind) is its vertices (+0x28,
+// +0x16 of them, 0x10 each: x, y, z, flags, s, t, then r g b a at +0xC) and right after them its display list (+0x1C, ended by a
+// G_ENDDL), which loads those vertices by address. possess121 coloured a copy of the vertices alone, which only the prop's collisions
+// read (func_150A44F0: their places into the props' collision buffers), so nothing changed on screen (its test: 98, 190 and 105
+// vertices copied, the weapons as ever). Now each gold weapon gets a copy of its whole model in ours, vertices and display list, the
+// list's addresses inside the model (its vertices, its own lists, textures and lights) moved to the copy's, the vertices' colours made
+// gold (as bright as they were, in the Rare logo's gold); its +0x1C is the copy's list. The level's model and every other weapon as
+// they are. [gold] lines: what the copy was, and whether the list lights its vertices (then the colours aren't what's drawn).
 namespace {
-    constexpr uint32_t vertices_ours = 0x80FF0000;   // ours: the gold weapons' vertices (up to 0x80FF8000)
-    constexpr uint32_t vertices_ours_size = 0x8000;
-    constexpr uint32_t moved_vertices = 0x800DBEF8;  // D_800DBEF8: each prop's vertex buffer, put where it is each frame
-    struct GoldModel { uint32_t prop = 0, from = 0, ours = 0, count = 0; };
+    constexpr uint32_t models_ours = 0x80FF0000;   // ours: the gold weapons' models (0x5000 each, up to 0x80FFF000)
+    struct GoldModel { uint32_t prop = 0, dl = 0, from_dl = 0; };
     GoldModel gold_models[3];
-    uint32_t vertices_used = 0;
-    uint32_t gold_level = 0xFFFFFFFFu;   // the props list the models above were made for
+    constexpr uint32_t model_room = 0x5000;   // each gold weapon's own room in ours
+
+    uint32_t to_kseg0(uint32_t a) {
+        if ((a >> 24) == 0x80) {
+            return a;
+        }
+        if (a < 0x00800000u) {
+            return a | 0x80000000u;
+        }
+        return 0;   // (a segment's address: not ours to move)
+    }
 
     void gold_colours(uint8_t* rdram, uint32_t at, uint32_t count) {
-        if (!kseg0(at) || !kseg0(at + count * 0x10u)) {
-            return;
-        }
         for (uint32_t v = 0; v < count; v++) {
             const gpr c = (gpr)(int32_t)(at + v * 0x10u + 0xCu);
             const uint32_t r = MEM_BU(0, c), gr = MEM_BU(1, c), b = MEM_BU(2, c);
@@ -268,24 +275,64 @@ namespace {
         }
     }
 
-    // the colours of our gold vertices into a buffer of the same model's (each frame: the same colours, whatever was there)
-    void copy_colours(uint8_t* rdram, uint32_t to, uint32_t from, uint32_t count) {
-        if (!kseg0(to) || !kseg0(to + count * 0x10u) || to == from) {
-            return;
+    // the gold copy of a prop's model: its list's address in ours, or 0
+    uint32_t gold_model(uint8_t* rdram, uint32_t prop, int g) {
+        const gpr p = (gpr)(int32_t)prop;
+        const uint32_t from = (uint32_t)MEM_W(0x28, p), dl = (uint32_t)MEM_W(0x1C, p), n = (uint32_t)MEM_HU(0x16, p);
+        if (!kseg0(from) || !kseg0(dl) || dl < from || dl - from != n * 0x10u || n == 0 || n > 0x800) {
+            say("[gold] the %s's model isn't as expected (vertices %08X x%u, list %08X): not made gold", golds[g].name, (unsigned)from, (unsigned)n,
+                (unsigned)dl);
+            return 0;
         }
-        for (uint32_t v = 0; v < count; v++) {
-            MEM_W(v * 0x10u + 0xCu, (gpr)(int32_t)to) = MEM_W(v * 0x10u + 0xCu, (gpr)(int32_t)from);
+        // the list's end (its G_ENDDL)
+        uint32_t end = 0, lit = 0;
+        std::string ops;
+        for (uint32_t c = dl; c < dl + 0x8000u && kseg0(c + 8); c += 8) {
+            const uint32_t w0 = (uint32_t)MEM_W(0, (gpr)(int32_t)c), w1 = (uint32_t)MEM_W(4, (gpr)(int32_t)c);
+            const uint32_t op = w0 >> 24;
+            if (ops.size() < 24 * 3) {
+                char piece[8];
+                std::snprintf(piece, sizeof(piece), " %02X", (unsigned)op);
+                ops += piece;
+            }
+            if (op == 0xD9 && (w1 & 0x00200000u) != 0) {
+                lit = 1;
+            }
+            if (op == 0xDF) {
+                end = c + 8;
+                break;
+            }
         }
+        const uint32_t size = end > from ? end - from : 0;
+        if (end == 0 || size > model_room) {
+            say("[gold] the %s's model: %s (%u bytes): not made gold", golds[g].name, end == 0 ? "no end to its list" : "no room in ours",
+                (unsigned)size);
+            return 0;
+        }
+        const uint32_t ours = models_ours + (uint32_t)g * model_room;
+        std::memcpy(rdram + (ours - 0x80000000u), rdram + (from - 0x80000000u), size);
+        uint32_t moved = 0;
+        for (uint32_t c = ours + n * 0x10u; c < ours + size; c += 8) {
+            const uint32_t op = (uint32_t)MEM_W(0, (gpr)(int32_t)c) >> 24;
+            if (op != 0x01 && op != 0xDE && op != 0xFD && op != 0xDC && op != 0xDB) {
+                continue;
+            }
+            const uint32_t w1 = (uint32_t)MEM_W(4, (gpr)(int32_t)c);
+            const uint32_t a = to_kseg0(w1);
+            if (a >= from && a < end) {
+                const uint32_t to = ours + (a - from);
+                MEM_W(4, (gpr)(int32_t)c) = (int32_t)((w1 >> 24) == 0x80 ? to : (to & 0x1FFFFFFFu));
+                moved++;
+            }
+        }
+        gold_colours(rdram, ours, n);
+        say("[gold] the %s made gold: its model (%u vertices at %08X, its list at %08X, %u bytes in all) copied to %08X, %u addresses moved; "
+            "the list %s its vertices; its first commands:%s", golds[g].name, (unsigned)n, (unsigned)from, (unsigned)dl, (unsigned)size,
+            (unsigned)ours, (unsigned)moved, lit ? "LIGHTS" : "doesn't light", ops.c_str());
+        return ours + n * 0x10u;
     }
 
     void gold_paint(uint8_t* rdram, uint32_t list, uint32_t first, uint32_t count) {
-        if (gold_level != list) {
-            gold_level = list;
-            vertices_used = 0;
-            for (GoldModel& m : gold_models) {
-                m = GoldModel{};
-            }
-        }
         for (uint32_t i = first; i < count; i++) {
             const uint32_t prop = list + i * 0xA0u;
             const gpr p = (gpr)(int32_t)prop;
@@ -297,42 +344,19 @@ namespace {
                 continue;
             }
             GoldModel& m = gold_models[g];
-            const uint32_t n = (uint32_t)MEM_HU(0x16, p);
-            if (m.prop != prop) {
-                const uint32_t from = (uint32_t)MEM_W(0x28, p);
-                if (n == 0 || n > 0x800 || !kseg0(from) || vertices_used + n * 0x10u > vertices_ours_size) {
-                    continue;
-                }
-                m.prop = prop;
-                m.from = from;
-                m.count = n;
-                m.ours = vertices_ours + vertices_used;
-                vertices_used += (n * 0x10u + 15u) & ~15u;
-                std::memcpy(rdram + (m.ours - 0x80000000u), rdram + (from - 0x80000000u), n * 0x10u);
-                gold_colours(rdram, m.ours, n);
-                MEM_W(0x28, p) = (int32_t)m.ours;
-                for (uint32_t b : { 0x20u, 0x24u }) {
-                    if ((uint32_t)MEM_W(b, p) == from) {
-                        MEM_W(b, p) = (int32_t)m.ours;
-                    }
-                }
-                say("[gold] the %s made gold: its %u vertices (from %08X) copied to %08X; its buffers %08X %08X", golds[g].name, (unsigned)n,
-                    (unsigned)from, (unsigned)m.ours, (unsigned)MEM_W(0x20, p), (unsigned)MEM_W(0x24, p));
+            const uint32_t now = (uint32_t)MEM_W(0x1C, p);
+            if (now == m.dl || (m.prop == prop && m.dl == 1 && now == m.from_dl)) {
+                continue;   // (gold already, or tried and failed for this model)
             }
-            // its own buffers (never the level's model)
-            for (uint32_t b : { 0x20u, 0x24u }) {
-                const uint32_t at = (uint32_t)MEM_W(b, p);
-                if (at != m.from) {
-                    copy_colours(rdram, at, m.ours, std::min(n, m.count));
-                }
+            // (a new level, or the first time: made again from the model as it is now)
+            m.prop = prop;
+            m.from_dl = now;
+            m.dl = gold_model(rdram, prop, g);
+            if (m.dl == 0) {
+                m.dl = 1;
+                continue;
             }
-            const uint32_t table = (uint32_t)MEM_W(0, (gpr)(int32_t)moved_vertices);
-            if (kseg0(table)) {
-                const uint32_t at = (uint32_t)MEM_W(4 * i, (gpr)(int32_t)table);
-                if (at != m.from) {
-                    copy_colours(rdram, at, m.ours, std::min(n, m.count));
-                }
-            }
+            MEM_W(0x1C, p) = (int32_t)m.dl;
         }
     }
 }
