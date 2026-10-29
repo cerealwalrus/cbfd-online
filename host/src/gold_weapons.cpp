@@ -1306,6 +1306,10 @@ namespace {
     // (possess144) each view's zoom as the game last gave it (func_1510B128's $a1, degrees across from its unzoomed field of view), for the
     // gold knives' zoom bar
     float zoom_given[5] = {};
+    // (possess151) and as handed (across, up and down, and the frame), for views 0 to 7: the 5th player's own view's, the zoom the game
+    // gives his own record (fifth_view_projection)
+    struct ZoomRaw { float across = 0.0f, up = 0.0f; uint32_t frame = 0; bool have = false; };
+    ZoomRaw zoom_raw[8];
 
     // the character a view is drawn for (its camera's, the camera's +0x23D the view), scoped with a gold weapon: the weapon, or -1
     int gold_scoped_view(uint8_t* rdram, uint32_t view) {
@@ -1341,6 +1345,14 @@ extern "C" void conker_gold_fov_start(uint8_t* rdram, recomp_context* ctx) {
         float across;
         std::memcpy(&across, &bits, 4);
         zoom_given[view] = std::isfinite(across) ? std::fabs(across) : 0.0f;
+    }
+    if (view < 8 && !conker::possess_test::drawing_extra_view()) {
+        const uint32_t ab = (uint32_t)ctx->r5, ub = (uint32_t)ctx->r6;
+        ZoomRaw& z = zoom_raw[view];
+        std::memcpy(&z.across, &ab, 4);
+        std::memcpy(&z.up, &ub, 4);
+        z.frame = conker::netsession::frame();
+        z.have = std::isfinite(z.across) && std::isfinite(z.up);
     }
     // (possess151 diagnostics) a view's zoom handed out inside the 5th player's view (the extra view), or for a view past the 4
     if (conker::possess_test::drawing_extra_view() || view >= 4) {
@@ -2211,6 +2223,41 @@ void conker::gold_weapons::fifth_view_projection(uint8_t* rdram, uint32_t camera
     float across = record_float(cam, rdram, 0x19C), up = record_float(cam, rdram, 0x1A0);
     if (!std::isfinite(across) || !std::isfinite(up)) {
         across = up = 0.0f;
+    }
+    // (possess151) the zoom the game itself handed his own view this frame or the last (func_1510B128, as players 1 to 4's views are made
+    // from it), when it did: his look camera's (the 5th, not this copy) view, 4 or past it. The possess150 test's
+    // Screen_Recording_2026-10-29_145515.mp4: his view jumped a frame as each zoom began and ended (from 60.6 degrees to 32.8 and back),
+    // his camera's +0x19C at none as he held the zoom still, the zoom bar empty with it. [zoom] lines of both, each change.
+    const char* zoom_from = "his camera's";
+    float cam_across = across, cam_up = up;
+    {
+        const uint32_t looks = (uint32_t)MEM_W(0, (gpr)(int32_t)0x800DBFF0);
+        const uint32_t now = conker::netsession::frame();
+        if (kseg0(looks)) {
+            const uint32_t own_view = MEM_BU(0x23D, (gpr)(int32_t)(looks + 4u * 0x9A0u));
+            if (own_view >= 4 && own_view < 8 && zoom_raw[own_view].have && now - zoom_raw[own_view].frame <= 1u) {
+                across = zoom_raw[own_view].across;
+                up = zoom_raw[own_view].up;
+                zoom_from = "the game's for his own view";
+            }
+            static uint32_t told = 0;
+            static int told_key = -1;
+            static uint32_t told_look = 0xFFFFFFFFu;
+            const gpr own_cam = (gpr)(int32_t)(looks + 4u * 0x9A0u);
+            const uint32_t look = ((uint32_t)MEM_BU(0x23E, own_cam) << 16) | ((uint32_t)(uint16_t)MEM_H(0x73C, own_cam));
+            const int key = (int)own_view * 1000 + (int)std::lround(std::fabs(across) * 2.0f) * 2 + (zoom_from[0] == 't' ? 1 : 0);
+            if (told < 200 && (key != told_key || look != told_look)) {
+                told++;
+                told_key = key;
+                told_look = look;
+                say("[zoom] f=%u the 5th player's zoom from %s: %.2f %.2f (his camera's +0x19C %.2f %.2f, +0x1A4 %.2f %.2f, look %02X stage %d, "
+                    "buttons %04X; his own view %u, given %s at f=%u: %.2f %.2f)", (unsigned)now, zoom_from, across, up, cam_across, cam_up,
+                    record_float(cam, rdram, 0x1A4), record_float(cam, rdram, 0x1A8), look >> 16, (int)(int16_t)(look & 0xFFFFu),
+                    kseg0((uint32_t)MEM_W(0x36C, own_cam)) ? (unsigned)MEM_HU(0, (gpr)(int32_t)MEM_W(0x36C, own_cam)) : 0xFFFFu, own_view,
+                    own_view < 8 && zoom_raw[own_view].have ? "last" : "never", own_view < 8 ? (unsigned)zoom_raw[own_view].frame : 0u,
+                    own_view < 8 ? zoom_raw[own_view].across : 0.0f, own_view < 8 ? zoom_raw[own_view].up : 0.0f);
+            }
+        }
     }
     const uint32_t ch = (uint32_t)MEM_W(0x3D0, cam);
     bool gold_scoped = false;
