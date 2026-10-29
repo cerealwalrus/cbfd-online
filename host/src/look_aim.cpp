@@ -317,7 +317,7 @@ void conker::look_aim::add_camera_options(recomp::config::Config& config) {
         "Stops the camera moving on its own while you hold R. In the original game the camera eases after Conker as he moves "
         "while you aim, trailing a little behind him: walking tilts and swings the view, up a ramp it tilts the crosshair up and "
         "down a ramp down, until you stop. <recomp-color primary>On</recomp-color>: the camera stays locked to Conker, and only your "
-        "aim turns it. <recomp-color primary>Off</recomp-color> matches the original game. Online it is each player's own setting.",
+        "aim turns it, and with Aiming: Swap Sticks he starts, stops and turns round smoothly as you walk, so the view never jolts. <recomp-color primary>Off</recomp-color> matches the original game. Online it is each player's own setting.",
         toggle, Toggle::Off);
     config.add_enum_option(options::aim_swap_sticks, "Aiming: Swap Sticks",
         "Controls aiming like a third-person shooter: while you aim, the right stick aims and the left stick moves, as "
@@ -499,6 +499,23 @@ namespace {
     // (possess107) the way each player was last walked in the look, and the frames left to keep it after the stick is let go (conker_look_targets)
     uint16_t release_move[aim_players] = {};
     int release_frames[aim_players] = {};
+    // (possess109) Aiming: Steady Camera's view, each player's (conker_look_view): its height eased after Conker's, the game's own distance
+    // across from him kept slowly (game_distance) and the view's eased after that, his place, and the frame it was last built
+    struct SteadyView { bool have = false; float height = 0.0f, distance = 0.0f, game_distance = 0.0f; uint32_t frame = 0; float last_x = 0.0f, last_z = 0.0f; };
+    SteadyView steady_view[aim_players];
+    // (possess109) Aiming: Steady Camera's walking (conker_steady_walk): how fast each player's Conker was last moved each way across the
+    // ground (vx, vz: the cosine and sine of the way, in his moving angle's units, times how far), that way and how far, and the frame
+    struct SteadyWalk { bool have = false; uint32_t frame = 0; float vx = 0.0f, vz = 0.0f; uint16_t way = 0; float length = 0.0f; };
+    SteadyWalk steady_walk[aim_players];
+    // (possess109) Aiming: Steady Camera's view across (steady_view_check): each player's as the look left it (his facing less his aim
+    // angle, conker_look_currents) and the frame, and the stick's turn of it since (func_15063A38) and the frame of that
+    struct SteadyAim { bool have = false; uint16_t view = 0; uint32_t frame = 0; int32_t stick_turn = 0; uint32_t stick_frame = 0; };
+    SteadyAim steady_aim[aim_players];
+    // (possess109) offline, the game's frames so far (leap_frame), for what's worked out once a frame; online it's the session's frame
+    uint32_t offline_frames = 0;
+    uint32_t steady_frame_now() {
+        return conker::netsession::active() ? conker::netsession::frame() : offline_frames;
+    }
 
     void note_move_written(int player, uint16_t move) {
         if (player >= 0 && player < aim_players) {
@@ -804,6 +821,27 @@ static bool steady_camera(uint8_t* rdram, gpr camera) {
     return option<Toggle>(options::aim_steady_camera) == Toggle::On;
 }
 
+// (possess109) The look record (D_800DBFF0, 0x9A0 each) whose Conker (+0x3D0) an object is, with Aiming: Steady Camera's view on it
+// (steady_camera) and its player's sticks swapped (swap_state): its address, or 0. From the game's memory and the frame's agreed input.
+static gpr steady_record_of(uint8_t* rdram, gpr object) {
+    const uint32_t looks = (uint32_t)MEM_W(0, (gpr)(int32_t)0x800DBFF0);
+    if ((looks >> 24) != 0x80 || ((uint32_t)object & 0xFF000000u) != 0x80000000u) {
+        return 0;
+    }
+    for (uint32_t i = 0; i < (uint32_t)aim_players; i++) {
+        const gpr camera = (gpr)(int32_t)(looks + i * 0x9A0u);
+        if ((uint32_t)MEM_W(0x3D0, camera) != (uint32_t)object) {
+            continue;
+        }
+        const int player = camera_player(rdram, camera);
+        if (player < 0 || player >= aim_players || !steady_camera(rdram, camera) || !swap_state(player)) {
+            continue;
+        }
+        return camera;
+    }
+    return 0;
+}
+
 // (possess101) func_150495B0, at its start: the game's easing of one value toward a target ($a0 the value, $a1 the target, $a2 its
 // speed), which the cameras follow Conker by: the eye (+0x2F8, +0x2FC, +0x300 of the camera) and the point the look-at point is
 // worked out from (+0x2BC, +0x2C0, +0x2C4). With Aiming: Steady Camera, in R-Look's second stage, those take their target at once (as
@@ -996,41 +1034,6 @@ extern "C" void conker_look_view(uint8_t* rdram, recomp_context* ctx) {
             after_logged = 0;
         }
         last_stage = stage;
-        // (possess97 diagnostics) R-Look's second stage past its first 45 frames, each frame Conker went up or down (a ramp, a step): his
-        // height, the look-at point's and the eye's, the line between them as the view's pitch, and the look's own pitch (the stick's)
-        {
-            static float slope_last_y = 0.0f;
-            static bool slope_have = false;
-            static int slope_lines = 0;
-            const gpr slope_conker = (gpr)(int32_t)MEM_W(0x3D0, camera);
-            if (stage == 2 && ((uint32_t)slope_conker & 0xFF000000u) == 0x80000000u) {
-                const float cy = read_float(rdram, slope_conker, 0x18);
-                const float cx = read_float(rdram, slope_conker, 0x14), cz = read_float(rdram, slope_conker, 0x1C);
-                static float slope_last_x = 0.0f, slope_last_z = 0.0f;
-                const bool moved = std::fabs(cy - slope_last_y) > 0.3f || std::fabs(cx - slope_last_x) > 0.3f || std::fabs(cz - slope_last_z) > 0.3f;
-                slope_last_x = cx;
-                slope_last_z = cz;
-                if (slope_have && moved && frames_logged >= 45 && slope_lines < 1500) {
-                    slope_lines++;
-                    const float ex = read_float(rdram, camera, 0x2F8), ey = read_float(rdram, camera, 0x2FC), ez = read_float(rdram, camera, 0x300);
-                    const float ax = read_float(rdram, camera, 0x2E0), ay = read_float(rdram, camera, 0x2E4), az = read_float(rdram, camera, 0x2E8);
-                    const float across = std::sqrt((ax - ex) * (ax - ex) + (az - ez) * (az - ez));
-                    const float view_pitch = std::atan2(ay - ey, across) * 57.2957795f;
-                    const gpr t0s = camera + 0x740;
-                    char line[300];
-                    std::snprintf(line, sizeof(line), "[look-slope] f=%u conker y %.1f (%+.1f) look-at y %.1f eye y %.1f, %.0f across: the view's pitch %.1f, "
-                        "the look's %.2f (target %.2f), aim %d; from Conker: eye %.1f %.1f %.1f, look-at %.1f %.1f %.1f",
-                        conker::netsession::frame(), cy, cy - slope_last_y, ay, ey, across, view_pitch, read_float(rdram, t0s, current_pitch),
-                        read_float(rdram, t0s, target_pitch), ((uint32_t)MEM_W(0x3D4, camera) & 0xFF000000u) == 0x80000000u ? (int)MEM_H(0x12, (gpr)(int32_t)MEM_W(0x3D4, camera)) : 0,
-                        ex - cx, ey - cy, ez - cz, ax - cx, ay - cy, az - cz);
-                    conker::netsession::log(line);
-                }
-                slope_last_y = cy;
-                slope_have = true;
-            } else {
-                slope_have = false;
-            }
-        }
         if (stage == 0 && after_logged < 30) {
             after_logged++;
             const gpr after_conker = (gpr)(int32_t)MEM_W(0x3D0, camera);
@@ -1120,11 +1123,11 @@ extern "C" void conker_look_view(uint8_t* rdram, recomp_context* ctx) {
     // possess106 by the look-at point's step after the stick swap had turned it about the eye: turning while walking, the eye went far out
     // and then came in on him (possess107's video). Nothing of the game's eye but its distance is used now. Once a frame for each player's
     // camera, on every machine alike (det_math).
-    struct SteadyView { bool have = false; float height = 0.0f, distance = 0.0f; uint32_t frame = 0; float last_x = 0.0f, last_z = 0.0f; };
-    static SteadyView steady_view[aim_players];
     const bool steady_now = player >= 0 && player < aim_players && steady_camera(rdram, camera);
     if (player >= 0 && player < aim_players && !steady_now) {
         steady_view[player].have = false;
+        steady_walk[player].have = false;   // (possess109)
+        steady_aim[player].have = false;
     }
     if (steady_now) {
         SteadyView& sv = steady_view[player];
@@ -1148,7 +1151,17 @@ extern "C" void conker_look_view(uint8_t* rdram, recomp_context* ctx) {
             }
         }
         constexpr float full_distance = 94.0f;
-        const float wanted = std::min(full_distance, std::max(20.0f, game_across - step_along));
+        // (possess109) the distance: the game's own (its eye's across from him) kept slowly, about a second, so walking no longer pumps
+        // it in and out: the game's eye trails him, 61 to 87 across as he went back and forth down a ramp (possess108's [steady] lines),
+        // and its step taken off (possess106 to 108) still left 64 to 77, the view zooming in and out with every step. Nearer than that by
+        // more than its trailing (14) the game's camera has come in for a wall, and the view comes in with it (quickly, 0.5 a frame).
+        const float game_now = std::clamp(game_across, 30.0f, full_distance);
+        if (!sv.have || std::fabs(cy - sv.height) > 80.0f) {
+            sv.game_distance = game_now;
+        } else if (new_frame) {
+            sv.game_distance += (game_now - sv.game_distance) * 0.03f;
+        }
+        const float wanted = std::min(full_distance, std::max(20.0f, std::min(sv.game_distance, game_across + 14.0f)));
         if (!sv.have || std::fabs(cy - sv.height) > 80.0f) {
             sv.have = true;
             sv.height = cy;
@@ -1180,11 +1193,15 @@ extern "C" void conker_look_view(uint8_t* rdram, recomp_context* ctx) {
             static uint32_t told = 0;
             static float told_x = 0.0f, told_y = 0.0f, told_z = 0.0f;
             const bool moved = std::fabs(cx - told_x) + std::fabs(cy - told_y) + std::fabs(cz - told_z) > 0.3f;
-            if (moved && new_frame && told < 2000) {
+            if (moved && new_frame && told < 4000) {
                 told++;
-                char line[220];
-                std::snprintf(line, sizeof(line), "[steady] f=%u conker %.1f %.1f %.1f, view height %.1f; across: the game's %.1f, his step along %.1f, the view's %.1f; yaw %.2f pitch %.2f",
-                    frame_now, cx, cy, cz, sv.height, game_across, step_along, sv.distance, steady_yaw, look_pitch);
+                // (possess109: and the game's eye from its pivot, +0x2BC, and the pivot from him)
+                const float px = read_float(rdram, camera, 0x2BC), pz = read_float(rdram, camera, 0x2C4);
+                const float pivot_from = std::sqrt((px - cx) * (px - cx) + (pz - cz) * (pz - cz));
+                const float eye_from_pivot = std::sqrt((gex - px) * (gex - px) + (gez - pz) * (gez - pz));
+                char line[320];
+                std::snprintf(line, sizeof(line), "[steady] f=%u conker %.1f %.1f %.1f, view height %.1f; across: the game's %.1f (kept %.1f; %.1f from its pivot, %.1f from him), his step along %.1f, the view's %.1f; yaw %.2f pitch %.2f",
+                    frame_now, cx, cy, cz, sv.height, game_across, sv.game_distance, eye_from_pivot, pivot_from, step_along, sv.distance, steady_yaw, look_pitch);
                 conker::netsession::log(line);
             }
             told_x = cx;
@@ -1453,6 +1470,7 @@ namespace {
 }
 
 void conker::look_aim::leap_frame(uint8_t* rdram) {
+    offline_frames++;   // (possess109)
     const gpr conker = (gpr)(int32_t)conker_object;
     const uint16_t animation = (uint16_t)MEM_HU(0x84, conker);
     leaping = MEM_BU(0x4, conker) == bank_state && (animation == leap_animation || animation == leap_animation_other_way)
@@ -1742,6 +1760,278 @@ extern "C" void conker_look_yaw_from_facing_scaled(uint8_t* rdram, recomp_contex
     aim_units_per_degree = 65536.0f / 360.0f / 0.35f;
 }
 
+// (possess109) Aiming: Steady Camera keeps the game from turning Conker in the look. func_150599C8 turns an object's facing (+0x7A of $a0)
+// toward a way ($a2) by up to $a1 times 0x100 a frame, and as he slows from walking the game turns him with it toward his moving angle,
+// 0xC00 a frame (func_150585F0). With the sticks swapped his facing is the view's (conker_look_targets), so the view turned with him: 16.9
+// degrees in one frame as he went from walking back to forward (possess108's [steady] lines, f=1487, 1592, 1958, 2235), and letting go
+// after walking back, 16.9 a frame for 7 frames running (f=2659), half a turn. His facing is kept as the function starts and put back as
+// it ends, its answer (how far there was to turn) as it was. Every machine alike, from the game's memory and the frame's agreed input.
+namespace {
+    struct TurnKeep { bool on = false; uint32_t object = 0; uint16_t facing = 0, toward = 0; uint32_t rate = 0, from = 0; int player = -1; };
+    TurnKeep turn_keep;
+    // The stick's turn of the aim being measured (conker_steady_aim_turn_start, _end).
+    struct AimTurnKeep { bool on = false; uint32_t object = 0; uint16_t view = 0; int player = -1; };
+    AimTurnKeep aim_turn_keep;
+    uint32_t turns_kept_told = 0, walk_told = 0, view_check_told = 0;
+    bool kseg0(gpr address) {
+        return ((uint32_t)address & 0xFF000000u) == 0x80000000u;
+    }
+}
+
+extern "C" void conker_steady_turn_start(uint8_t* rdram, recomp_context* ctx) {
+#if defined(CONKER_RT64)
+    turn_keep.on = false;
+    const gpr camera = steady_record_of(rdram, ctx->r4);
+    if (camera == 0) {
+        return;
+    }
+    turn_keep.on = true;
+    turn_keep.object = (uint32_t)ctx->r4;
+    turn_keep.facing = (uint16_t)MEM_HU(0x7A, ctx->r4);
+    turn_keep.toward = (uint16_t)ctx->r6;
+    turn_keep.rate = (uint32_t)ctx->r5 & 0xFFu;
+    turn_keep.from = (uint32_t)ctx->r31;
+    turn_keep.player = camera_player(rdram, camera);
+#endif
+}
+
+extern "C" void conker_steady_turn_end(uint8_t* rdram, recomp_context* ctx) {
+#if defined(CONKER_RT64)
+    if (!turn_keep.on) {
+        return;
+    }
+    turn_keep.on = false;
+    if ((uint32_t)ctx->r4 != turn_keep.object) {
+        return;
+    }
+    const uint16_t turned_to = (uint16_t)MEM_HU(0x7A, ctx->r4);
+    if (turned_to == turn_keep.facing) {
+        return;
+    }
+    MEM_H(0x7A, ctx->r4) = (int16_t)turn_keep.facing;
+    if (conker::netsession::active() && turn_keep.player == conker::netsession::local_player() && turns_kept_told < 400) {
+        turns_kept_told++;
+        char line[220];
+        std::snprintf(line, sizeof(line), "[steady] f=%u kept from turning: facing %04X (the game turned it to %04X, toward %04X at %02X00 a frame, from %08X)",
+            conker::netsession::frame(), (unsigned)turn_keep.facing, (unsigned)turned_to, (unsigned)turn_keep.toward, (unsigned)turn_keep.rate,
+            (unsigned)turn_keep.from);
+        conker::netsession::log(line);
+    }
+#endif
+}
+
+// (possess109) The stick's turn of the aim (func_15063A38, $a0 Conker: his aim angle, +0x12 of his +0x31C, and past +-9000 his facing too),
+// measured as the turn of his facing less the angle, the view across, for Aiming: Steady Camera's check of the view (steady_view_check).
+extern "C" void conker_steady_aim_turn_start(uint8_t* rdram, recomp_context* ctx) {
+#if defined(CONKER_RT64)
+    aim_turn_keep.on = false;
+    const gpr camera = steady_record_of(rdram, ctx->r4);
+    if (camera == 0) {
+        return;
+    }
+    const gpr aim = (gpr)(int32_t)MEM_W(0x31C, ctx->r4);
+    if (!kseg0(aim)) {
+        return;
+    }
+    aim_turn_keep.on = true;
+    aim_turn_keep.object = (uint32_t)ctx->r4;
+    aim_turn_keep.view = (uint16_t)((uint32_t)MEM_HU(0x7A, ctx->r4) - (uint32_t)(uint16_t)MEM_H(0x12, aim));
+    aim_turn_keep.player = camera_player(rdram, camera);
+#endif
+}
+
+extern "C" void conker_steady_aim_turn_end(uint8_t* rdram, recomp_context* ctx) {
+#if defined(CONKER_RT64)
+    if (!aim_turn_keep.on) {
+        return;
+    }
+    aim_turn_keep.on = false;
+    const int player = aim_turn_keep.player;
+    const gpr aim = (gpr)(int32_t)MEM_W(0x31C, ctx->r4);
+    if ((uint32_t)ctx->r4 != aim_turn_keep.object || player < 0 || player >= aim_players || !kseg0(aim)) {
+        return;
+    }
+    const uint16_t view = (uint16_t)((uint32_t)MEM_HU(0x7A, ctx->r4) - (uint32_t)(uint16_t)MEM_H(0x12, aim));
+    SteadyAim& sa = steady_aim[player];
+    const uint32_t now = steady_frame_now();
+    if (sa.stick_frame != now) {
+        sa.stick_frame = now;
+        sa.stick_turn = 0;
+    }
+    sa.stick_turn += (int16_t)(uint16_t)((uint32_t)view - (uint32_t)aim_turn_keep.view);
+#endif
+}
+
+#if defined(CONKER_RT64)
+// (possess109) Aiming: Steady Camera: the view across should turn with the aim alone. Checked where the look has just worked it out (its
+// yaw target, 0x15120908: Conker's facing less his aim angle), against the view as the look left it the frame before and the stick's
+// turn since (func_15063A38): anything else that turned it (the game turning him, kept from him by conker_steady_turn_start now) is
+// logged, for the next test. The guns' looks, whose yaw is the facing less the angle as it is (units_per_degree's first path).
+static void steady_view_check(uint8_t* rdram, recomp_context* ctx, float units_per_degree) {
+    const gpr camera = ctx->r16;
+    const int player = camera_player(rdram, camera);
+    if (player < 0 || player >= aim_players) {
+        return;
+    }
+    const SteadyAim& sa = steady_aim[player];
+    const gpr conker = (gpr)(int32_t)MEM_W(0x3D0, camera);
+    const gpr aim = (gpr)(int32_t)MEM_W(0x3D4, camera);
+    const uint32_t now = steady_frame_now();
+    if (!sa.have || now != sa.frame + 1 || units_per_degree != 65536.0f / 360.0f || !kseg0(conker) || !kseg0(aim) || !steady_camera(rdram, camera)) {
+        return;
+    }
+    const uint16_t view = (uint16_t)((uint32_t)MEM_HU(0x7A, conker) - (uint32_t)(uint16_t)MEM_H(0x12, aim));
+    const bool stick_now = sa.stick_frame == now;
+    const int32_t stick = stick_now ? sa.stick_turn : 0;
+    const int32_t off = (int16_t)(uint16_t)((uint32_t)view - (uint32_t)sa.view - (uint32_t)stick);
+    if ((off > 0x40 || off < -0x40) && conker::netsession::active() && player == conker::netsession::local_player() && view_check_told < 400) {
+        view_check_told++;
+        char line[200];
+        std::snprintf(line, sizeof(line), "[steady] f=%u the view turned %d units (%.2f degrees) not by the stick (the stick's %d%s), facing %04X aim %d",
+            now, (int)off, off * (360.0f / 65536.0f), (int)stick, stick_now ? "" : ", none measured this frame", (unsigned)MEM_HU(0x7A, conker),
+            (int)MEM_H(0x12, aim));
+        conker::netsession::log(line);
+    }
+}
+
+// (possess109) The view across as the look leaves it this frame (after the stick swap's walking and the mouse), for the next frame's check.
+static void steady_view_note(uint8_t* rdram, gpr camera) {
+    const int player = camera_player(rdram, camera);
+    if (player < 0 || player >= aim_players) {
+        return;
+    }
+    SteadyAim& sa = steady_aim[player];
+    const gpr conker = (gpr)(int32_t)MEM_W(0x3D0, camera);
+    const gpr aim = (gpr)(int32_t)MEM_W(0x3D4, camera);
+    if (!kseg0(conker) || !kseg0(aim) || !steady_camera(rdram, camera) || !swap_state(player)) {
+        sa.have = false;
+        return;
+    }
+    sa.view = (uint16_t)((uint32_t)MEM_HU(0x7A, conker) - (uint32_t)(uint16_t)MEM_H(0x12, aim));
+    sa.frame = steady_frame_now();
+    sa.have = true;
+}
+#endif
+
+// (possess109) Aiming: Steady Camera's walking. func_15059C84 moves Conker each frame; here ($s0 his object) the way he goes (+0x76 of its
+// stack) and how far ($f12) have been worked out: his moving angle and speed (+0x76, +0x3C), or a frame his animation takes its own step
+// (+0x1FC bit 0) his facing and that step. With the sticks swapped the walking sets his moving angle from the way pressed (conker_look_targets)
+// only after this, and meanwhile the game moved him its own way: letting go he went a step the way he faced and then on the way he had
+// walked (possess108's [steady] lines, strafing back down the ramp: 9.7 back, 8.6 forward, 6.6 back, 7.1 forward), and pushed the other way
+// he went it at full speed at once (9.8 back, 7.9 back, 8.3 forward). The view is locked to him, so it did all of that too. Here the way he
+// goes is set as he's moved: the way pressed from the view (as conker_look_targets has it), or let go the way he was going, at the game's
+// speed; and how fast he goes each way changes by at most 3 a frame (a tenth of his speed when that's more; walking it's about 10 a frame):
+// he slows down, turns and comes round the other way smoothly, about 7 frames to go right round, 5 from forward to the side. Not while a
+// hit holds him (hit_holding), with a grenade, or while the game turns his way itself (+0x46 of +0x31C). Once a frame for each player's
+// Conker, from the game's memory and the frame's agreed buttons, on every machine alike (det_math).
+extern "C" void conker_steady_walk(uint8_t* rdram, recomp_context* ctx) {
+#if defined(CONKER_RT64)
+    const gpr object = ctx->r16;
+    const gpr camera = steady_record_of(rdram, object);
+    if (camera == 0) {
+        return;
+    }
+    const int player = camera_player(rdram, camera);
+    SteadyWalk& w = steady_walk[player];
+    const uint8_t kind = MEM_BU(0x23E, camera);
+    const gpr aim = (gpr)(int32_t)MEM_W(0x3D4, camera);
+    const gpr own = (gpr)(int32_t)MEM_W(0x31C, object);
+    const bool game_turning = MEM_BU(0x127, object) != 0xFF && kseg0(own) && MEM_H(0x46, own) > 0;
+    const float speed = read_float(rdram, object, 0x3C);
+    if (kind == 0x26 || kind == 0x14 || grenade_held[player].load() || hit_hold_state[player].holding || game_turning || !(speed >= 0.0f && speed < 100.0f)) {
+        w.have = false;
+        return;
+    }
+    const uint16_t game_way = (uint16_t)MEM_HU(0x76, ctx->r29);
+    const float game_length = ctx->f12.fl;
+    if (!(game_length >= 0.0f && game_length < 200.0f)) {
+        w.have = false;
+        return;
+    }
+    // The way pressed, from the view (his facing less his aim angle; with no weapon, his facing, which no_weapon_walk set to the view).
+    int dx = 0, dy = 0;
+    uint16_t view = (uint16_t)MEM_HU(0x7A, object);
+    if (kind == 0x00) {
+        dx = walk_dx[player].load();
+        dy = walk_dy[player].load();
+    } else {
+        constexpr uint32_t c_up = 0x0008, c_down = 0x0004, c_left = 0x0002, c_right = 0x0001;
+        const gpr held_at = (gpr)(int32_t)MEM_W(0x36C, camera);
+        const uint32_t held = kseg0(held_at) ? (uint32_t)MEM_HU(0, held_at) : 0u;
+        dx = ((held & c_right) ? 1 : 0) - ((held & c_left) ? 1 : 0);
+        dy = ((held & c_up) ? 1 : 0) - ((held & c_down) ? 1 : 0);
+        if (conker::netsession::active() && gun_walk_set[player].load()) {
+            dx = gun_walk_dx[player].load();
+            dy = gun_walk_dy[player].load();
+        }
+        if (kseg0(aim)) {
+            view = (uint16_t)((uint32_t)view - (uint32_t)(uint16_t)MEM_H(0x12, aim));
+        }
+    }
+    const bool pressed = dx != 0 || dy != 0;
+    const uint32_t now = steady_frame_now();
+    if (!w.have || now != w.frame) {
+        constexpr double unit_radians = 3.14159265358979 / 32768.0;
+        if (!w.have) {
+            // (from the way and how far the game would move him this frame)
+            const double a = (double)game_way * unit_radians;
+            w.vx = (float)((double)game_length * conker::det::sin_d(a + conker::det::pi / 2));
+            w.vz = (float)((double)game_length * conker::det::sin_d(a));
+            w.way = game_way;
+            w.length = game_length;
+            w.have = true;
+        }
+        uint16_t want = w.way;
+        if (pressed) {
+            const int32_t offset = (int32_t)std::lround(conker::det::atan2_d(-(double)dx, (double)dy) * 32768.0 / 3.14159265358979);
+            want = (uint16_t)((uint32_t)view + (uint32_t)offset);
+        }
+        const double a = (double)want * unit_radians;
+        const float tx = (float)((double)speed * conker::det::sin_d(a + conker::det::pi / 2)), tz = (float)((double)speed * conker::det::sin_d(a));
+        float ex = tx - w.vx, ez = tz - w.vz;
+        const float gap = std::sqrt(ex * ex + ez * ez);
+        const float most = std::max(3.0f, 0.3f * speed);
+        const bool there = gap <= most;
+        if (!there) {
+            ex *= most / gap;
+            ez *= most / gap;
+        }
+        w.vx += ex;
+        w.vz += ez;
+        w.length = std::sqrt(w.vx * w.vx + w.vz * w.vz);
+        if (there) {
+            // (on the way wanted: exactly it, so walking straight on it never wavers by a unit)
+            w.way = want;
+            w.vx = tx;
+            w.vz = tz;
+            w.length = speed;
+        } else if (w.length < 0.01f) {
+            // (passing through a stop, turning right round: no way of its own)
+            w.way = want;
+        } else {
+            w.way = (uint16_t)(int32_t)std::lround(conker::det::atan2_d((double)w.vz, (double)w.vx) / unit_radians);
+        }
+        w.frame = now;
+        if (conker::netsession::active() && player == conker::netsession::local_player() && walk_told < 5000 && (pressed || speed > 0.05f || w.length > 0.05f)) {
+            walk_told++;
+            char line[260];
+            std::snprintf(line, sizeof(line), "[walk] f=%u %s %+d,%+d speed %.2f, facing %04X view %04X; the game's way %04X %.2f%s; ours %04X %.2f",
+                now, pressed ? "pressed" : "let go", dx, dy, speed, (unsigned)MEM_HU(0x7A, object), (unsigned)view, (unsigned)game_way, game_length,
+                std::fabs(game_length - speed) > 0.001f ? " (his animation's step)" : "", (unsigned)w.way, w.length);
+            conker::netsession::log(line);
+        }
+    }
+    MEM_H(0x76, ctx->r29) = (int16_t)w.way;
+    ctx->f12.fl = w.length;
+    // His moving angle as the game keeps it: the way he goes while pressed; let go, his facing, as the game itself has it then. As he
+    // slows below 2 the game turns him toward his moving angle (func_150585F0, kept from him now: conker_steady_turn_start), so let go
+    // after walking back it would keep trying to turn him round.
+    const uint16_t moving = pressed ? w.way : (uint16_t)MEM_HU(0x7A, object);
+    MEM_H(0x76, object) = (int16_t)moving;
+    note_move_written(player, moving);
+#endif
+}
+
 // Before the pitch clamp: $s0 is the look state, $t0 the targets (reloaded at 0x15120B40).
 extern "C" void conker_look_targets(uint8_t* rdram, recomp_context* ctx) {
     frame = Frame{};
@@ -1754,6 +2044,9 @@ extern "C" void conker_look_targets(uint8_t* rdram, recomp_context* ctx) {
 #endif
     const float units_per_degree = aim_units_per_degree;
     aim_units_per_degree = 0.0f;
+#if defined(CONKER_RT64)
+    steady_view_check(rdram, ctx, units_per_degree);   // (possess109)
+#endif
 #if defined(CONKER_RT64)
     // Aiming: Swap Sticks moves Conker like a shooter's character (issue #84): he keeps facing where the view looks,
     // so the aim stays on the crosshair, and walks the way the left stick (or W, A, S, D) points from the view's
@@ -1821,7 +2114,7 @@ extern "C" void conker_look_targets(uint8_t* rdram, recomp_context* ctx) {
                 release_move[look_player] = moving;
                 release_frames[look_player] = 12;
             }
-        } else if (look_player >= 0 && look_player < aim_players && release_frames[look_player] > 0) {
+        } else if (look_player >= 0 && look_player < aim_players && release_frames[look_player] > 0 && !steady_camera(rdram, ctx->r16)) {   // (possess109: Steady Camera's walking keeps his way, conker_steady_walk)
             release_frames[look_player]--;
             const gpr conker = (gpr)(int32_t)MEM_W(0x3D0, ctx->r16);
             if (((uint32_t)conker & 0xFF000000u) == 0x80000000u) {
@@ -1850,7 +2143,8 @@ extern "C" void conker_look_targets(uint8_t* rdram, recomp_context* ctx) {
                 release_move[player] = moving;
                 release_frames[player] = 12;
             }
-        } else if (player >= 0 && player < aim_players && release_frames[player] > 0 && ((uint32_t)conker & 0xFF000000u) == 0x80000000u) {
+        } else if (player >= 0 && player < aim_players && release_frames[player] > 0 && ((uint32_t)conker & 0xFF000000u) == 0x80000000u
+                && !steady_camera(rdram, ctx->r16)) {   // (possess109, as above)
             release_frames[player]--;
             MEM_H(0x76, conker) = (int16_t)release_move[player];
         }
@@ -1916,6 +2210,7 @@ extern "C" void conker_look_targets(uint8_t* rdram, recomp_context* ctx) {
 extern "C" void conker_look_currents(uint8_t* rdram, recomp_context* ctx) {
 #if defined(CONKER_RT64)
     const gpr state = ctx->r16, targets = ctx->r8;
+    steady_view_note(rdram, state);   // (possess109)
     // Aiming: Swap Sticks (issue #84): the view's yaw is the aim's. Walking back and to the side (C-Down with
     // C-Left or C-Right, which the left stick presses) swung the look mode's current yaw up to 27 degrees off its
     // target, the aim still (logged), and the spring then pulled it back: the camera turned with the left stick.
@@ -1995,6 +2290,13 @@ void conker::look_aim::reset_online_state() {
         release_frames[k] = 0;
         release_move[k] = 0;
     }
+    for (int k = 0; k < aim_players; k++) {   // (possess109)
+        steady_view[k] = SteadyView{};
+        steady_walk[k] = SteadyWalk{};
+        steady_aim[k] = SteadyAim{};
+    }
+    turn_keep = TurnKeep{};
+    aim_turn_keep = AimTurnKeep{};
     aim_remainder = 0.0f;
     for (int p = 0; p < aim_players; p++) {
         look_settle[p] = 0.0f;

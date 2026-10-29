@@ -655,6 +655,37 @@ func = "func_15063A38"
 before_vram = 0x15063AE0
 text = "{ extern void conker_gun_aim_turn(uint8_t*, recomp_context*); conker_gun_aim_turn(rdram, ctx); }"
 
+# (possess109) Aiming: Steady Camera (host/src/look_aim.cpp): the stick's turn of the aim measured at func_15063A38's start and
+# its end (L_15063B54), for the check of the view (steady_view_check).
+[[patches.hook]]
+func = "func_15063A38"
+before_vram = 0x15063A38
+text = "{ extern void conker_steady_aim_turn_start(uint8_t*, recomp_context*); conker_steady_aim_turn_start(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_15063A38"
+before_vram = 0x15063B54
+text = "{ extern void conker_steady_aim_turn_end(uint8_t*, recomp_context*); conker_steady_aim_turn_end(rdram, ctx); }"
+
+# (possess109) Aiming: Steady Camera keeps the game from turning Conker in the look: func_150599C8 (an object's facing turned
+# toward a way) has his facing kept at its start and put back at its end, its jr (conker_steady_turn_start, _end).
+[[patches.hook]]
+func = "func_150599C8"
+before_vram = 0x150599C8
+text = "{ extern void conker_steady_turn_start(uint8_t*, recomp_context*); conker_steady_turn_start(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_150599C8"
+before_vram = 0x15059B4C
+text = "{ extern void conker_steady_turn_end(uint8_t*, recomp_context*); conker_steady_turn_end(rdram, ctx); }"
+
+# (possess109) Aiming: Steady Camera's walking: the way Conker is moved and how far, where func_15059C84 has worked them out
+# (+0x76 of its stack and $f12, at L_15059EAC; conker_steady_walk).
+[[patches.hook]]
+func = "func_15059C84"
+before_vram = 0x15059EAC
+text = "{ extern void conker_steady_walk(uint8_t*, recomp_context*); conker_steady_walk(rdram, ctx); }"
+
 # Online, the look mode's first stage (host/src/look_aim.cpp, conker_look_stage_one): the camera's yaw goes
 # to the aim at once, at the start of func_15120158 ($a0 the camera).
 [[patches.hook]]
