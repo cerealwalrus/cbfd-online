@@ -3448,6 +3448,13 @@ text = "{ extern void conker_gold_scope_end(uint8_t*, recomp_context*); conker_g
 
 # possess136: a gold weapon's own zoom, as the 5th player's: func_1510B128 (a view's field of view, then its frustum and projection) makes a
 # gold weapon's scoped holder's view with no zoom, its field of view put back zoomed for the aim as it returns (0x1510B314)
+# possess137: the co-op mansion's camera at Conker's height for every player (the race's caveman models are taller): func_15124C38's
+# look-at height ($f14 where its ways meet, 0x15124E1C) worked out with Conker's model's (host/src/look_aim.cpp)
+[[patches.hook]]
+func = "func_15124C38"
+before_vram = 0x15124E1C
+text = "{ extern void conker_coop_camera_height(uint8_t*, recomp_context*); conker_coop_camera_height(rdram, ctx); }"
+
 [[patches.hook]]
 func = "func_1510B128"
 before_vram = 0x1510B128
