@@ -2298,10 +2298,36 @@ namespace {
     }
 }
 
+// (possess132) The shotgun's look too (kind 0x3B, the co-op mansion's, either stage, the sticks swapped), which possess119 took off Steady
+// Camera: walking it with the left stick (possess130) sets his moving angle the way pressed from the view, and the game turned his facing
+// toward it (up to 0xC00 a frame), the shotgun's view (his facing less the aim) with it: the aim yanked off the zombies whenever he moved
+// (bad.mkv), never standing still (good.mkv). Only this turn is kept from him there; the rest of its look is the game's, as possess119 has it.
+static gpr shotgun_turn_record_of(uint8_t* rdram, gpr object) {
+    const uint32_t looks = (uint32_t)MEM_W(0, (gpr)(int32_t)0x800DBFF0);
+    if ((looks >> 24) != 0x80 || ((uint32_t)object & 0xFF000000u) != 0x80000000u) {
+        return 0;
+    }
+    for (uint32_t i = 0; i < (uint32_t)aim_players; i++) {
+        const gpr camera = (gpr)(int32_t)(looks + i * 0x9A0u);
+        if ((uint32_t)MEM_W(0x3D0, camera) != (uint32_t)object || MEM_BU(0x23E, camera) != 0x3B || MEM_H(0x73C, camera) == 0) {
+            continue;
+        }
+        const int player = camera_player(rdram, camera);
+        if (player < 0 || player >= aim_players || !swap_state(player)) {
+            continue;
+        }
+        return camera;
+    }
+    return 0;
+}
+
 extern "C" void conker_steady_turn_start(uint8_t* rdram, recomp_context* ctx) {
 #if defined(CONKER_RT64)
     turn_keep.on = false;
-    const gpr camera = steady_record_of(rdram, ctx->r4);
+    gpr camera = steady_record_of(rdram, ctx->r4);
+    if (camera == 0) {
+        camera = shotgun_turn_record_of(rdram, ctx->r4);
+    }
     if (camera == 0) {
         return;
     }
