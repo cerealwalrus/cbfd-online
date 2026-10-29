@@ -1253,6 +1253,9 @@ namespace {
     struct FovKeep { bool on = false; uint32_t view = 0, across = 0, up = 0; };
     FovKeep fov_keep;
     uint32_t fov_told = 0;
+    // (possess144) each view's zoom as the game last gave it (func_1510B128's $a1, degrees across from its unzoomed field of view), for the
+    // gold knives' zoom bar
+    float zoom_given[5] = {};
 
     // the character a view is drawn for (its camera's, the camera's +0x23D the view), scoped with a gold weapon: the weapon, or -1
     int gold_scoped_view(uint8_t* rdram, uint32_t view) {
@@ -1283,6 +1286,12 @@ namespace {
 extern "C" void conker_gold_fov_start(uint8_t* rdram, recomp_context* ctx) {
     fov_keep.on = false;
     const uint32_t view = (uint32_t)ctx->r4;
+    if (view < 5) {
+        const uint32_t bits = (uint32_t)ctx->r5;
+        float across;
+        std::memcpy(&across, &bits, 4);
+        zoom_given[view] = std::isfinite(across) ? std::fabs(across) : 0.0f;
+    }
     if (gold_scoped_view(rdram, view) < 0 || ((uint32_t)ctx->r5 == 0 && (uint32_t)ctx->r6 == 0)) {
         return;
     }
@@ -1372,9 +1381,12 @@ namespace {
         uint32_t from_view = 0;
         int from_character = -1;
         bool from_gold = false;
+        int32_t first_high = 0;          // (possess144) its first rectangle's height (quarter pixels): the marker's, in part 1
     };
     BarCopy bar_copy[2];
     uint32_t bar_told = 0;
+    // (possess144) the most each view's been zoomed with the gold knives (degrees; 10 to begin with): the marker's full height
+    float knives_zoom_most[5] = { 10.0f, 10.0f, 10.0f, 10.0f, 10.0f };
 
     // the kind of the pickup character k holds (the match's pickups' +0x1174: the sniper rifle's 0x24, the revolver's 0x23), or -1
     int32_t held_kind(uint8_t* rdram, int k) {
@@ -1423,17 +1435,15 @@ namespace {
         return at;
     }
 
-    // a bar of our own (none seen yet): 1-cycle, the primitive colour (G_CC_PRIMITIVE), see-through, a filled rectangle 4 pixels wide at
-    // the view's left edge, 6 in, over the view's height as the gold weapons' sits
-    uint32_t put_own_bar(uint8_t* rdram, uint32_t at, float left, float top, float bottom) {
-        const float high = bottom - top;
-        const uint32_t x0 = clamp_field((int32_t)std::lround((left + 6.0f) * 4.0f)), x1 = clamp_field((int32_t)std::lround((left + 10.0f) * 4.0f));
-        const uint32_t y0 = clamp_field((int32_t)std::lround((top + high * 0.10f) * 4.0f)), y1 = clamp_field((int32_t)std::lround((top + high * 0.38f) * 4.0f));
+    // a filled rectangle of our own (no scope's bar seen yet): 1-cycle, the primitive colour (G_CC_PRIMITIVE), see-through; its corners
+    // in quarter pixels on the screen (whole pixels)
+    uint32_t put_fill(uint8_t* rdram, uint32_t at, int32_t x0q, int32_t y0q, int32_t x1q, int32_t y1q, uint32_t rgba) {
+        const uint32_t x0 = clamp_field(x0q) & ~3u, y0 = clamp_field(y0q) & ~3u, x1 = clamp_field(x1q) & ~3u, y1 = clamp_field(y1q) & ~3u;
         const uint32_t words[] = {
             0xE7000000u, 0,
             0xFCFFFFFFu, 0xFFFDF6FBu,
             0xEF000CFFu, 0x00504340u,
-            0xFA000000u, 0x30C830A0u,
+            0xFA000000u, rgba,
             0xF6000000u | (x1 << 12) | y1, (x0 << 12) | y0,
             0xE7000000u, 0,
         };
@@ -1443,6 +1453,15 @@ namespace {
             at += 8;
         }
         return at;
+    }
+
+    // our own bar's place (no scope's bar seen yet), quarter pixels from the view's top left: 4 pixels wide at its left edge, 6 in, over
+    // its height as the gold weapons' sits
+    void own_bar_place(float high, int32_t out[4]) {
+        out[0] = 24;
+        out[1] = (int32_t)std::lround(high * 0.10f * 4.0f);
+        out[2] = 40;
+        out[3] = (int32_t)std::lround(high * 0.38f * 4.0f);
     }
 }
 
@@ -1568,8 +1587,14 @@ extern "C" void conker_gold_reticle_end(uint8_t* rdram, recomp_context* ctx) {
         }
         c += (words - 1) * 8;
     }
-    // (a gold scope's kept over one not gold's: its marker as the gold weapons' own scope shows it)
-    if (copy_it && !copy.rects.empty() && copy.words.size() <= 2u * 96u && (gold || !bar_copy[part].from_gold)) {
+    // (a gold scope's kept over one not gold's: its marker as the gold weapons' own scope shows it. possess144: and of part 1's, the one
+    // least zoomed, its marker the shortest: its colour the marker's unzoomed one, the gold knives' marker's height their own zoom's)
+    if (!copy.rects.empty()) {
+        copy.first_high = std::abs(copy.places[1] - copy.places[3]);
+    }
+    const BarCopy& had = bar_copy[part];
+    const bool better = !had.have || (gold && !had.from_gold) || (gold == had.from_gold && (part == 0 || copy.first_high <= had.first_high));
+    if (copy_it && !copy.rects.empty() && copy.words.size() <= 2u * 96u && better) {
         const bool first = !bar_copy[part].have;
         copy.have = true;
         bar_copy[part] = std::move(copy);
@@ -1580,20 +1605,53 @@ extern "C" void conker_gold_reticle_end(uint8_t* rdram, recomp_context* ctx) {
         }
     }
     // (possess143) the gold knives' scope: the zoom bar put after what was drawn, as the gold sniper rifle's and revolver's show it
+    // (possess144) and its marker (part 1's) as high as the knives are zoomed: from nothing unzoomed to the bar's whole height at the most
+    // they've been zoomed in this view (10 degrees to begin with), across the bar's middle, as the sniper rifle's grows with its zoom
     uint32_t list_end = end;
     if (g == 2) {
+        const uint32_t v = reticle_keep.view;
+        const float zoom = zoom_given[v];
+        knives_zoom_most[v] = std::max(knives_zoom_most[v], zoom);
+        const float frac = std::min(1.0f, std::max(0.0f, zoom / knives_zoom_most[v]));
+        int32_t bar[4];
+        if (bar_copy[0].have && bar_copy[0].places.size() >= 4) {
+            for (int i = 0; i < 4; i++) {
+                bar[i] = bar_copy[0].places[(size_t)i];
+            }
+        } else {
+            own_bar_place(bottom - top, bar);
+        }
+        const int32_t bar_top = std::min(bar[1], bar[3]), bar_bottom = std::max(bar[1], bar[3]);
+        const int32_t middle = (bar_top + bar_bottom) / 2;
+        const int32_t half = std::max(4, (int32_t)std::lround((float)((bar_bottom - bar_top) / 2 - 4) * frac));
         const bool have = bar_copy[part].have;
-        if (have) {
-            list_end = put_bar(rdram, end, bar_copy[part], left, top);
-        } else if (part == 0) {
-            list_end = put_own_bar(rdram, end, left, top, bottom);
+        if (part == 0) {
+            if (have) {
+                list_end = put_bar(rdram, end, bar_copy[0], left, top);
+            } else {
+                list_end = put_fill(rdram, end, l4 + bar[0], t4 + bar[1], l4 + bar[2], t4 + bar[3], 0x30C830A0u);
+            }
+        } else if (have && bar_copy[1].places.size() >= 4) {
+            BarCopy marker = bar_copy[1];
+            marker.places[1] = middle + half;
+            marker.places[3] = middle - half;
+            list_end = put_bar(rdram, end, marker, left, top);
+        } else {
+            const int32_t bx0 = std::min(bar[0], bar[2]), bx1 = std::max(bar[0], bar[2]);
+            list_end = put_fill(rdram, end, l4 + bx0 + 4, t4 + middle - half, l4 + bx1 - 4, t4 + middle + half, 0x70FF70E0u);
         }
         ctx->r2 = (gpr)(int32_t)list_end;
-        if (bar_told < 12 && list_end != end) {
+        static int told_zoom[5] = { -1, -1, -1, -1, -1 };
+        const int zoom_step = (int)(frac * 4.0f);
+        if (bar_told < 24 && list_end != end && (part == 0 || zoom_step != told_zoom[v])) {
             bar_told++;
-            say("[gold] view %u scoped with the gold knives: the zoom bar's part %u added at the view's left edge (%s, %u commands)",
-                (unsigned)reticle_keep.view, (unsigned)part, have ? "the copy of a scope's" : "our own, no scope's bar seen yet",
-                (unsigned)((list_end - end) / 8));
+            if (part == 1) {
+                told_zoom[v] = zoom_step;
+            }
+            say("[gold] view %u scoped with the gold knives: the zoom bar's part %u added at the view's left edge (%s, %u commands); zoomed %.1f "
+                "degrees (the most %.1f), the marker %.0f%% of the bar", (unsigned)v, (unsigned)part,
+                have ? "the copy of a scope's" : "our own, no scope's bar seen yet", (unsigned)((list_end - end) / 8), zoom, knives_zoom_most[v],
+                frac * 100.0f);
         }
     }
     if (gold && reticle_told < 12) {
@@ -1735,6 +1793,148 @@ extern "C" void conker_gold_beam(uint8_t* rdram, recomp_context* ctx) {
         told_for[k] = g;
         say("[gold] character %d's laser beam (the %s's) drawn in its own view, scoped (view %d)", k, golds[g].name,
             (int)(int16_t)(uint16_t)(uint32_t)ctx->r5);
+    }
+}
+
+// ---- (possess144) The beam itself, from the gun to where it points ----
+// The possess143 test: the beam's check passed for its holder's own view, and still only the dot showed. func_151408A4 (the beam's
+// drawing for a view, $a0 the beam, $a1 the view) doesn't draw a beam along its length at all: it draws a glow facing the camera (a
+// quad, its 4 vertices worked out each frame), halfway from the gun to the view's camera (func_15144B34: the look camera of the view's
+// index, its +0x2F8), as big and bright as the laser points at that camera (the beam's direction against the way to the camera), and
+// none when it points away from it (0x15140BF0: $f0 0, left out unless the beam's +0x58 has 0x10000). The 5th player's view is drawn as
+// view 1, so his glow faces player 1's camera, wherever that is, and is seen from the side, stretched out from his gun: the green beam
+// of the possess141 test. For a gold weapon's scoped holder's own view (the laser's +0x132 the view): drawn (+0x58's 0x10000 for the
+// call), and its 4 vertices put along the laser instead, a strip from the gun (the beam's +0x34) to where the laser ends (the laser
+// sight's +0x40: the aim's ray's end), turned to face the view's eye, the texture's middle along its length (its edges soft across it),
+// its alpha (+0x5C) set. [gold] lines of each one drawn, or left out.
+namespace {
+    struct BeamKeep { bool on = false; uint32_t beam = 0, laser = 0, flags = 0; int view = -1, character = -1; };
+    BeamKeep beam_keep;
+    uint32_t beam_told = 0, beam_left_told = 0;
+    constexpr float beam_half_width = 1.2f;
+    constexpr uint32_t beam_alpha = 0x80;
+
+    float float_at(uint8_t* rdram, uint32_t at) {
+        const uint32_t b = (uint32_t)MEM_W(0, (gpr)(int32_t)at);
+        float v;
+        std::memcpy(&v, &b, 4);
+        return v;
+    }
+    int16_t short_of(float v) {
+        return (int16_t)std::lround(std::min(32767.0f, std::max(-32768.0f, v)));
+    }
+}
+
+// func_151408A4's start
+extern "C" void conker_gold_beam_start(uint8_t* rdram, recomp_context* ctx) {
+    beam_keep.on = false;
+    if (!golds_made || (int32_t)MEM_W(0, (gpr)(int32_t)scene_now) != total_war) {
+        return;
+    }
+    const uint32_t beam = (uint32_t)ctx->r4;
+    const int view = (int)(int16_t)(uint16_t)(uint32_t)ctx->r5;
+    if (!kseg0(beam) || view < 0 || view > 3) {
+        return;
+    }
+    const uint32_t laser = (uint32_t)MEM_W(0x170, (gpr)(int32_t)beam);
+    if (!kseg0(laser) || (int)MEM_BU(0x132, (gpr)(int32_t)laser) != view) {
+        return;
+    }
+    const uint32_t c = (uint32_t)MEM_W(0x110, (gpr)(int32_t)laser);
+    if (c < characters || (c - characters) % character_size != 0 || (c - characters) / character_size >= 25) {
+        return;
+    }
+    const int k = (int)((c - characters) / character_size);
+    const gpr aim = (gpr)(int32_t)MEM_W(0x31C, (gpr)(int32_t)c);
+    if (!kseg0((uint32_t)aim) || MEM_BU(0x197, aim) == 0 || gold_held(rdram, k) < 0) {
+        return;
+    }
+    const uint32_t flags = (uint32_t)MEM_W(0x58, (gpr)(int32_t)beam);
+    beam_keep = BeamKeep{ true, beam, laser, flags, view, k };
+    MEM_W(0x58, (gpr)(int32_t)beam) = (int32_t)(flags | 0x10000u);
+}
+
+// func_151408A4 at 0x15141194, returning ($v0 its list for the view, 0 if left out; $s0 the beam, $sp its frame: +0x114 its 4th vertex)
+extern "C" void conker_gold_beam_end(uint8_t* rdram, recomp_context* ctx) {
+    if (!beam_keep.on) {
+        return;
+    }
+    beam_keep.on = false;
+    const uint32_t beam = beam_keep.beam;
+    if ((uint32_t)ctx->r16 != beam) {
+        return;
+    }
+    const gpr b = (gpr)(int32_t)beam;
+    MEM_W(0x58, b) = (int32_t)(((uint32_t)MEM_W(0x58, b) & ~0x10000u) | (beam_keep.flags & 0x10000u));
+    if ((uint32_t)ctx->r2 == 0) {
+        if (beam_left_told < 10) {
+            beam_left_told++;
+            say("[gold] character %d's laser beam left out of its own view %d (its start off the view, or behind its eye)", beam_keep.character,
+                beam_keep.view);
+        }
+        return;
+    }
+    const uint32_t vertices = (uint32_t)MEM_W(0x114, ctx->r29) - 0x30u;
+    const uint32_t looks = (uint32_t)MEM_W(0, (gpr)(int32_t)0x800DBFF0);
+    if (!kseg0(vertices) || !kseg0(looks)) {
+        return;
+    }
+    const uint32_t eye_at = looks + (uint32_t)beam_keep.view * 0x9A0u + 0x2F8u;
+    float s[3], e[3], o[3];
+    for (int i = 0; i < 3; i++) {
+        s[i] = float_at(rdram, beam + 0x34u + 4u * (uint32_t)i);
+        e[i] = float_at(rdram, beam_keep.laser + 0x40u + 4u * (uint32_t)i);
+        o[i] = float_at(rdram, eye_at + 4u * (uint32_t)i);
+    }
+    float u[3] = { e[0] - s[0], e[1] - s[1], e[2] - s[2] };
+    const float length = std::sqrt(u[0] * u[0] + u[1] * u[1] + u[2] * u[2]);
+    if (!std::isfinite(length) || length < 1.0f) {
+        return;
+    }
+    for (float& x : u) {
+        x /= length;
+    }
+    const float n[3] = { o[0] - s[0], o[1] - s[1], o[2] - s[2] };
+    // (n x u: the strip's corners wound as the game's glow's are, its face away from the eye by their order, as the game's)
+    float side[3] = { n[1] * u[2] - n[2] * u[1], n[2] * u[0] - n[0] * u[2], n[0] * u[1] - n[1] * u[0] };
+    const float side_length = std::sqrt(side[0] * side[0] + side[1] * side[1] + side[2] * side[2]);
+    if (!std::isfinite(side_length) || side_length < 1e-3f) {
+        return;
+    }
+    for (float& x : side) {
+        x *= beam_half_width / side_length;
+    }
+    // the corners as the game's (+V+H, +V-H, -V-H, -V+H about the middle): the laser's end the +V side
+    const float corner[4][3] = {
+        { e[0] + side[0], e[1] + side[1], e[2] + side[2] },
+        { e[0] - side[0], e[1] - side[1], e[2] - side[2] },
+        { s[0] - side[0], s[1] - side[1], s[2] - side[2] },
+        { s[0] + side[0], s[1] + side[1], s[2] + side[2] },
+    };
+    int32_t st[4][2];
+    for (int i = 0; i < 4; i++) {
+        const gpr v = (gpr)(int32_t)(vertices + 0x10u * (uint32_t)i);
+        st[i][0] = MEM_H(8, v);
+        st[i][1] = MEM_H(10, v);
+    }
+    const int32_t mid[2] = { (st[0][0] + st[1][0] + st[2][0] + st[3][0]) / 4, (st[0][1] + st[1][1] + st[2][1] + st[3][1]) / 4 };
+    const int32_t across[2] = { (st[0][0] - st[1][0]) / 2, (st[0][1] - st[1][1]) / 2 };
+    const int sign[4] = { 1, -1, -1, 1 };
+    for (int i = 0; i < 4; i++) {
+        const gpr v = (gpr)(int32_t)(vertices + 0x10u * (uint32_t)i);
+        MEM_H(0, v) = short_of(corner[i][0]);
+        MEM_H(2, v) = short_of(corner[i][1]);
+        MEM_H(4, v) = short_of(corner[i][2]);
+        MEM_H(8, v) = (int16_t)(mid[0] + sign[i] * across[0]);
+        MEM_H(10, v) = (int16_t)(mid[1] + sign[i] * across[1]);
+    }
+    const uint32_t fade = MEM_BU(0x164 + (uint32_t)beam_keep.view, b);
+    MEM_B(0x5C, b) = (int8_t)((beam_alpha * fade) >> 8);
+    if (beam_told < 12) {
+        beam_told++;
+        say("[gold] character %d's laser beam drawn in its own view %d along the laser: from %.0f %.0f %.0f to %.0f %.0f %.0f (%.0f long), "
+            "the eye at %.0f %.0f %.0f; its texture %d,%d across %d,%d; alpha %u", beam_keep.character, beam_keep.view, s[0], s[1], s[2], e[0],
+            e[1], e[2], length, o[0], o[1], o[2], (int)mid[0], (int)mid[1], (int)across[0], (int)across[1], (unsigned)((beam_alpha * fade) >> 8));
     }
 }
 

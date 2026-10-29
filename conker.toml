@@ -3490,6 +3490,18 @@ func = "func_151028AC"
 before_vram = 0x151028E0
 text = "{ extern void conker_gold_beam(uint8_t*, recomp_context*); conker_gold_beam(rdram, ctx); }"
 
+# possess144: a gold weapon's laser drawn as a beam along it in its holder's own scoped view: func_151408A4 (the beam's drawing for a view,
+# a glow facing the view's camera) told to draw it (its +0x58's 0x10000) as it starts, and its 4 vertices put along the laser as it returns
+[[patches.hook]]
+func = "func_151408A4"
+before_vram = 0x151408A4
+text = "{ extern void conker_gold_beam_start(uint8_t*, recomp_context*); conker_gold_beam_start(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_151408A4"
+before_vram = 0x15141194
+text = "{ extern void conker_gold_beam_end(uint8_t*, recomp_context*); conker_gold_beam_end(rdram, ctx); }"
+
 # possess136: no reticle over a gold weapon's scope: func_151674F8's layer 4 for that view drawn with the reticle's types emptied, put back
 # as it returns (0x15167A38)
 [[patches.hook]]
