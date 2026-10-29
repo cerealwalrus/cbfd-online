@@ -1325,9 +1325,125 @@ extern "C" void conker_gold_fov_end(uint8_t* rdram, recomp_context* ctx) {
 // drawn, and of what it added for a gold weapon's scoped holder's own view, the rectangles around the view's middle (within a quarter of
 // its height: the reticle; the bar sits a third of it off to the side) are taken out (G_NOOPs). [gold] lines of what was there.
 namespace {
-    struct ReticleKeep { bool on = false; uint32_t view = 0, start = 0; };
+    struct ReticleKeep { bool on = false; uint32_t view = 0, start = 0, part = 0; int character = -1, gold = -1; int32_t kind = -1; };
     ReticleKeep reticle_keep;
     uint32_t reticle_told = 0;
+
+    // (possess143) the character a view's HUD is drawn for, scoped (any weapon): its index, or -1. Views 0 to 3, and the 5th player's (4:
+    // possess_test.cpp's fifth_hud_pass draws his reticle's objects with view 4, the 5th look camera's +0x23D). Not view 1 on the 5th
+    // player's machine: his view is drawn in its part there, and player 1's isn't seen.
+    int scoped_hud_character(uint8_t* rdram, uint32_t view) {
+        if (!golds_made || (int32_t)MEM_W(0, (gpr)(int32_t)scene_now) != total_war) {
+            return -1;
+        }
+        const bool fifth = conker::possess_test::online_extra_camera();
+        if (view > 4 || (view == 4 && !fifth) || (view == 0 && conker::possess_test::fifth_split_view(rdram))) {
+            return -1;
+        }
+        const uint32_t looks = (uint32_t)MEM_W(0, (gpr)(int32_t)0x800DBFF0);
+        for (uint32_t i = 0; kseg0(looks) && i < (fifth ? 5u : 4u); i++) {
+            const gpr camera = (gpr)(int32_t)(looks + i * 0x9A0u);
+            if ((uint32_t)MEM_BU(0x23D, camera) != view) {
+                continue;
+            }
+            const uint32_t ch = (uint32_t)MEM_W(0x3D0, camera);
+            if (ch < characters || (ch - characters) % character_size != 0 || (ch - characters) / character_size >= 25) {
+                return -1;
+            }
+            const gpr aim = (gpr)(int32_t)MEM_W(0x31C, (gpr)(int32_t)ch);
+            if (!kseg0((uint32_t)aim) || MEM_BU(0x197, aim) == 0) {
+                return -1;
+            }
+            return (int)((ch - characters) / character_size);
+        }
+        return -1;
+    }
+
+    // (possess143) The zoom bar for the gold knives' scope, which has none of its own: the bar (and its marker) as the scope of a sniper
+    // rifle or a revolver draws it (gold or not, any view's: every machine draws the 4 views), kept for each part (func_151674F8's $a3):
+    // that part's commands that set the RDP's state (in order, so the state at each rectangle is as it was), the reticle's object's own
+    // setup and end lists (DE D_8008AC70, D_8008AC98), and the bar's rectangles, placed as the gold weapons' are (at the view's left edge)
+    // from the view's top left. Until one's been seen, a bar of our own: a green see-through rectangle where the gold weapons' sits.
+    struct BarCopy {
+        bool have = false;
+        std::vector<uint32_t> words;     // pairs
+        std::vector<size_t> rects;       // where each rectangle's first word is in words
+        std::vector<int32_t> places;     // 4 a rectangle: its two corners' x and y (quarter pixels) from the view's top left
+        uint32_t from_view = 0;
+        int from_character = -1;
+        bool from_gold = false;
+    };
+    BarCopy bar_copy[2];
+    uint32_t bar_told = 0;
+
+    // the kind of the pickup character k holds (the match's pickups' +0x1174: the sniper rifle's 0x24, the revolver's 0x23), or -1
+    int32_t held_kind(uint8_t* rdram, int k) {
+        const uint32_t block = (uint32_t)MEM_W(0, (gpr)(int32_t)pickups_block);
+        if (!kseg0(block) || k < 0 || k >= 25) {
+            return -1;
+        }
+        const int32_t p = MEM_W(0xEB0 + 4 * (uint32_t)k, (gpr)(int32_t)block);
+        const int32_t count = MEM_W(0xEA4, (gpr)(int32_t)block);
+        if (p < 0 || p >= count || p >= pickups_most) {
+            return -1;
+        }
+        return MEM_W(0x1174 + 4 * (uint32_t)p, (gpr)(int32_t)block);
+    }
+
+    bool state_command(uint32_t op) {
+        switch (op) {
+        case 0xE2: case 0xE3: case 0xE6: case 0xE7: case 0xE8: case 0xEF: case 0xF0: case 0xF2: case 0xF3: case 0xF4: case 0xF5:
+        case 0xF7: case 0xF8: case 0xF9: case 0xFA: case 0xFB: case 0xFC: case 0xFD:
+            return true;
+        default:
+            return false;
+        }
+    }
+
+    uint32_t clamp_field(int32_t v) {
+        return (uint32_t)std::min(std::max(v, 0), 0xFFF);
+    }
+
+    // the kept bar written at `at` for the view whose top left is left, top: the list's new end
+    uint32_t put_bar(uint8_t* rdram, uint32_t at, const BarCopy& b, float left, float top) {
+        const int32_t l4 = (int32_t)std::lround(left * 4.0f), t4 = (int32_t)std::lround(top * 4.0f);
+        size_t r = 0;
+        for (size_t i = 0; i + 1 < b.words.size(); i += 2) {
+            uint32_t w0 = b.words[i], w1 = b.words[i + 1];
+            if (r < b.rects.size() && b.rects[r] == i) {
+                const int32_t* p = &b.places[r * 4];
+                w0 = (w0 & 0xFF000000u) | (clamp_field(p[0] + l4) << 12) | clamp_field(p[1] + t4);
+                w1 = (w1 & 0xFF000000u) | (clamp_field(p[2] + l4) << 12) | clamp_field(p[3] + t4);
+                r++;
+            }
+            MEM_W(0, (gpr)(int32_t)at) = (int32_t)w0;
+            MEM_W(4, (gpr)(int32_t)at) = (int32_t)w1;
+            at += 8;
+        }
+        return at;
+    }
+
+    // a bar of our own (none seen yet): 1-cycle, the primitive colour (G_CC_PRIMITIVE), see-through, a filled rectangle 4 pixels wide at
+    // the view's left edge, 6 in, over the view's height as the gold weapons' sits
+    uint32_t put_own_bar(uint8_t* rdram, uint32_t at, float left, float top, float bottom) {
+        const float high = bottom - top;
+        const uint32_t x0 = clamp_field((int32_t)std::lround((left + 6.0f) * 4.0f)), x1 = clamp_field((int32_t)std::lround((left + 10.0f) * 4.0f));
+        const uint32_t y0 = clamp_field((int32_t)std::lround((top + high * 0.10f) * 4.0f)), y1 = clamp_field((int32_t)std::lround((top + high * 0.38f) * 4.0f));
+        const uint32_t words[] = {
+            0xE7000000u, 0,
+            0xFCFFFFFFu, 0xFFFDF6FBu,
+            0xEF000CFFu, 0x00504340u,
+            0xFA000000u, 0x30C830A0u,
+            0xF6000000u | (x1 << 12) | y1, (x0 << 12) | y0,
+            0xE7000000u, 0,
+        };
+        for (size_t i = 0; i < sizeof(words) / sizeof(words[0]); i += 2) {
+            MEM_W(0, (gpr)(int32_t)at) = (int32_t)words[i];
+            MEM_W(4, (gpr)(int32_t)at) = (int32_t)words[i + 1];
+            at += 8;
+        }
+        return at;
+    }
 }
 
 extern "C" void conker_gold_reticle_start(uint8_t* rdram, recomp_context* ctx) {
@@ -1336,10 +1452,11 @@ extern "C" void conker_gold_reticle_start(uint8_t* rdram, recomp_context* ctx) {
         return;
     }
     const uint32_t view = (uint32_t)(int32_t)(int16_t)(uint16_t)(uint32_t)ctx->r6;
-    if (gold_scoped_view(rdram, view) < 0 || !kseg0((uint32_t)ctx->r4)) {
+    const int character = scoped_hud_character(rdram, view);
+    if (character < 0 || !kseg0((uint32_t)ctx->r4)) {
         return;
     }
-    reticle_keep = ReticleKeep{ true, view, (uint32_t)ctx->r4 };
+    reticle_keep = ReticleKeep{ true, view, (uint32_t)ctx->r4, (uint32_t)ctx->r7, character, gold_held(rdram, character), held_kind(rdram, character) };
 }
 
 extern "C" void conker_gold_reticle_end(uint8_t* rdram, recomp_context* ctx) {
@@ -1352,15 +1469,21 @@ extern "C" void conker_gold_reticle_end(uint8_t* rdram, recomp_context* ctx) {
     if (!kseg0(end) || end <= start || end - start > 0x8000u || !kseg0(records)) {
         return;
     }
+    const int g = reticle_keep.gold;
+    const bool gold = g >= 0;
+    const uint32_t part = reticle_keep.part & 1u;
     const gpr record = (gpr)(int32_t)(records + reticle_keep.view * 0x180u);
     auto f = [&](uint32_t off) { uint32_t b = (uint32_t)MEM_W(off, record); float v; std::memcpy(&v, &b, 4); return v; };
     const float top = f(0x24), bottom = f(0x28), left = f(0x2C), right = f(0x30);
     const float cx = (left + right) * 0.5f, cy = (top + bottom) * 0.5f;
-    (void)cy;
     // (possess139) the zoom bar: a tall thin rectangle (3 times as tall as wide at least); kept, with whatever sits across it (its marker).
     // Every other rectangle of the scope's HUD taken out: possess138 took out those within a quarter of the view's height of its middle,
     // and the reticle's dots further out stayed (the possess138 test's screenshots).
-    static float bar_l = -1.0f, bar_r = -1.0f;
+    // (possess143) where it was found kept for each view (possess139's one for all: the views not gold are looked through now too)
+    static float bars_l[5] = { -1.0f, -1.0f, -1.0f, -1.0f, -1.0f }, bars_r[5] = { -1.0f, -1.0f, -1.0f, -1.0f, -1.0f };
+    float& bar_l = bars_l[reticle_keep.view];
+    float& bar_r = bars_r[reticle_keep.view];
+    bool bar_here = false;
     for (uint32_t c = start; c + 8 <= end; c += 8) {
         const uint32_t w0 = (uint32_t)MEM_W(0, (gpr)(int32_t)c), w1 = (uint32_t)MEM_W(4, (gpr)(int32_t)c);
         const uint32_t op = w0 >> 24;
@@ -1374,22 +1497,35 @@ extern "C" void conker_gold_reticle_end(uint8_t* rdram, recomp_context* ctx) {
         if (high >= 3.0f * wide && high >= 8.0f && std::fabs((xl + xh) * 0.5f - cx) > (right - left) * 0.12f) {
             bar_l = std::min(xl, xh) - 2.0f;
             bar_r = std::max(xl, xh) + 2.0f;
+            bar_here = true;
         }
     }
+    // (possess143) a sniper rifle's or revolver's scope's bar copied for the gold knives' (the knives' own, gold or not, has none)
+    const bool copy_it = (reticle_keep.kind == 0x24 || reticle_keep.kind == 0x23) && g != 2 && bar_l >= 0.0f && (bar_here || part == 1);
+    BarCopy copy;
+    copy.from_view = reticle_keep.view;
+    copy.from_character = reticle_keep.character;
+    copy.from_gold = gold;
+    const int32_t l4 = (int32_t)std::lround(left * 4.0f), t4 = (int32_t)std::lround(top * 4.0f);
     uint32_t removed = 0, kept = 0;
     std::string ops;
     for (uint32_t c = start; c + 8 <= end; c += 8) {
         const gpr at = (gpr)(int32_t)c;
         const uint32_t w0 = (uint32_t)MEM_W(0, at), w1 = (uint32_t)MEM_W(4, at);
         const uint32_t op = w0 >> 24;
-        if (ops.size() < 3 * 60) {
+        if (gold && ops.size() < 3 * 60) {
             char piece[8];
             std::snprintf(piece, sizeof(piece), " %02X", (unsigned)op);
             ops += piece;
         }
         if (op != 0xE4 && op != 0xE5 && op != 0xF6) {
+            if (copy_it && (state_command(op) || (op == 0xDE && ((uint32_t)w1 == 0x8008AC70u || (uint32_t)w1 == 0x8008AC98u)))) {
+                copy.words.push_back(w0);
+                copy.words.push_back(w1);
+            }
             continue;
         }
+        const uint32_t words = (op == 0xF6) ? 1u : 3u;   // (a texture rectangle's two G_RDPHALFs after it)
         const float xl = (float)((w0 >> 12) & 0xFFFu) * 0.25f;
         const float xh = (float)((w1 >> 12) & 0xFFFu) * 0.25f;
         const float rx = (xl + xh) * 0.5f;
@@ -1397,23 +1533,70 @@ extern "C" void conker_gold_reticle_end(uint8_t* rdram, recomp_context* ctx) {
         if (on_bar) {
             // (possess141) the zoom bar (and its marker) moved to the view's left edge, 6 pixels in
             const int32_t shift = (int32_t)std::lround((left + 6.0f - (bar_l + 2.0f)) * 4.0f);
-            const int32_t nxl = (int32_t)((w0 >> 12) & 0xFFFu) + shift, nxh = (int32_t)((w1 >> 12) & 0xFFFu) + shift;
-            if (shift < 0 && nxl >= 0 && nxh >= 0) {
-                MEM_W(0, at) = (int32_t)((w0 & ~(0xFFFu << 12)) | ((uint32_t)nxl << 12));
-                MEM_W(4, at) = (int32_t)((w1 & ~(0xFFFu << 12)) | ((uint32_t)nxh << 12));
+            int32_t nxl = (int32_t)((w0 >> 12) & 0xFFFu), nxh = (int32_t)((w1 >> 12) & 0xFFFu);
+            if (shift < 0 && nxl + shift >= 0 && nxh + shift >= 0) {
+                nxl += shift;
+                nxh += shift;
+                if (gold) {
+                    MEM_W(0, at) = (int32_t)((w0 & ~(0xFFFu << 12)) | ((uint32_t)nxl << 12));
+                    MEM_W(4, at) = (int32_t)((w1 & ~(0xFFFu << 12)) | ((uint32_t)nxh << 12));
+                }
+            }
+            if (copy_it && c + words * 8 <= end) {
+                copy.rects.push_back(copy.words.size());
+                copy.places.push_back(nxl - l4);
+                copy.places.push_back((int32_t)(w0 & 0xFFFu) - t4);
+                copy.places.push_back(nxh - l4);
+                copy.places.push_back((int32_t)(w1 & 0xFFFu) - t4);
+                for (uint32_t k = 0; k < words; k++) {
+                    copy.words.push_back((uint32_t)MEM_W(k * 8, at));
+                    copy.words.push_back((uint32_t)MEM_W(k * 8 + 4, at));
+                }
             }
             kept++;
+            c += (words - 1) * 8;
+            continue;
+        }
+        if (!gold) {
+            c += (words - 1) * 8;
             continue;
         }
         removed++;
-        const uint32_t words = (op == 0xF6) ? 1u : 3u;   // (a texture rectangle's two G_RDPHALFs after it)
         for (uint32_t k = 0; k < words && c + k * 8 + 8 <= end; k++) {
             MEM_W(k * 8, at) = 0;
             MEM_W(k * 8 + 4, at) = 0;
         }
         c += (words - 1) * 8;
     }
-    if (reticle_told < 12) {
+    // (a gold scope's kept over one not gold's: its marker as the gold weapons' own scope shows it)
+    if (copy_it && !copy.rects.empty() && copy.words.size() <= 2u * 96u && (gold || !bar_copy[part].from_gold)) {
+        const bool first = !bar_copy[part].have;
+        copy.have = true;
+        bar_copy[part] = std::move(copy);
+        if (first) {
+            say("[gold] the zoom bar's part %u copied for the gold knives' scope, from view %u's (character %d's scope%s): %u commands, %u of "
+                "them its rectangles", (unsigned)part, (unsigned)bar_copy[part].from_view, bar_copy[part].from_character, gold ? ", gold" : "",
+                (unsigned)(bar_copy[part].words.size() / 2), (unsigned)bar_copy[part].rects.size());
+        }
+    }
+    // (possess143) the gold knives' scope: the zoom bar put after what was drawn, as the gold sniper rifle's and revolver's show it
+    uint32_t list_end = end;
+    if (g == 2) {
+        const bool have = bar_copy[part].have;
+        if (have) {
+            list_end = put_bar(rdram, end, bar_copy[part], left, top);
+        } else if (part == 0) {
+            list_end = put_own_bar(rdram, end, left, top, bottom);
+        }
+        ctx->r2 = (gpr)(int32_t)list_end;
+        if (bar_told < 12 && list_end != end) {
+            bar_told++;
+            say("[gold] view %u scoped with the gold knives: the zoom bar's part %u added at the view's left edge (%s, %u commands)",
+                (unsigned)reticle_keep.view, (unsigned)part, have ? "the copy of a scope's" : "our own, no scope's bar seen yet",
+                (unsigned)((list_end - end) / 8));
+        }
+    }
+    if (gold && reticle_told < 12) {
         reticle_told++;
         say("[gold] view %u scoped with a gold weapon: of its scope's HUD (%u commands, the view's middle %.0f,%.0f), %u  rectangles taken "
             "out (the reticle), %u kept (the zoom bar, %.0f to %.0f across); its commands:%s", (unsigned)reticle_keep.view, (unsigned)((end - start) / 8), cx, cy,
@@ -1514,6 +1697,44 @@ extern "C" void conker_gold_laser(uint8_t* rdram, recomp_context* ctx) {
     }
     if (gold_held(rdram, (int)((c - characters) / character_size)) >= 0) {
         ctx->r11 = 0;
+    }
+}
+
+// ---- (possess143) A gold weapon's laser beam seen by its holder through the scope, as the 5th player sees his ----
+// possess142's func_151D75C4 (what's attached to a character) wasn't the beam: the possess142 test's gold sniper rifle scoped, the fire
+// button held, showed the laser's dot alone. The laser sight (func_15101378, each frame: from the gun's bone, +0x110's +0x20, to where the
+// aim's ray ends, +0x31C's +0xB8, or 2000 along the aim) has its beam in an object of its own (its +0x30 there), whose check for each view
+// it's drawn in (func_151028AC, $a1 the view) leaves it out of its holder's own view (the laser's +0x132) while he's scoped (+0x197). The
+// 5th player's laser is his extra camera's view's, 4, never one of the 4 views drawn, so his beam is in his view all along. For a gold
+// weapon's holder the scope is read as clear there (0x151028E0, $v1 the holder, $t0 his +0x197): his beam drawn in his own view too.
+extern "C" void conker_gold_beam(uint8_t* rdram, recomp_context* ctx) {
+    if (!golds_made || (int32_t)MEM_W(0, (gpr)(int32_t)scene_now) != total_war || (uint32_t)ctx->r8 == 0) {
+        return;
+    }
+    const uint32_t c = (uint32_t)ctx->r3;
+    if (c < characters || (c - characters) % character_size != 0 || (c - characters) / character_size >= 25) {
+        return;
+    }
+    const int k = (int)((c - characters) / character_size);
+    const int g = gold_held(rdram, k);
+    if (g < 0) {
+        return;
+    }
+    ctx->r8 = 0;
+    static int told_for[25];
+    static bool told_set = false;
+    static uint32_t told = 0;
+    if (!told_set) {
+        told_set = true;
+        for (int& v : told_for) {
+            v = -1;
+        }
+    }
+    if (told_for[k] != g && told < 20) {
+        told++;
+        told_for[k] = g;
+        say("[gold] character %d's laser beam (the %s's) drawn in its own view, scoped (view %d)", k, golds[g].name,
+            (int)(int16_t)(uint16_t)(uint32_t)ctx->r5);
     }
 }
 
