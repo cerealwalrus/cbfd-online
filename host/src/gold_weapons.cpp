@@ -18,6 +18,7 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <vector>
 
 #include "recomp.h"
 
@@ -54,6 +55,7 @@ namespace {
         { "knives", 0x14, 0x3C, 96, -1408, -148, 0, -1 },
     };
     bool golds_made = false;
+    std::vector<uint32_t> textures[3];   // (possess128) the textures each weapon's model loads, as the frame's lists are walked
 
     bool kseg0(uint32_t a) { return (a >> 24) == 0x80 && (a & 0x00FFFFFFu) < 0x00FF0000u; }
 
@@ -88,6 +90,9 @@ bool conker::gold_weapons::is_gold_id(int id) {
 // func_150039E0, 0x15003AB0: both setup lists read ($v0 the second's size, the stack's +0xA0 and +0x9C the lists).
 extern "C" void conker_gold_props(uint8_t* rdram, recomp_context* ctx) {
     golds_made = false;
+    for (auto& t : textures) {
+        t.clear();
+    }
     for (Gold& g : golds) {
         g.id = 0;
         g.pickup = -1;
@@ -268,7 +273,7 @@ namespace {
         return 0;   // (a segment's address: not ours to move)
     }
 
-    void gold_colours(uint8_t* rdram, uint32_t at, uint32_t count) {
+    void gold_colours(uint8_t* rdram, uint32_t at, uint32_t count, int g) {
         for (uint32_t v = 0; v < count; v++) {
             const gpr c = (gpr)(int32_t)(at + v * 0x10u + 0xCu);
             const uint32_t r = MEM_BU(0, c), gr = MEM_BU(1, c), b = MEM_BU(2, c);
@@ -276,6 +281,14 @@ namespace {
             // (possess127) brighter: the Rare logo's gold from a deep amber in the shadows to a pale yellow at the light, which the list's
             // colour combiner adds over the texture (gold_combiner): possess123's (60 + 0.9 l, 40 + 0.7 l, 0.15 l) times the dark texture
             // came out a dull olive (the possess125 test)
+            // (possess128) the sniper rifle's texture is the lightest of the three: added over it, that gold came out too bright and lemon
+            // yellow (the possess127 test; the revolver and the knives right as they are), so its gold is darker and deeper
+            if (g == 0) {
+                MEM_B(0, c) = (int8_t)(uint8_t)std::min(255u, 92u + l * 30u / 100u);
+                MEM_B(1, c) = (int8_t)(uint8_t)std::min(255u, 52u + l * 24u / 100u);
+                MEM_B(2, c) = (int8_t)(uint8_t)std::min(255u, 4u + l * 5u / 100u);
+                continue;
+            }
             MEM_B(0, c) = (int8_t)(uint8_t)std::min(255u, 150u + l * 45u / 100u);
             MEM_B(1, c) = (int8_t)(uint8_t)std::min(255u, 95u + l * 50u / 100u);
             MEM_B(2, c) = (int8_t)(uint8_t)std::min(255u, 8u + l * 12u / 100u);
@@ -393,7 +406,7 @@ namespace {
                 }
             }
         }
-        gold_colours(rdram, ours, n);
+        gold_colours(rdram, ours, n, g);
         uint32_t combiners = 0, shiny = 0;
         std::string combines;
         for (uint32_t c = ours + n * 0x10u; c < ours + size; c += 8) {
@@ -541,6 +554,15 @@ extern "C" void conker_gold_scope_body(uint8_t* rdram, recomp_context* ctx) {
     scope_last[k] = g;
     if (g >= 0) {
         ctx->r15 = ctx->r12;
+        // (possess128) and seen in that view: scoped, the view's eye is inside his head, so the loop above hid him there too (func_150A6360's
+        // check found him at the eye: func_1506160C's 10, his hidden bits for the view, +0xF, and his fade in it, +0xB a view, to 0), and
+        // the characters' drawing (func_15030E08) leaves out one faded to nothing: possess127 cleared the bit alone and nothing changed (the
+        // possess127 test). His fade in his own view full and its hidden bits clear, as the 5th player's are in his.
+        if (k < 4) {
+            const gpr ch = (gpr)(int32_t)c;
+            MEM_B(0xF, ch) = (int8_t)(MEM_BU(0xF, ch) & ~((1u << k) | (0x10u << k)));
+            MEM_B(0xB + (uint32_t)k, ch) = (int8_t)0xFF;
+        }
     }
 }
 
@@ -559,6 +581,16 @@ namespace {
         uint32_t matrix = 0;
         std::string samples[3];
         uint32_t sampled[3] = {};
+        // (possess128) the textures each weapon's model loads (G_SETTIMG inside its list), and where else they're loaded from: the hand's
+        // weapon is drawn from a model of its own (the possess127 test: none of the props' models called for it)
+        std::string elsewhere[3];
+        uint32_t elsewhere_n[3] = {}, elsewhere_told[3] = {};
+        static float fixed(uint8_t* rdram, uint32_t m, int r, int c) {
+            const gpr at = (gpr)(int32_t)(m | 0x80000000u);
+            const int32_t i = MEM_H((uint32_t)((r * 4 + c) * 2), at);
+            const uint32_t f = (uint16_t)MEM_HU((uint32_t)(32 + (r * 4 + c) * 2), at);
+            return (float)i + (float)f / 65536.0f;
+        }
 
         static bool phys_ok(uint32_t a) { return a < 0x00800000u && (a & 7u) == 0; }
         uint32_t resolve(uint32_t a) const {
@@ -579,7 +611,7 @@ namespace {
                 samples[g] += piece;
             }
         }
-        void run(uint32_t list, int depth, uint32_t end) {
+        void run(uint32_t list, int depth, uint32_t end, int inside = -1) {
             for (uint32_t c = list; phys_ok(c) && steps < 400000u; c += 8) {
                 if (end != 0 && c >= end) {
                     return;
@@ -598,6 +630,29 @@ namespace {
                     matrix = resolve(w1);
                     continue;
                 }
+                if (op == 0xFD) {
+                    const uint32_t t = resolve(w1);
+                    for (int g = 0; g < 3; g++) {
+                        auto& known = textures[g];
+                        const bool is_known = std::find(known.begin(), known.end(), t) != known.end();
+                        if (inside == g) {
+                            if (!is_known && known.size() < 8) {
+                                known.push_back(t);
+                            }
+                        } else if (inside < 0 && is_known) {
+                            elsewhere_n[g]++;
+                            if (elsewhere_told[g] < 3 && phys_ok(matrix)) {
+                                elsewhere_told[g]++;
+                                char piece[200];
+                                std::snprintf(piece, sizeof(piece), " | its texture %06X loaded at %06X in the list at %06X (depth %d), matrix %06X at %.0f %.0f %.0f",
+                                    (unsigned)t, (unsigned)c, (unsigned)list, depth, (unsigned)matrix, fixed(rdram, matrix, 3, 0), fixed(rdram, matrix, 3, 1),
+                                    fixed(rdram, matrix, 3, 2));
+                                elsewhere[g] += piece;
+                            }
+                        }
+                    }
+                    continue;
+                }
                 if (op == 0x01) {
                     const uint32_t a = resolve(w1);
                     for (int g = 0; g < 3; g++) {
@@ -613,6 +668,13 @@ namespace {
                 }
                 if (op == 0xDE) {
                     const uint32_t to = resolve(w1);
+                    int into = inside;
+                    for (int g = 0; g < 3; g++) {
+                        const GoldModel& m = gold_models[g];
+                        if ((m.from_dl != 0 && to == (m.from_dl & 0x1FFFFFFFu)) || (m.dl > 1 && to == (m.dl & 0x1FFFFFFFu))) {
+                            into = g;
+                        }
+                    }
                     for (int g = 0; g < 3; g++) {
                         const GoldModel& m = gold_models[g];
                         if (m.from_dl != 0 && to == (m.from_dl & 0x1FFFFFFFu)) {
@@ -630,7 +692,7 @@ namespace {
                         continue;
                     }
                     if (depth < 14) {
-                        run(to, depth + 1, 0);
+                        run(to, depth + 1, 0, into);
                     }
                 }
             }
@@ -640,7 +702,7 @@ namespace {
 }
 
 void conker::gold_weapons::frame_end(uint8_t* rdram, uint32_t start, uint32_t end) {
-    if (!golds_made || (int32_t)MEM_W(0, (gpr)(int32_t)scene_now) != total_war || hand_told >= 120 || (++hand_frames % 30u) != 0) {
+    if (!golds_made || (int32_t)MEM_W(0, (gpr)(int32_t)scene_now) != total_war || hand_told >= 300 || (++hand_frames % 60u) != 0) {
         return;
     }
     if (!kseg0(start) || !kseg0(end) || end <= start || end - start > 0x100000u) {
@@ -667,5 +729,23 @@ void conker::gold_weapons::frame_end(uint8_t* rdram, uint32_t start, uint32_t en
     for (int g = 0; g < 3; g++) {
         say("[gold] [hand]   the %s's model: called %u times (the game's), %u (our gold); its vertices loaded %u (the game's), %u (ours)%s", golds[g].name,
             (unsigned)w.calls[g][0], (unsigned)w.calls[g][1], (unsigned)w.loads[g][0], (unsigned)w.loads[g][1], w.samples[g].c_str());
+        std::string tex;
+        for (uint32_t t : textures[g]) {
+            char piece[16];
+            std::snprintf(piece, sizeof(piece), " %06X", (unsigned)t);
+            tex += piece;
+        }
+        say("[gold] [hand]   the %s's textures:%s; loaded outside its model %u times%s", golds[g].name, tex.empty() ? " (none seen yet)" : tex.c_str(),
+            (unsigned)w.elsewhere_n[g], w.elsewhere[g].c_str());
     }
+    // where each of the first 5 characters is, for the matrices above
+    std::string where;
+    for (int k = 0; k < 5; k++) {
+        const gpr ch = (gpr)(int32_t)(characters + (uint32_t)k * character_size);
+        char piece[64];
+        auto f = [&](uint32_t off) { uint32_t b = (uint32_t)MEM_W(off, ch); float v; std::memcpy(&v, &b, 4); return v; };
+        std::snprintf(piece, sizeof(piece), " %d at %.0f %.0f %.0f;", k, f(0x14), f(0x18), f(0x1C));
+        where += piece;
+    }
+    say("[gold] [hand]   the characters:%s", where.c_str());
 }

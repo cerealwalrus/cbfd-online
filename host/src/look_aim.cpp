@@ -1677,6 +1677,11 @@ bool conker::look_aim::swap_sticks_now(int player) {
 }
 
 bool conker::look_aim::z_turns_aim(int player) {
+    // (possess128) online the game's side does it (gun_side_walk: the shotgun's strafe as a walk), so the left stick's C-Left and C-Right
+    // are sent as they are
+    if (conker::netsession::active()) {
+        return false;
+    }
     return (player >= 0) && (player < signal_players) && shotgun_aiming[player].load();
 }
 
@@ -1894,7 +1899,13 @@ void conker::look_aim::gun_side_walk(uint8_t* rdram, int port, uint16_t* buttons
             continue;
         }
         const uint8_t kind = MEM_BU(0x23E, camera);
-        if ((kind != 0x38 && kind != 0x3A) || MEM_H(0x73C, camera) != 2) {
+        // (possess128) and the shotgun's look (0x3B, the co-op mansion's, in either of its stages): there C-Left and C-Right turn the aim
+        // (the co-op players' state is 0x90, the possess127 test: Z or not), so the left stick's strafe yanked the aim off the zombies;
+        // possess127 kept them from the game with Z held, and he couldn't strafe, stopping and starting as the stick went round. Now he
+        // walks and strafes as with the M4: the game gets C-Up (C-Down going back) and his moving angle is the way pressed from the view
+        // (conker_look_targets), the aim the right stick's alone.
+        const bool shotgun = kind == 0x3B && MEM_H(0x73C, camera) != 0;
+        if (!shotgun && ((kind != 0x38 && kind != 0x3A) || MEM_H(0x73C, camera) != 2)) {
             continue;
         }
         gun_walk_dx[port] = dx;
