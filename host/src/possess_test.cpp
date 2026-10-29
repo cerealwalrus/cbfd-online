@@ -3103,6 +3103,11 @@ static void conker_possess_view_local_body(uint8_t* rdram, recomp_context* ctx) 
         std::memcpy(rdram + (views - 0x80000000u), rdram + (views + (uint32_t)extra * 0x180u - 0x80000000u), 0x180);
     }
     std::memcpy(rdram + (mats - 0x80000000u), rdram + (mats + (uint32_t)extra * 0x40u - 0x80000000u), 0x40);
+    // (possess147) with a split screen, view 1's own record (player 1's): its projection made at the 5th player's own zoom (his camera's,
+    // camera 1's now), not player 1's field of view: his sniper rifle, revolver and knives zoom as players 1 to 4's do
+    if (fifth_split(rdram)) {
+        conker::gold_weapons::fifth_view_projection(rdram, base);
+    }
     // (possess33) played or not, the extra character drawn as the bot it is while only shown (its brain's AI flag, +0x84; the game's memory
     // is put back after): shown, it's drawn; played (+0x84 0, a player's), it wasn't, with its fade, hidden bits and render item the same
     if (extra_played) {

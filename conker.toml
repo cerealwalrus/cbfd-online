@@ -3521,6 +3521,24 @@ func = "func_151408A4"
 before_vram = 0x15140A0C
 text = "{ extern void conker_gold_beam_listed(uint8_t*, recomp_context*); conker_gold_beam_listed(rdram, ctx); }"
 
+# possess147: the 5th player's sniper rifle, revolver and knives (not gold) as players 1 to 4 have theirs (host/src/gold_weapons.cpp):
+# scoped, he's left out of his own view (the extra view, as view 1: func_1502E4C4's end), what's attached to him isn't drawn
+# (func_151D75C4, $t4 his camera, none: taken as one), and his laser's glow is his own view's there, player 1's not (func_151028AC, $t8)
+[[patches.hook]]
+func = "func_1502E4C4"
+before_vram = 0x1502E9D0
+text = "{ extern void conker_fifth_scope_hide(uint8_t*, recomp_context*); conker_fifth_scope_hide(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_151D75C4"
+before_vram = 0x151D7640
+text = "{ extern void conker_fifth_attachments(uint8_t*, recomp_context*); conker_fifth_attachments(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_151028AC"
+before_vram = 0x151028C4
+text = "{ extern void conker_fifth_laser_view(uint8_t*, recomp_context*); conker_fifth_laser_view(rdram, ctx); }"
+
 # possess136: no reticle over a gold weapon's scope: func_151674F8's layer 4 for that view drawn with the reticle's types emptied, put back
 # as it returns (0x15167A38)
 [[patches.hook]]

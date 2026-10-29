@@ -561,14 +561,22 @@ namespace {
 
 // func_1502E4C4 at 0x1502E9A0: $t7 the character's +0x74 with its own view's bit set ($t4 as it was), $s1 the character.
 extern "C" void conker_gold_scope_body(uint8_t* rdram, recomp_context* ctx) {
-    if (!golds_made || (int32_t)MEM_W(0, (gpr)(int32_t)scene_now) != total_war) {
-        return;
-    }
     const uint32_t c = (uint32_t)ctx->r17;
     if (c < characters || (c - characters) % character_size != 0 || (c - characters) / character_size >= 25) {
         return;
     }
     const int k = (int)((c - characters) / character_size);
+    // (possess147) The 5th player's view, drawn as view 1 (possess_test.cpp's extra view: camera 1 a copy of the 5th player's camera):
+    // player 1's character, whose camera (+0x318) is camera 1's block, was put out of view 1 here as its own view, scoped or in the first
+    // person (camera 1's +0x2C, the 5th player's then) — the 5th player didn't see player 1 while either of them was scoped. View 1 is the
+    // 5th player's in it: player 1 left in it, as players 2 to 4 see him.
+    if (k == 0 && conker::possess_test::drawing_extra_view()) {
+        ctx->r15 = ctx->r12;
+        return;
+    }
+    if (!golds_made || (int32_t)MEM_W(0, (gpr)(int32_t)scene_now) != total_war) {
+        return;
+    }
     const gpr aim = (gpr)(int32_t)MEM_W(0x31C, (gpr)(int32_t)c);
     if (!kseg0((uint32_t)aim) || MEM_BU(0x197, aim) == 0) {
         return;
@@ -604,6 +612,13 @@ extern "C" void conker_gold_scope_body(uint8_t* rdram, recomp_context* ctx) {
 // besides, which the camera sets in first person and scoped: possess128's clearing at 0x1502E9A0 was put back here, the possess128 test's
 // player 1 never seen in his own scope). For a gold weapon's holder, scoped, its own view's bit clear again. [gold] lines of the bits.
 extern "C" void conker_gold_scope_end(uint8_t* rdram, recomp_context* ctx) {
+    // (possess147) in the 5th player's view (the extra view, as view 1), player 1's +0x2FC's bit for view 1 (his own view's, set by his
+    // camera in the first person or scoped) left out: view 1 is the 5th player's there (conker_gold_scope_body)
+    if ((uint32_t)ctx->r17 == characters && conker::possess_test::drawing_extra_view()) {
+        const uint32_t before = (uint32_t)ctx->r9 & 0xFFu, extra_views = (uint32_t)MEM_BU(0x2FC, (gpr)(int32_t)characters);
+        ctx->r10 = (gpr)(int32_t)(before | (extra_views & ~1u));
+        return;
+    }
     if (!golds_made || (int32_t)MEM_W(0, (gpr)(int32_t)scene_now) != total_war) {
         return;
     }
@@ -1723,7 +1738,9 @@ extern "C" void conker_gold_projection(uint8_t* rdram, recomp_context* ctx) {
 extern "C" void conker_gold_projection_made(uint8_t* rdram, recomp_context* ctx) {
     const uint32_t view = (uint32_t)MEM_W(0x30, ctx->r29);
     const uint32_t records = (uint32_t)MEM_W(0, (gpr)(int32_t)0x800BE628);
-    if (view > 3 || !kseg0(records) || !golds_made || (int32_t)MEM_W(0, (gpr)(int32_t)scene_now) != total_war) {
+    // (possess147: kept in every level, not the gold weapons' alone: the 5th player's view's zoom is made from it, fifth_view_projection;
+    // not while the extra view is drawn, view 1's record the 5th player's then)
+    if (view > 3 || !kseg0(records)) {
         return;
     }
     const uint32_t record = records + view * 0x180u;
@@ -1735,7 +1752,7 @@ extern "C" void conker_gold_projection_made(uint8_t* rdram, recomp_context* ctx)
     const bool unzoomed = std::fabs(across - (record_float(r, rdram, 0x6C) + extra)) < 0.01f && std::fabs(up - (record_float(r, rdram, 0x70) + extra)) < 0.01f;
     KeptProjection& kp = kept_projection[view];
     if (gold_scoped_view(rdram, view) < 0) {
-        if (unzoomed) {
+        if (unzoomed && !conker::possess_test::drawing_extra_view()) {
             std::memcpy(kp.fixed, rdram + (fixed - 0x80000000u), 0x40);
             std::memcpy(kp.floats, rdram + (floats - 0x80000000u), 0x40);
             kp.across = across;
@@ -1847,7 +1864,8 @@ namespace {
 // func_151408A4's start
 extern "C" void conker_gold_beam_start(uint8_t* rdram, recomp_context* ctx) {
     beam_keep.on = false;
-    if (!golds_made || (int32_t)MEM_W(0, (gpr)(int32_t)scene_now) != total_war) {
+    // (possess147: not in the 5th player's view, the extra view: a gold weapon's holder's beam there as the others see it)
+    if (!golds_made || (int32_t)MEM_W(0, (gpr)(int32_t)scene_now) != total_war || conker::possess_test::drawing_extra_view()) {
         return;
     }
     const uint32_t beam = (uint32_t)ctx->r4;
@@ -2013,5 +2031,166 @@ namespace {
             std::memcpy(rdram + (record + 0x100u + buffer * 0x40u - 0x80000000u), kp.fixed, 0x40);
         }
         std::memcpy(rdram + (record + 0xBCu - 0x80000000u), kp.floats, 0x40);
+    }
+}
+
+
+// ==== (possess147) The 5th player's sniper rifle, revolver and knives (not gold) as players 1 to 4 have theirs ====
+// The 5th player's character (the match's 5th, character 5) plays through the extra camera, which the game doesn't tie to it (its +0x318
+// none), and his view is drawn as view 1 (possess_test.cpp's extra view: camera 1 a copy of his camera, view 1's record player 1's
+// own). So scoped: his view was drawn with view 1's projection, player 1's (no zoom of his own, and player 1's zoom when player 1 was
+// scoped); he was drawn in his own view (the game puts a scoped character out of his own view by his camera); what's attached to him
+// was drawn (left out for a scoped character with a camera); and his laser's glow was drawn in his own view (left out of its holder's
+// view while he's scoped: his laser's view is the extra camera's, 4). And in his view, player 1 was put out of it while either of them
+// was scoped (player 1's camera is camera 1's block). Now, as players 1 to 4 have it (the gold weapons stay the 5th player's look):
+//   - his view's projection made at his own zoom (fifth_view_projection, from possess_test.cpp as the extra view begins);
+//   - scoped with a weapon not gold, he's left out of his own view (0x1502E9D0) and what's attached to him isn't drawn (0x151D7640);
+//   - his laser's glow left out of his own view while he's scoped, and player 1's left in it (0x151028C4);
+//   - player 1 left in his view (conker_gold_scope_body, conker_gold_scope_end).
+namespace {
+    constexpr int fifth_character = 4;
+    uint32_t fifth_told = 0;
+
+    // the 5th player's character scoped with a weapon not gold: its aim's +0x197, the gold weapons' own look apart
+    bool fifth_scoped_plain(uint8_t* rdram) {
+        const uint32_t c = characters + (uint32_t)fifth_character * character_size;
+        const uint32_t aim = (uint32_t)MEM_W(0x31C, (gpr)(int32_t)c);
+        return kseg0(aim) && MEM_BU(0x197, (gpr)(int32_t)aim) != 0 && gold_held(rdram, fifth_character) < 0;
+    }
+
+    void fifth_say(const char* what) {
+        if (fifth_told < 24) {
+            fifth_told++;
+            say("[fifth] %s", what);
+        }
+    }
+}
+
+// From possess_test.cpp's extra view, view 1 made the 5th player's (camera 1 his camera's copy, $camera), before its passes: view 1's
+// projection made at his zoom (his camera's +0x19C across and +0x1A0 up, as func_1510B128 makes a view's: the record's +0x6C, +0x70 with
+// them and D_800C3648's), from view 1's own projection kept unzoomed (kept_projection, conker_gold_projection_made), its scales across
+// and up (row 0 column 0, row 1 column 1) by the tangents of the half fields of view; both of the record's fixed point buffers (+0x100)
+// and its floats (+0xBC), and its field of view (+0x74, +0x78). Scoped with a gold weapon: unzoomed (the gold weapons' look).
+void conker::gold_weapons::fifth_view_projection(uint8_t* rdram, uint32_t camera) {
+    const uint32_t records = (uint32_t)MEM_W(0, (gpr)(int32_t)0x800BE628);
+    const KeptProjection& kp = kept_projection[0];
+    if (!kseg0(records) || !kseg0(camera) || !kp.have) {
+        return;
+    }
+    const gpr r = (gpr)(int32_t)records;
+    const gpr cam = (gpr)(int32_t)camera;
+    float across = record_float(cam, rdram, 0x19C), up = record_float(cam, rdram, 0x1A0);
+    if (!std::isfinite(across) || !std::isfinite(up)) {
+        across = up = 0.0f;
+    }
+    const uint32_t ch = (uint32_t)MEM_W(0x3D0, cam);
+    bool gold_scoped = false;
+    if (ch == characters + (uint32_t)fifth_character * character_size) {
+        const uint32_t aim = (uint32_t)MEM_W(0x31C, (gpr)(int32_t)ch);
+        gold_scoped = kseg0(aim) && MEM_BU(0x197, (gpr)(int32_t)aim) != 0 && gold_held(rdram, fifth_character) >= 0;
+    }
+    if (gold_scoped) {
+        across = up = 0.0f;
+    }
+    const float extra = record_float((gpr)(int32_t)0x800C3648, rdram, 0);
+    const float fx = record_float(r, rdram, 0x6C) + across + extra, fy = record_float(r, rdram, 0x70) + up + extra;
+    if (!(fx > 1.0f && fx < 179.0f && fy > 1.0f && fy < 179.0f && kp.across > 1.0f && kp.up > 1.0f)) {
+        return;
+    }
+    constexpr float half_radians = 3.14159265f / 360.0f;
+    const float sx = std::tan(kp.across * half_radians) / std::tan(fx * half_radians);
+    const float sy = std::tan(kp.up * half_radians) / std::tan(fy * half_radians);
+    uint8_t floats[0x40];
+    std::memcpy(floats, kp.floats, 0x40);
+    auto scale_float = [&](int i, float by) {
+        float v;
+        std::memcpy(&v, floats + 4 * i, 4);
+        v *= by;
+        std::memcpy(floats + 4 * i, &v, 4);
+    };
+    // (the record's floats as the game's words: rdram's 4-byte words are the game's own, so a float's bits are one word)
+    scale_float(0, sx);
+    scale_float(5, sy);
+    for (uint32_t buffer = 0; buffer < 2; buffer++) {
+        const uint32_t m = records + 0x100u + buffer * 0x40u;
+        std::memcpy(rdram + (m - 0x80000000u), kp.fixed, 0x40);
+        for (int i : { 0, 5 }) {
+            const float by = i == 0 ? sx : sy;
+            const float v = fixed_element(rdram, m, i) * by;
+            const int32_t fixed = (int32_t)std::lround((double)v * 65536.0);
+            MEM_H((uint32_t)(i * 2), (gpr)(int32_t)m) = (int16_t)(fixed >> 16);
+            MEM_H((uint32_t)(32 + i * 2), (gpr)(int32_t)m) = (int16_t)(uint16_t)(fixed & 0xFFFF);
+        }
+    }
+    std::memcpy(rdram + (records + 0xBCu - 0x80000000u), floats, 0x40);
+    uint32_t b;
+    std::memcpy(&b, &fx, 4);
+    MEM_W(0x74, r) = (int32_t)b;
+    std::memcpy(&b, &fy, 4);
+    MEM_W(0x78, r) = (int32_t)b;
+    static int told_zoom = -1000;
+    const int zoom_step = (int)std::lround(std::fabs(across) * 2.0f);
+    if (zoom_step != told_zoom && fifth_told < 24) {
+        told_zoom = zoom_step;
+        char line[220];
+        std::snprintf(line, sizeof(line), "the 5th player's view made at his own zoom: %.1f by %.1f degrees (his camera's %.1f %.1f%s; view 1's unzoomed "
+            "%.1f by %.1f), its scales %.3f %.3f", fx, fy, across, up, gold_scoped ? ", scoped with a gold weapon: none" : "", kp.across, kp.up,
+            fixed_element(rdram, records + 0x100u, 0), fixed_element(rdram, records + 0x100u, 5));
+        fifth_say(line);
+    }
+}
+
+// func_1502E4C4 at 0x1502E9D0, its end ($s1 the character, its +0x74 the views it's left out of): in the 5th player's view (the extra
+// view, as view 1), scoped with a weapon not gold or his camera in the first person (camera 1's +0x2C 0x10000, the game's test for a
+// player's own view), he's left out of it, as players 1 to 4 are left out of their own (0x1502E95C)
+extern "C" void conker_fifth_scope_hide(uint8_t* rdram, recomp_context* ctx) {
+    if (!conker::possess_test::drawing_extra_view() || (uint32_t)ctx->r17 != characters + (uint32_t)fifth_character * character_size) {
+        return;
+    }
+    const uint32_t camera = (uint32_t)MEM_W(0, (gpr)(int32_t)0x800DBFF0);
+    const bool first_person = kseg0(camera) && (uint32_t)MEM_W(0x2C, (gpr)(int32_t)camera) == 0x10000u && gold_held(rdram, fifth_character) < 0;
+    if (!fifth_scoped_plain(rdram) && !first_person) {
+        return;
+    }
+    const gpr c = (gpr)(int32_t)ctx->r17;
+    MEM_B(0x74, c) = (int8_t)(MEM_BU(0x74, c) | 1u);
+    static bool told = false;
+    if (!told) {
+        told = true;
+        fifth_say("the 5th player scoped: left out of his own view (view 1 as the extra view), as players 1 to 4 are of theirs");
+    }
+}
+
+// func_151D75C4 at 0x151D7640 ($v0 the character, scoped; $t4 its camera, +0x318): what's attached to a scoped character with a camera
+// isn't drawn; the 5th player's character has none, so his was. Scoped with a weapon not gold (the gold weapons' holders never come here,
+// conker_gold_laser), it's taken as his.
+extern "C" void conker_fifth_attachments(uint8_t* rdram, recomp_context* ctx) {
+    if ((uint32_t)ctx->r2 != characters + (uint32_t)fifth_character * character_size || (uint32_t)ctx->r12 != 0 ||
+        !conker::possess_test::fifth_playing() || gold_held(rdram, fifth_character) >= 0) {
+        return;
+    }
+    ctx->r12 = 1;
+    static bool told = false;
+    if (!told) {
+        told = true;
+        fifth_say("the 5th player scoped: what's attached to him not drawn, as for players 1 to 4 scoped");
+    }
+}
+
+// func_151028AC at 0x151028C4 ($a1 the view, $t8 its laser's own view, +0x132; $v0 the laser's +0x110, its holder): in the 5th player's
+// view (the extra view, view 1), his own laser is his own view's (its glow left out while he's scoped, as players 1 to 4 have theirs),
+// and player 1's laser isn't (its own view is view 1: left in, as players 2 to 4 see it)
+extern "C" void conker_fifth_laser_view(uint8_t* rdram, recomp_context* ctx) {
+    if (!conker::possess_test::drawing_extra_view() || (int32_t)(int16_t)(uint16_t)(uint32_t)ctx->r5 != 0) {
+        return;
+    }
+    if (!kseg0((uint32_t)ctx->r2)) {
+        return;
+    }
+    const uint32_t holder = (uint32_t)MEM_W(0, ctx->r2);
+    if (holder == characters + (uint32_t)fifth_character * character_size) {
+        ctx->r24 = 0;
+    } else if (holder == characters && (uint32_t)ctx->r24 == 0) {
+        ctx->r24 = 0xFF;
     }
 }

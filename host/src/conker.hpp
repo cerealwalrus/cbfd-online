@@ -473,6 +473,9 @@ namespace conker {
         bool is_gold_id(int id);
         // (possess127) the frame's list at its end (its start, its end): where the weapons' models are drawn, logged
         void frame_end(uint8_t* rdram, uint32_t start, uint32_t end);
+        // (possess147) the 5th player's view (the extra view, drawn as view 1, camera 1 the copy of his camera): view 1's projection made
+        // at his own zoom
+        void fifth_view_projection(uint8_t* rdram, uint32_t camera);
     }
 }
 namespace recompui { class LauncherMenu; class GameOptionsMenu; class GameOption; }
