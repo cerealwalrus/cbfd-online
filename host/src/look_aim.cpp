@@ -317,7 +317,7 @@ void conker::look_aim::add_camera_options(recomp::config::Config& config) {
         "Stops the camera moving on its own while you hold R. In the original game the camera eases after Conker as he moves "
         "while you aim, trailing a little behind him: walking tilts and swings the view, up a ramp it tilts the crosshair up and "
         "down a ramp down, until you stop. <recomp-color primary>On</recomp-color>: the camera stays locked to Conker, and only your "
-        "aim turns it, and with Aiming: Swap Sticks he starts, stops and turns round smoothly as you walk, so the view never jolts. <recomp-color primary>Off</recomp-color> matches the original game. Online it is each player's own setting.",
+        "aim turns it. It eases into the aim and back out, keeps out of walls, and Conker can walk right up to them while you aim. With Aiming: Swap Sticks he starts, stops and turns round smoothly as you walk, so the view never jolts. <recomp-color primary>Off</recomp-color> matches the original game. Online it is each player's own setting.",
         toggle, Toggle::Off);
     config.add_enum_option(options::aim_swap_sticks, "Aiming: Swap Sticks",
         "Controls aiming like a third-person shooter: while you aim, the right stick aims and the left stick moves, as "
@@ -501,7 +501,15 @@ namespace {
     int release_frames[aim_players] = {};
     // (possess109) Aiming: Steady Camera's view, each player's (conker_look_view): its height eased after Conker's, the game's own distance
     // across from him kept slowly (game_distance) and the view's eased after that, his place, and the frame it was last built
-    struct SteadyView { bool have = false; float height = 0.0f, distance = 0.0f, game_distance = 0.0f; uint32_t frame = 0; float last_x = 0.0f, last_z = 0.0f; };
+    // (possess110: and his last 3 heights, the view's height smoothed from them; the game's own distance eased (base), how far the view's
+    // line is clear behind him as it's eased (limit) and the look-at point's height over him last frame (look_over), for the collision's
+    // probe; and the view as built this frame, its eye and look-at point and the frame, for conker_steady_render to draw)
+    struct SteadyView {
+        bool have = false; float height = 0.0f, distance = 0.0f, game_distance = 0.0f; uint32_t frame = 0; float last_x = 0.0f, last_z = 0.0f;
+        float heights[3] = {};
+        float base = 0.0f, limit = 0.0f, look_over = 106.5f;
+        bool built = false; uint32_t built_frame = 0; float eye[3] = {}, at[3] = {};
+    };
     SteadyView steady_view[aim_players];
     // (possess109) Aiming: Steady Camera's walking (conker_steady_walk): how fast each player's Conker was last moved each way across the
     // ground (vx, vz: the cosine and sine of the way, in his moving angle's units, times how far), that way and how far, and the frame
@@ -515,6 +523,59 @@ namespace {
     uint32_t offline_frames = 0;
     uint32_t steady_frame_now() {
         return conker::netsession::active() ? conker::netsession::frame() : offline_frames;
+    }
+    // (possess110) Aiming: Steady Camera's view as it's drawn (conker_steady_render), each player's: the view drawn last frame by its shape
+    // (its look-at point from Conker, and its eye from that point: how far across, which way across the ground, how high) and its way the
+    // frame before that (for its turn), and the change between the game's own view and Steady Camera's: mode 0 the game's, 1 going over to
+    // Steady Camera's, 2 Steady Camera's, 3 going back to the game's; the frames into the change, and how far off the view was as it began;
+    // and the frame it was last drawn
+    struct ViewShape { float at[3] = {}; float across = 0.0f, way = 0.0f, height = 0.0f; };
+    struct SteadyRender {
+        bool have_last = false;
+        ViewShape last;
+        bool have_way_before = false;
+        float way_before = 0.0f;
+        int mode = 0;
+        int frames = 0;
+        ViewShape gap;
+        bool have_frame = false;
+        uint32_t frame = 0;
+        bool have_drawn = false;
+        uint32_t drawn_frame = 0;
+    };
+    SteadyRender steady_render[aim_players];
+    constexpr int steady_in_frames = 12, steady_out_frames = 10;
+    // (possess110) Aiming: Steady Camera's eye through the game's camera collision (conker_steady_probe, conker_steady_probed), each
+    // player's: the view's line this frame (its look-at point, a, and the eye's move for each unit across, u: straight back along the
+    // aim's yaw, and up or down by its pitch), the eye placed on it at the full distance (reach, b) and not yet answered, and the answer:
+    // how far along the line it's clear (clear), whether the collision met anything (met) and how far it kept the eye from where it was
+    // placed (kept), the wall's plane's distance along the line (plane) and how far along the line the eye was stopped (along); and the
+    // frame
+    struct SteadyProbe {
+        bool placed = false;
+        bool have = false;
+        uint32_t frame = 0;
+        float a[3] = {}, u[3] = {}, b[3] = {};
+        float reach = 0.0f;
+        float clear = 0.0f;
+        bool met = false;
+        float kept = 0.0f, plane = 0.0f, along = 0.0f;
+    };
+    SteadyProbe steady_probe[aim_players];
+    // (possess110) Steady Camera's distance across: the game's own (+0x374: 75 with a gun in the look, where the game's camera stands,
+    // possess109's [camera] lines), 40 to 120; with no weapon 91 to 100 (the game's camera stood 91 across in that look and went out to
+    // 100 walking, possess109's [steady] lines)
+    float steady_base_distance(uint8_t* rdram, gpr camera) {
+        uint32_t word = (uint32_t)MEM_W(0x374, camera);
+        float value;
+        std::memcpy(&value, &word, sizeof(value));
+        if (!(value == value)) {
+            value = 75.0f;
+        }
+        if (MEM_BU(0x23E, camera) == 0x00) {
+            return std::clamp(value, 91.0f, 100.0f);
+        }
+        return std::clamp(value, 40.0f, 120.0f);
     }
 
     void note_move_written(int player, uint16_t move) {
@@ -1081,7 +1142,7 @@ extern "C" void conker_look_view(uint8_t* rdram, recomp_context* ctx) {
     // stopping dead at its top and bottom. 0.35 of the way a frame (about 5 behind him climbing a ramp), at once past 80
     // (a fall, a comeback). Once a frame for each player's camera, on every machine alike.
     // (possess108) the aim's yaw for Steady Camera's view, as the stick swap's below takes it
-    const float steady_yaw = (player >= 0 && player < aim_players && swap_view_yaw_set[player]) ? swap_view_yaw[player] : read_float(rdram, camera, current_yaw);
+    float steady_yaw = (player >= 0 && player < aim_players && swap_view_yaw_set[player]) ? swap_view_yaw[player] : read_float(rdram, camera, current_yaw);
     // (possess105: the swap first, then Steady Camera's view, below)
     if (swap_state(player)) {
     // The eye from where it's copied (+0x2F8): the copy's z is stored after this, in the branch's delay slot.
@@ -1109,6 +1170,9 @@ extern "C" void conker_look_view(uint8_t* rdram, recomp_context* ctx) {
         turn.frame = frame_now;
         turn.have = true;
     }
+    // (possess110) Steady Camera's view takes the aim's yaw from here too, so it goes on turning the frame the first stage ends: it stood
+    // still that frame and turned twice as far the next (possess109's [steady] lines, the yaw 200.96, 200.96, 217.66 turning at 8.5 a frame)
+    steady_yaw = aim_yaw;
     const float yaw = (270.0f - aim_yaw) * degrees_to_radians;
     write_float(rdram, camera, 0x2E0, ex + (online ? conker::det::cos(yaw) : std::cos(yaw)) * across);
     write_float(rdram, camera, 0x2E8, ez + (online ? conker::det::sin(yaw) : std::sin(yaw)) * across);
@@ -1126,6 +1190,7 @@ extern "C" void conker_look_view(uint8_t* rdram, recomp_context* ctx) {
     const bool steady_now = player >= 0 && player < aim_players && steady_camera(rdram, camera);
     if (player >= 0 && player < aim_players && !steady_now) {
         steady_view[player].have = false;
+        steady_view[player].built = false;   // (possess110)
         steady_walk[player].have = false;   // (possess109)
         steady_aim[player].have = false;
     }
@@ -1150,27 +1215,43 @@ extern "C" void conker_look_view(uint8_t* rdram, recomp_context* ctx) {
                 step_along = sx * fx + sz * fz;
             }
         }
-        constexpr float full_distance = 94.0f;
-        // (possess109) the distance: the game's own (its eye's across from him) kept slowly, about a second, so walking no longer pumps
-        // it in and out: the game's eye trails him, 61 to 87 across as he went back and forth down a ramp (possess108's [steady] lines),
-        // and its step taken off (possess106 to 108) still left 64 to 77, the view zooming in and out with every step. Nearer than that by
-        // more than its trailing (14) the game's camera has come in for a wall, and the view comes in with it (quickly, 0.5 a frame).
-        const float game_now = std::clamp(game_across, 30.0f, full_distance);
-        if (!sv.have || std::fabs(cy - sv.height) > 80.0f) {
-            sv.game_distance = game_now;
+        // (possess110) the distance: the game's own (+0x374, 75 with a gun, where the game's camera stands in the look; 91 to 100 with no
+        // weapon, steady_base_distance), eased 0.1 of the way a frame, and no further than the game's own camera collision finds clear along the
+        // view's line behind him this frame (conker_steady_probe: Steady Camera's eye put through it as the camera's): in to it at once,
+        // so the eye never goes into a wall, and back out 0.15 of the way a frame. As the view drawn is Steady Camera's now
+        // (conker_steady_render), possess109's distance went by the game's eye, which trails him (56 to 61 across walking back, 94
+        // walking forward), so it came in and went out with every step, and for walls 14 further than where the game's camera stopped.
+        const bool restart = !sv.have || std::fabs(cy - sv.height) > 80.0f;
+        const float base_now = steady_base_distance(rdram, camera);
+        const SteadyProbe& probe = steady_probe[player];
+        const bool probed = probe.have && probe.frame == steady_frame_now();
+        if (restart) {
+            sv.base = base_now;
+            sv.limit = probed ? std::min(base_now, probe.clear) : base_now;
         } else if (new_frame) {
-            sv.game_distance += (game_now - sv.game_distance) * 0.03f;
+            sv.base += (base_now - sv.base) * 0.1f;
+            const float clear = probed ? std::min(sv.base, probe.clear) : sv.base;
+            sv.limit = clear < sv.limit ? clear : sv.limit + (clear - sv.limit) * 0.15f;
         }
-        const float wanted = std::min(full_distance, std::max(20.0f, std::min(sv.game_distance, game_across + 14.0f)));
-        if (!sv.have || std::fabs(cy - sv.height) > 80.0f) {
+        const float wanted = std::max(8.0f, std::min(sv.base, sv.limit));
+        sv.look_over = look_over;
+        if (restart) {
             sv.have = true;
             sv.height = cy;
+            sv.heights[0] = sv.heights[1] = sv.heights[2] = cy;
             sv.distance = wanted;
             sv.frame = frame_now;
         } else if (new_frame) {
             sv.frame = frame_now;
-            sv.height += (cy - sv.height) * 0.5f;
-            sv.distance += (wanted - sv.distance) * (wanted < sv.distance ? 0.5f : 0.15f);
+            // (possess110) his height smoothed over his last 4 frames, weighed 1 2 2 1: up and down a ramp the view starts and stops climbing
+            // smoothly over 4 frames (0.8, 2.4, 4.0, 4.8 a frame as he went 5 a frame up one, possess109's [steady] lines), where half the way
+            // a frame (possess104 to 109) started at half his climb at once (2.5, 3.5, 4.2) and stopped as sharply, and his uneven steps up
+            // a ramp (4.5 and 5.0 by turns) are smoothed out. About 7 below him on a ramp, 5 before.
+            sv.height = (cy + 2.0f * sv.heights[0] + 2.0f * sv.heights[1] + sv.heights[2]) / 6.0f;
+            sv.heights[2] = sv.heights[1];
+            sv.heights[1] = sv.heights[0];
+            sv.heights[0] = cy;
+            sv.distance = wanted;
         }
         if (new_frame) {
             sv.last_x = cx;
@@ -1180,6 +1261,15 @@ extern "C" void conker_look_view(uint8_t* rdram, recomp_context* ctx) {
         const float ly = sv.height + look_over;
         const float ex = cx - fx * sv.distance, ez = cz - fz * sv.distance;
         const float ey = ly + sv.distance * conker::det::tan(0.81f * look_pitch * degrees);
+        // (possess110) as built this frame, for conker_steady_render to draw
+        sv.built = true;
+        sv.built_frame = steady_frame_now();
+        sv.eye[0] = ex;
+        sv.eye[1] = ey;
+        sv.eye[2] = ez;
+        sv.at[0] = cx;
+        sv.at[1] = ly;
+        sv.at[2] = cz;
         write_float(rdram, camera, 0x2E0, cx);
         write_float(rdram, camera, 0x2E4, ly);
         write_float(rdram, camera, 0x2E8, cz);
@@ -1193,15 +1283,18 @@ extern "C" void conker_look_view(uint8_t* rdram, recomp_context* ctx) {
             static uint32_t told = 0;
             static float told_x = 0.0f, told_y = 0.0f, told_z = 0.0f;
             const bool moved = std::fabs(cx - told_x) + std::fabs(cy - told_y) + std::fabs(cz - told_z) > 0.3f;
-            if (moved && new_frame && told < 4000) {
+            if ((moved || (probed && probe.met)) && new_frame && told < 4000) {   // (possess110: and at a wall)
                 told++;
                 // (possess109: and the game's eye from its pivot, +0x2BC, and the pivot from him)
                 const float px = read_float(rdram, camera, 0x2BC), pz = read_float(rdram, camera, 0x2C4);
                 const float pivot_from = std::sqrt((px - cx) * (px - cx) + (pz - cz) * (pz - cz));
                 const float eye_from_pivot = std::sqrt((gex - px) * (gex - px) + (gez - pz) * (gez - pz));
-                char line[320];
-                std::snprintf(line, sizeof(line), "[steady] f=%u conker %.1f %.1f %.1f, view height %.1f; across: the game's %.1f (kept %.1f; %.1f from its pivot, %.1f from him), his step along %.1f, the view's %.1f; yaw %.2f pitch %.2f",
-                    frame_now, cx, cy, cz, sv.height, game_across, sv.game_distance, eye_from_pivot, pivot_from, step_along, sv.distance, steady_yaw, look_pitch);
+                // (possess110: the distance's parts: the game's own and as eased, how far the view's line is clear behind him, the collision's
+                // answer to the probe, the limit as eased; the game's eye is the probe's now, on the view's line)
+                char line[480];
+                std::snprintf(line, sizeof(line), "[steady] f=%u conker %.1f %.1f %.1f, view height %.1f; across: the game's own %.1f (eased %.1f), clear %.1f (%s: placed %.1f, met %d, kept %.1f off, the wall's plane %.1f, stopped %.1f along), limit %.1f, the view's %.1f; the game's eye %.1f (%.1f from its pivot, %.1f from him); his step along %.1f; yaw %.2f pitch %.2f",
+                    frame_now, cx, cy, cz, sv.height, read_float(rdram, camera, 0x374), sv.base, probed ? probe.clear : -1.0f, probed ? "probed" : "not probed",
+                    probe.reach, probe.met ? 1 : 0, probe.kept, probe.plane, probe.along, sv.limit, sv.distance, game_across, eye_from_pivot, pivot_from, step_along, steady_yaw, look_pitch);
                 conker::netsession::log(line);
             }
             told_x = cx;
@@ -1209,6 +1302,360 @@ extern "C" void conker_look_view(uint8_t* rdram, recomp_context* ctx) {
             told_z = cz;
         }
     }
+#endif
+}
+
+#if defined(CONKER_RT64)
+namespace {
+    // (possess110) A view's shape about Conker (c): its look-at point from him, and its eye from that point across the ground (how far,
+    // which way) and up. det_math, so every machine works it out alike.
+    ViewShape view_shape(const float* eye, const float* at, const float* c) {
+        ViewShape s;
+        for (int i = 0; i < 3; i++) {
+            s.at[i] = at[i] - c[i];
+        }
+        const double ex = (double)eye[0] - (double)at[0], ez = (double)eye[2] - (double)at[2];
+        s.across = (float)std::sqrt(ex * ex + ez * ez);
+        s.way = (float)conker::det::atan2_d(ez, ex);
+        s.height = eye[1] - at[1];
+        return s;
+    }
+    void shape_view(const ViewShape& s, const float* c, float* eye, float* at) {
+        for (int i = 0; i < 3; i++) {
+            at[i] = c[i] + s.at[i];
+        }
+        eye[0] = at[0] + s.across * (float)conker::det::sin_d((double)s.way + conker::det::pi / 2.0);
+        eye[1] = at[1] + s.height;
+        eye[2] = at[2] + s.across * (float)conker::det::sin_d((double)s.way);
+    }
+    // the shortest turn from one way to another, -pi to pi
+    float turn_from(float to, float from) {
+        return (float)std::remainder((double)to - (double)from, 2.0 * conker::det::pi);
+    }
+    ViewShape shape_gap(const ViewShape& from, const ViewShape& to) {
+        ViewShape g;
+        for (int i = 0; i < 3; i++) {
+            g.at[i] = from.at[i] - to.at[i];
+        }
+        g.across = from.across - to.across;
+        g.way = (from.across >= 1.0f && to.across >= 1.0f) ? turn_from(from.way, to.way) : 0.0f;
+        g.height = from.height - to.height;
+        return g;
+    }
+    ViewShape shape_plus(const ViewShape& to, const ViewShape& gap, float part) {
+        ViewShape s;
+        for (int i = 0; i < 3; i++) {
+            s.at[i] = to.at[i] + gap.at[i] * part;
+        }
+        s.across = std::max(0.0f, to.across + gap.across * part);
+        s.way = to.way + gap.way * part;
+        s.height = to.height + gap.height * part;
+        return s;
+    }
+    uint32_t render_told = 0, width_told = 0, width_told_frame = 0xFFFFFFFFu;
+}
+
+// (possess110) Aiming: Steady Camera's setting for a camera's player at any stage of the look (steady_camera's own is the second stage's).
+static bool steady_setting(uint8_t* rdram, gpr camera) {
+    if (conker::netsession::active()) {
+        return (conker::netsession::look_flags((int)MEM_BU(0x23D, camera)) & 8u) != 0;
+    }
+    return option<Toggle>(options::aim_steady_camera) == Toggle::On;
+}
+#endif
+
+// (possess110) Aiming: Steady Camera's view, drawn. func_1512C490 makes the view that's drawn (guLookAt, 0x1512C920) from its eye at +0xEC
+// of its stack and look-at point at +0xE0, and those it takes from the game's own camera (+0x2F8, +0x2BC) after the game has moved it this
+// frame, plus its own moves of the view (the third way to it, L_1512C6F0: up by +0x18C, 5 with a gun and 25 with no weapon, and +0x74C,
+// +0x754, +0x194 across, the eye and the look-at point alike): conker_look_view's view (+0x2E0, +0x2EC) only goes back into the game's
+// camera as next frame begins (func_15122C5C, 0x15122D2C). So what was drawn was the game's camera, moved on from Steady Camera's: its own
+// distance (69 to 81 with a gun as he walked, possess109's [steady] lines, the zooming in and out), its tilt on ramps, and with no weapon its
+// own altogether (101.8 across where Steady Camera's was 94), and walking into the look its eye 133 and 143 across and then 97 at once, the
+// third frame of the second stage: the jump as the view went into the look (possess109's video, f=16039). Here, as the view is made,
+// Steady Camera's view is put in with the game's own moves of it, so it's what's drawn and aimed along (the aim's line, +0x130 of +0x3D4,
+// is worked out from these just after): the third way before 0x1512C804, as the view goes into the game's camera for what it works out
+// from it (func_1512523C, func_15125594), and the other ways before 0x1512C844 (all of them pass there; done once a frame). Going into
+// it, the view goes over from the one drawn the frame before (moved with Conker, its turn going on) in 12 frames, easing in and out;
+// leaving it, back to the game's in 10. Every machine alike for every player's camera (det_math, the game's memory, the frame's agreed
+// look flags), as the aim's line is the game's.
+#if defined(CONKER_RT64)
+static void steady_render_view(uint8_t* rdram, recomp_context* ctx, bool third_way) {
+    const gpr camera = ctx->r16;
+    const int player = camera_player(rdram, camera);
+    if (player < 0 || player >= aim_players) {
+        return;
+    }
+    SteadyRender& r = steady_render[player];
+    const gpr walker = (gpr)(int32_t)MEM_W(0x3D0, camera);
+    if (((uint32_t)walker & 0xFF000000u) != 0x80000000u) {
+        r = SteadyRender{};
+        return;
+    }
+    const gpr sp = ctx->r29;
+    const float c[3] = { read_float(rdram, walker, 0x14), read_float(rdram, walker, 0x18), read_float(rdram, walker, 0x1C) };
+    const float game_eye[3] = { read_float(rdram, sp, 0xEC), read_float(rdram, sp, 0xF0), read_float(rdram, sp, 0xF4) };
+    const float game_at[3] = { read_float(rdram, sp, 0xE0), read_float(rdram, sp, 0xE4), read_float(rdram, sp, 0xE8) };
+    const uint32_t now = steady_frame_now();
+    const SteadyView& sv = steady_view[player];
+    const bool ours_now = sv.built && sv.built_frame == now && steady_camera(rdram, camera);
+    // (the third way's call drew it this frame already)
+    if (!third_way && r.drawn_frame == now && r.have_drawn) {
+        return;
+    }
+    // The game's own moves of the view this frame: the third way's, from its look-at point before them (the stack's +0xC8) to after; the
+    // other ways have none.
+    float moved[3] = { 0.0f, 0.0f, 0.0f };
+    if (third_way) {
+        moved[0] = game_at[0] - read_float(rdram, sp, 0xC8);
+        moved[1] = game_at[1] - read_float(rdram, sp, 0xCC);
+        moved[2] = game_at[2] - read_float(rdram, sp, 0xD0);
+    }
+    float our_eye[3] = { 0.0f, 0.0f, 0.0f }, our_at[3] = { 0.0f, 0.0f, 0.0f };
+    if (ours_now) {
+        for (int i = 0; i < 3; i++) {
+            our_eye[i] = sv.eye[i] + moved[i];
+            our_at[i] = sv.at[i] + moved[i];
+        }
+    }
+    const bool new_frame = !r.have_frame || r.frame != now;
+    const bool following = r.have_frame && now == r.frame + 1 && r.have_last;
+    const int mode_before = r.mode;
+    if (new_frame) {
+        // the view drawn last frame, moved with Conker, its turn going on a frame
+        ViewShape from = r.last;
+        if (r.have_way_before) {
+            from.way += turn_from(r.last.way, r.way_before);
+        }
+        if (ours_now) {
+            if (r.mode == 0 || r.mode == 3) {
+                r.gap = following ? shape_gap(from, view_shape(our_eye, our_at, c)) : ViewShape{};
+                r.mode = 1;
+                r.frames = 0;
+            }
+            if (r.mode == 1 && ++r.frames >= steady_in_frames) {
+                r.mode = 2;
+            }
+        } else {
+            if (r.mode == 1 || r.mode == 2) {
+                r.gap = following ? shape_gap(from, view_shape(game_eye, game_at, c)) : ViewShape{};
+                r.mode = 3;
+                r.frames = 0;
+            }
+            if (r.mode == 3 && ++r.frames >= steady_out_frames) {
+                r.mode = 0;
+            }
+        }
+    }
+    float eye[3], at[3];
+    float part = 0.0f;
+    if (r.mode == 2) {
+        std::memcpy(eye, our_eye, sizeof(eye));
+        std::memcpy(at, our_at, sizeof(at));
+    } else if (r.mode == 1 || r.mode == 3) {
+        const bool into = r.mode == 1;
+        const float t = std::min(1.0f, (float)r.frames / (float)(into ? steady_in_frames : steady_out_frames));
+        part = 1.0f - t * t * (3.0f - 2.0f * t);
+        const ViewShape to = into ? view_shape(our_eye, our_at, c) : view_shape(game_eye, game_at, c);
+        shape_view(shape_plus(to, r.gap, part), c, eye, at);
+    } else {
+        std::memcpy(eye, game_eye, sizeof(eye));
+        std::memcpy(at, game_at, sizeof(at));
+    }
+    if (r.mode != 0) {
+        write_float(rdram, sp, 0xEC, eye[0]);
+        write_float(rdram, sp, 0xF0, eye[1]);
+        write_float(rdram, sp, 0xF4, eye[2]);
+        write_float(rdram, sp, 0xE0, at[0]);
+        write_float(rdram, sp, 0xE4, at[1]);
+        write_float(rdram, sp, 0xE8, at[2]);
+    }
+    r.drawn_frame = now;
+    r.have_drawn = true;
+    if (new_frame) {
+        r.have_way_before = following;
+        r.way_before = r.last.way;
+        r.last = view_shape(eye, at, c);
+        r.have_last = true;
+        r.frame = now;
+        r.have_frame = true;
+    }
+    // (possess110 diagnostics) this machine's player: the view drawn, the game's and Steady Camera's, as the view goes into the look and out,
+    // and every 10th frame in it
+    if (new_frame && conker::netsession::active() && player == conker::netsession::local_player() && render_told < 3000
+        && (r.mode != mode_before || r.mode == 1 || r.mode == 3 || (r.mode == 2 && now % 10 == 0))) {
+        render_told++;
+        const ViewShape g = view_shape(game_eye, game_at, c);
+        const ViewShape d = view_shape(eye, at, c);
+        const ViewShape o = ours_now ? view_shape(our_eye, our_at, c) : ViewShape{};
+        constexpr float to_degrees = (float)(180.0 / 3.14159265358979);
+        char line[420];
+        std::snprintf(line, sizeof(line),
+            "[render] f=%u mode %d (%d frames, %.2f of the gap left) stage %d: the game's %.1f across, way %.1f, %.1f up, look-at %+.1f %+.1f %+.1f;"
+            " ours %.1f across, way %.1f, %.1f up, look-at %+.1f %+.1f %+.1f; drawn %.1f across, way %.1f, %.1f up; moved %.1f %.1f %.1f (the %s way)",
+            now, r.mode, r.frames, part, (int)MEM_H(0x73C, camera), g.across, g.way * to_degrees, g.height, g.at[0], g.at[1], g.at[2],
+            o.across, o.way * to_degrees, o.height, o.at[0], o.at[1], o.at[2], d.across, d.way * to_degrees, d.height,
+            moved[0], moved[1], moved[2], third_way ? "third" : "another");
+        conker::netsession::log(line);
+    }
+}
+#endif
+
+// (possess110) before 0x1512C804, the third way to the view (conker_steady_render_view's)
+extern "C" void conker_steady_render(uint8_t* rdram, recomp_context* ctx) {
+#if defined(CONKER_RT64)
+    steady_render_view(rdram, ctx, true);
+#endif
+}
+
+// (possess110) before 0x1512C844, every way to the view: the others' (the third's done already)
+extern "C" void conker_steady_render_other(uint8_t* rdram, recomp_context* ctx) {
+#if defined(CONKER_RT64)
+    steady_render_view(rdram, ctx, false);
+#endif
+}
+
+// (possess110) Aiming: Steady Camera keeps Conker as wide as he is walking while he looks. func_1507C3E0 works out how wide and tall an
+// object is for its collisions; for Conker (L_1507C574) 60 across, doubled to 120 while his look record (+0x318) has its look going (+0x73C),
+// and whenever a look began by a wall he was pushed 30 off it at once (possess109's [look] lines: 642.8 to 672.8 the frame the look began,
+// every look at that wall, with a gun and with no weapon, back to 0.10.8's logs), and couldn't walk any nearer it while he looked. Here,
+// before its check (0x1507C62C: $t8 the look's stage, $v0 the record, $a0 him), the stage counts as none with Steady Camera on, so he stays
+// as wide as walking (the game's other doublings, +0x197 and +0x1B3 of his +0x31C, as they were). Every machine alike, from the game's
+// memory and the frame's agreed look flags.
+extern "C" void conker_steady_width(uint8_t* rdram, recomp_context* ctx) {
+#if defined(CONKER_RT64)
+    if ((int16_t)(uint16_t)ctx->r24 == 0) {
+        return;
+    }
+    const gpr camera = ctx->r2;
+    if (((uint32_t)camera & 0xFF000000u) != 0x80000000u || (uint32_t)MEM_W(0x3D0, camera) != (uint32_t)ctx->r4) {
+        return;
+    }
+    if (!steady_setting(rdram, camera)) {
+        return;
+    }
+    const int stage = (int)(int16_t)(uint16_t)ctx->r24;
+    ctx->r24 = 0;
+    if (conker::netsession::active() && camera_player(rdram, camera) == conker::netsession::local_player()) {
+        // (this machine's player, once each look: the first frame of a run of frames it's kept)
+        const uint32_t now = conker::netsession::frame();
+        const bool begins = width_told_frame == 0xFFFFFFFFu || (now != width_told_frame && now != width_told_frame + 1);
+        width_told_frame = now;
+        if (!begins || width_told >= 300) {
+            return;
+        }
+        width_told++;
+        char line[160];
+        std::snprintf(line, sizeof(line), "[steady] f=%u his width kept as walking in the look (stage %d) at %.1f %.1f", conker::netsession::frame(), stage,
+            read_float(rdram, ctx->r4, 0x14), read_float(rdram, ctx->r4, 0x1C));
+        conker::netsession::log(line);
+    }
+#endif
+}
+
+// (possess110) Aiming: Steady Camera's eye through the game's own camera collision. func_1512BB10 moves the camera from where it was last
+// frame (+0x304: Steady Camera's eye in the look, its copy, +0x2EC, put back into the camera as the frame began, func_15122C5C) toward the
+// eye it wants (+0x2F8), stopping it at walls and sliding it along them, and leaves the result in +0x2F8 (the mouse camera's orbit goes
+// through it the same way). Since the view drawn is Steady Camera's (conker_steady_render) its eye has to keep out of walls itself: the
+// game's camera only kept its own eye out, and that trails Conker (56 to 61 across walking back, 94 walking forward, possess109's [steady]
+// lines), so a wall Steady Camera's eye went into was often further back than the game's had reached. Before the collision reads the eye
+// (0x1512BD88), conker_steady_probe puts in Steady Camera's own on the view's line this frame (the aim's yaw and pitch as the look has
+// them now, his place, his height as the view will have it), at the full distance and a little more; after the collision's sweep
+// (func_15044380, 0x1512BEC4: its answer at +0x88 of the stack, $v0 whether it met anything) conker_steady_probed works out how far
+// along the line it's clear: to the wall's plane where the line meets it (the plane across where the eye was stopped, facing back along
+// what it was kept from: the slide along a slanted wall is off the line, so how far the eye got would go past the wall), and never
+// further than how far along the line the eye got. The camera's eye is then put on the line there, so the game's camera (its yaw is
+// worked out from its eye after this, func_15125330, and the look's current yaw is that) stays on the view's line. conker_look_view
+// comes in to it at once and goes back out slowly. Every machine alike for every player's camera (the game's memory and collision,
+// det_math, the frame's agreed look flags).
+extern "C" void conker_steady_probe(uint8_t* rdram, recomp_context* ctx) {
+#if defined(CONKER_RT64)
+    const gpr camera = ctx->r16;
+    const int player = camera_player(rdram, camera);
+    if (player < 0 || player >= aim_players) {
+        return;
+    }
+    SteadyProbe& probe = steady_probe[player];
+    probe.placed = false;
+    const gpr walker = (gpr)(int32_t)MEM_W(0x3D0, camera);
+    if (((uint32_t)walker & 0xFF000000u) != 0x80000000u || !steady_camera(rdram, camera)) {
+        return;
+    }
+    const SteadyView& sv = steady_view[player];
+    const float cx = read_float(rdram, walker, 0x14), cy = read_float(rdram, walker, 0x18), cz = read_float(rdram, walker, 0x1C);
+    // the aim's yaw as conker_look_view will take it (the stick swap's, set as the look's update ran, or the look's own)
+    const float aim = swap_view_yaw_set[player] ? swap_view_yaw[player] : read_float(rdram, camera, current_yaw);
+    constexpr float degrees = 3.14159265358979f / 180.0f;
+    const float yaw = (270.0f - aim) * degrees;
+    const float fx = conker::det::cos(yaw), fz = conker::det::sin(yaw);
+    const float pitch = read_float(rdram, camera + 0x740, current_pitch);
+    const float rise = conker::det::tan(0.81f * pitch * degrees);
+    // his height as the view will have it this frame (conker_look_view's, from his last 3), and the look-at point over it as last frame
+    const bool going = sv.have && std::fabs(cy - sv.height) <= 80.0f;
+    const float height = going ? (cy + 2.0f * sv.heights[0] + 2.0f * sv.heights[1] + sv.heights[2]) / 6.0f : cy;
+    const float over = going ? sv.look_over : 106.5f;
+    const float base = steady_base_distance(rdram, camera);
+    probe.reach = std::max(base, going ? std::max(sv.base, sv.distance) : 0.0f) + 6.0f;
+    probe.a[0] = cx;
+    probe.a[1] = height + over;
+    probe.a[2] = cz;
+    probe.u[0] = -fx;
+    probe.u[1] = rise;
+    probe.u[2] = -fz;
+    for (int i = 0; i < 3; i++) {
+        probe.b[i] = probe.a[i] + probe.u[i] * probe.reach;
+    }
+    write_float(rdram, camera, 0x2F8, probe.b[0]);
+    write_float(rdram, camera, 0x2FC, probe.b[1]);
+    write_float(rdram, camera, 0x300, probe.b[2]);
+    probe.placed = true;
+#endif
+}
+
+// (possess110) after the collision's sweep (conker_steady_probe's)
+extern "C" void conker_steady_probed(uint8_t* rdram, recomp_context* ctx) {
+#if defined(CONKER_RT64)
+    const gpr camera = ctx->r16;
+    const int player = camera_player(rdram, camera);
+    if (player < 0 || player >= aim_players) {
+        return;
+    }
+    SteadyProbe& probe = steady_probe[player];
+    if (!probe.placed) {
+        return;
+    }
+    probe.placed = false;
+    const gpr sp = ctx->r29;
+    // (the sweep's eye is higher by +0x18C with +0x5F0's 0x800 set, 0x1512BDB8)
+    const float lift = ((uint32_t)MEM_W(0x5F0, camera) & 0x800u) != 0 ? read_float(rdram, camera, 0x18C) : 0.0f;
+    const float px = read_float(rdram, sp, 0x88), pz = read_float(rdram, sp, 0x90);
+    // across the ground only: the game's camera keeps its own height in the look (with +0x2C 0x100 the collision's is left, 0x1512BF54)
+    const float kx = probe.b[0] - px, kz = probe.b[2] - pz;
+    const float kept = std::sqrt(kx * kx + kz * kz);
+    const float ox = px - probe.a[0], oz = pz - probe.a[2];
+    const float along = ox * probe.u[0] + oz * probe.u[2];
+    float plane = probe.reach;
+    float clear = probe.reach;
+    const bool met = ctx->r2 != 0 && kept >= 0.5f;
+    if (met) {
+        const float nx = kx / kept, nz = kz / kept;
+        const float facing = probe.u[0] * nx + probe.u[2] * nz;
+        if (facing > 0.1f) {
+            plane = (ox * nx + oz * nz) / facing;
+        }
+        clear = std::min(plane, along);
+    }
+    clear = std::clamp(clear, 0.0f, probe.reach);
+    probe.clear = clear;
+    probe.met = met;
+    probe.kept = kept;
+    probe.plane = plane;
+    probe.along = along;
+    probe.have = true;
+    probe.frame = steady_frame_now();
+    // the camera's eye on the view's line, where it's clear
+    write_float(rdram, sp, 0x88, probe.a[0] + probe.u[0] * clear);
+    write_float(rdram, sp, 0x8C, probe.a[1] + probe.u[1] * clear + lift);
+    write_float(rdram, sp, 0x90, probe.a[2] + probe.u[2] * clear);
 #endif
 }
 
@@ -2294,6 +2741,8 @@ void conker::look_aim::reset_online_state() {
         steady_view[k] = SteadyView{};
         steady_walk[k] = SteadyWalk{};
         steady_aim[k] = SteadyAim{};
+        steady_render[k] = SteadyRender{};   // (possess110)
+        steady_probe[k] = SteadyProbe{};
     }
     turn_keep = TurnKeep{};
     aim_turn_keep = AimTurnKeep{};

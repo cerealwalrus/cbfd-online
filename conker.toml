@@ -686,6 +686,40 @@ func = "func_15059C84"
 before_vram = 0x15059EAC
 text = "{ extern void conker_steady_walk(uint8_t*, recomp_context*); conker_steady_walk(rdram, ctx); }"
 
+# (possess110) Aiming: Steady Camera's view is what's drawn: func_1512C490 makes the view from its eye at +0xEC of the stack and its
+# look-at point at +0xE0, taken from the game's own camera; Steady Camera's view goes in there, with the game's own moves of it: the
+# third way to it before 0x1512C804, where they go into the game's camera too (conker_steady_render), and the others before 0x1512C844,
+# where every way passes (conker_steady_render_other; host/src/look_aim.cpp).
+[[patches.hook]]
+func = "func_1512C490"
+before_vram = 0x1512C804
+text = "{ extern void conker_steady_render(uint8_t*, recomp_context*); conker_steady_render(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_1512C490"
+before_vram = 0x1512C844
+text = "{ extern void conker_steady_render_other(uint8_t*, recomp_context*); conker_steady_render_other(rdram, ctx); }"
+
+# (possess110) Aiming: Steady Camera keeps Conker as wide as walking in the look: func_1507C3E0 doubles his width for his collisions
+# while his look record (+0x318) has a look going ($t8 its stage, checked at 0x1507C62C; conker_steady_width).
+[[patches.hook]]
+func = "func_1507C3E0"
+before_vram = 0x1507C62C
+text = "{ extern void conker_steady_width(uint8_t*, recomp_context*); conker_steady_width(rdram, ctx); }"
+
+# (possess110) Aiming: Steady Camera's eye through the game's camera collision: put in as the eye wanted before func_1512BB10 reads it
+# (0x1512BD88, conker_steady_probe), and how far the view's line is clear worked out from where the sweep left it, after func_15044380
+# (0x1512BEC4, conker_steady_probed; host/src/look_aim.cpp).
+[[patches.hook]]
+func = "func_1512BB10"
+before_vram = 0x1512BD88
+text = "{ extern void conker_steady_probe(uint8_t*, recomp_context*); conker_steady_probe(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_1512BB10"
+before_vram = 0x1512BEC4
+text = "{ extern void conker_steady_probed(uint8_t*, recomp_context*); conker_steady_probed(rdram, ctx); }"
+
 # Online, the look mode's first stage (host/src/look_aim.cpp, conker_look_stage_one): the camera's yaw goes
 # to the aim at once, at the start of func_15120158 ($a0 the camera).
 [[patches.hook]]
