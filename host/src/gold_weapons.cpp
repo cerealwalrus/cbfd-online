@@ -37,15 +37,18 @@ namespace {
 
     struct Gold {
         const char* name;
-        uint32_t kind;
+        uint32_t kind;     // the pickup's kind (the match's pickups' +0x1174)
+        uint32_t prop;     // the prop's (its setup record's +0x10: not the pickup's)
         int16_t x, y, z;
         uint8_t id;      // given as the level loads (0: none yet)
     };
-    // Where player 1 held R-Look in the room (the possess115 test's [pos] lines)
+    // Where player 1 held R-Look in the room (the possess115 test's [pos] lines). (possess118) A weapon's prop has a kind of its own, not
+    // its pickup's: the sniper rifle's 0x56 (ids 11 and 12, the pickups of kind 24), the revolver's 0x53 (7, 19: 23), the knives' 0x3C
+    // (5, 17: 14), the possess116 test's [weapons] lines; possess116 looked for the pickups' kinds among the props and found none.
     Gold golds[3] = {
-        { "sniper rifle", 0x24, -63, -1448, 219, 0 },
-        { "revolver", 0x23, -422, -1448, 30, 0 },
-        { "knives", 0x14, 96, -1448, -148, 0 },
+        { "sniper rifle", 0x24, 0x56, -63, -1448, 219, 0 },
+        { "revolver", 0x23, 0x53, -422, -1448, 30, 0 },
+        { "knives", 0x14, 0x3C, 96, -1448, -148, 0 },
     };
     bool golds_made = false;
 
@@ -110,7 +113,7 @@ extern "C" void conker_gold_props(uint8_t* rdram, recomp_context* ctx) {
                 continue;
             }
             for (int g = 0; g < 3; g++) {
-                if (from_list[g] < 0 && (uint32_t)MEM_W(0x10, (gpr)(int32_t)r) == golds[g].kind) {
+                if (from_list[g] < 0 && (uint32_t)MEM_W(0x10, (gpr)(int32_t)r) == golds[g].prop) {
                     from_list[g] = l;
                     from_record[g] = r;
                 }
@@ -121,7 +124,7 @@ extern "C" void conker_gold_props(uint8_t* rdram, recomp_context* ctx) {
     uint32_t next = 26;
     for (int g = 0; g < 3; g++) {
         if (from_list[g] < 0) {
-            say("[gold] no %s among the level's weapons (kind %02X): left out", golds[g].name, (unsigned)golds[g].kind);
+            say("[gold] no %s among the level's weapons (its prop's kind %02X): left out", golds[g].name, (unsigned)golds[g].prop);
             continue;
         }
         while (next < 200 && used[next]) {
