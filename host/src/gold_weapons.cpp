@@ -530,6 +530,11 @@ extern "C" void conker_gold_run(uint8_t* rdram, recomp_context* ctx) {
 // player holding a gold weapon (the pickup it holds, the match's +0xEB0 a character, one of the gold weapons'), scoped, keeps that bit
 // clear: drawn in their own view as the 5th player is. From the game's memory, the same on every machine.
 namespace {
+    bool kept_projection_have(uint32_t view);
+    void put_kept_projection(uint8_t* rdram, uint32_t view, uint32_t record);
+    int gold_scoped_view(uint8_t* rdram, uint32_t view);
+}
+namespace {
     constexpr uint32_t characters = 0x800CC2D0;   // gObjects: 0x32C a character
     constexpr uint32_t character_size = 0x32C;
 
@@ -993,6 +998,18 @@ void conker::gold_weapons::frame_end(uint8_t* rdram, uint32_t start, uint32_t en
         anyone = anyone || gold_held(rdram, k) >= 0;
     }
     const bool tell = hand_told < 300 && (hand_frames % 60u) == 0;
+    // (possess142) and, as the frame's list ends, each gold weapon's scoped holder's view's projection (both buffers) as its unscoped one,
+    // whatever made it since (func_1510B5F8 puts it back as it's made: conker_gold_projection_made)
+    if (anyone) {
+        const uint32_t records = (uint32_t)MEM_W(0, (gpr)(int32_t)0x800BE628);
+        for (uint32_t v = 0; v < 4 && kseg0(records); v++) {
+            if (!kept_projection_have(v) || gold_scoped_view(rdram, v) < 0) {
+                continue;
+            }
+            const uint32_t record = records + v * 0x180u;
+            put_kept_projection(rdram, v, record);
+        }
+    }
     if (!anyone && !tell && (hand_frames % 30u) != 0) {
         return;   // (each half second still, so the weapons' textures are learnt from the ones lying about)
     }
@@ -1407,52 +1424,108 @@ extern "C" void conker_gold_reticle_end(uint8_t* rdram, recomp_context* ctx) {
 // (possess137) func_1510B5F8(view, its matrix, its field of view up and down, across, ...) makes a view's projection; besides func_1510B128
 // (conker_gold_fov_start), func_1510B51C calls it again as the frame is drawn (func_1501878C), from the view's field of view as it is (the
 // zoomed one, put back for the aim): the possess136 test's views still zoomed. For a gold weapon's scoped holder's view, made unzoomed.
-// (possess139) held at the field of view the view had before the scope (the last one made unscoped): possess138's unzoomed one (the
-// view's own, +0x6C/+0x70) still narrowed with the scope's easing in, a tenth or so (its projection 1.71 to 1.89 across, the possess138
-// test), where the 5th player's view (drawn by view 1's) never changes at all.
+// (possess142) The 5th player's view is drawn with view 1's projection, never his own (possess136's notes): whatever his scope does to his
+// own view's record, what's drawn has player 1's unscoped one. For a gold weapon's scoped holder the same: each view's projection as made
+// while its field of view is its own unzoomed one exactly (its record's +0x74 and +0x78 at +0x6C and +0x70 with D_800C3648's), the
+// fixed point one at +0x100 (a frame's buffer each, D_800BE9C0) and the floats at +0xBC, is kept; and whenever one is made for the view while
+// its character is scoped with a gold weapon, that kept one is put over it as func_1510B5F8 returns (0x1510B680, after guMtxF2L). possess136
+// to 141 changed the field of view handed to it instead, and the view still narrowed (its projection 1.80 to 1.89 across against 1.71,
+// the possess138 to 141 tests). [gold] lines of what was made, by whom and what was put over it.
 namespace {
-    uint32_t view_fov_up[4] = {}, view_fov_across[4] = {};
-    bool view_fov_have[4] = {};
+    struct KeptProjection { bool have = false; uint8_t fixed[0x40] = {}, floats[0x40] = {}; float across = 0, up = 0; };
+    KeptProjection kept_projection[4];
+    uint32_t projection_caller[4] = {};
+    uint32_t projection_told = 0;
+    float record_float(gpr record, uint8_t* rdram, uint32_t off) {
+        uint32_t b = (uint32_t)MEM_W(off, record);
+        float v;
+        std::memcpy(&v, &b, 4);
+        return v;
+    }
+    float fixed_element(uint8_t* rdram, uint32_t m, int i) {   // (row 0 column 0: i 0; row 1 column 1: i 5)
+        const gpr at = (gpr)(int32_t)m;
+        const int32_t whole = MEM_H((uint32_t)(i * 2), at);
+        const uint32_t part = (uint16_t)MEM_HU((uint32_t)(32 + i * 2), at);
+        return (float)whole + (float)part / 65536.0f;
+    }
 }
+
+// func_1510B5F8's start: who asked (for the [gold] lines)
 extern "C" void conker_gold_projection(uint8_t* rdram, recomp_context* ctx) {
+    (void)rdram;
     const uint32_t view = (uint32_t)ctx->r4;
-    if (view > 3) {
-        return;
+    if (view < 4) {
+        projection_caller[view] = (uint32_t)ctx->r31;
     }
-    if (gold_scoped_view(rdram, view) < 0) {
-        // (possess141) kept only while the view's camera isn't aiming at all (its look's stage 0, its character not scoped): possess140 kept
-        // the last one before the gold scope, which the scope had begun narrowing (58 and 56 degrees across, not 60.6: the possess140 test)
-        const uint32_t looks = (uint32_t)MEM_W(0, (gpr)(int32_t)0x800DBFF0);
-        bool idle = false;
-        for (uint32_t i = 0; kseg0(looks) && i < 4; i++) {
-            const gpr camera = (gpr)(int32_t)(looks + i * 0x9A0u);
-            if ((uint32_t)MEM_BU(0x23D, camera) != view) {
-                continue;
-            }
-            const gpr ch = (gpr)(int32_t)MEM_W(0x3D0, camera);
-            const gpr aim = kseg0((uint32_t)ch) ? (gpr)(int32_t)MEM_W(0x31C, ch) : 0;
-            idle = MEM_H(0x73C, camera) == 0 && kseg0((uint32_t)aim) && MEM_BU(0x197, aim) == 0;
-        }
-        if (idle) {
-            view_fov_up[view] = (uint32_t)ctx->r6;
-            view_fov_across[view] = (uint32_t)ctx->r7;
-            view_fov_have[view] = true;
-        }
-        return;
-    }
-    if (view_fov_have[view]) {
-        ctx->r6 = (gpr)(int32_t)view_fov_up[view];
-        ctx->r7 = (gpr)(int32_t)view_fov_across[view];
-        return;
-    }
+}
+
+// func_1510B5F8 at 0x1510B680: the view (its stack's +0x30) has its projection made
+extern "C" void conker_gold_projection_made(uint8_t* rdram, recomp_context* ctx) {
+    const uint32_t view = (uint32_t)MEM_W(0x30, ctx->r29);
     const uint32_t records = (uint32_t)MEM_W(0, (gpr)(int32_t)0x800BE628);
-    if (!kseg0(records)) {
+    if (view > 3 || !kseg0(records) || !golds_made || (int32_t)MEM_W(0, (gpr)(int32_t)scene_now) != total_war) {
         return;
     }
-    const gpr record = (gpr)(int32_t)(records + view * 0x180u);
-    auto f = [&](gpr at, uint32_t off) { uint32_t b = (uint32_t)MEM_W(off, at); float v; std::memcpy(&v, &b, 4); return v; };
-    auto bits = [](float v) { uint32_t b; std::memcpy(&b, &v, 4); return b; };
-    const float extra = f((gpr)(int32_t)0x800C3648, 0);
-    ctx->r6 = (gpr)(int32_t)bits(f(record, 0x70) + extra);
-    ctx->r7 = (gpr)(int32_t)bits(f(record, 0x6C) + extra);
+    const uint32_t record = records + view * 0x180u;
+    const gpr r = (gpr)(int32_t)record;
+    const uint32_t fixed = record + 0x100u + (uint32_t)(MEM_BU(0, (gpr)(int32_t)0x800BE9C0) & 1u) * 0x40u;
+    const uint32_t floats = record + 0xBCu;
+    const float extra = record_float((gpr)(int32_t)0x800C3648, rdram, 0);
+    const float across = record_float(r, rdram, 0x74), up = record_float(r, rdram, 0x78);
+    const bool unzoomed = std::fabs(across - (record_float(r, rdram, 0x6C) + extra)) < 0.01f && std::fabs(up - (record_float(r, rdram, 0x70) + extra)) < 0.01f;
+    KeptProjection& kp = kept_projection[view];
+    if (gold_scoped_view(rdram, view) < 0) {
+        if (unzoomed) {
+            std::memcpy(kp.fixed, rdram + (fixed - 0x80000000u), 0x40);
+            std::memcpy(kp.floats, rdram + (floats - 0x80000000u), 0x40);
+            kp.across = across;
+            kp.up = up;
+            kp.have = true;
+        }
+        return;
+    }
+    if (!kp.have) {
+        return;
+    }
+    const float made_x = fixed_element(rdram, fixed, 0), made_y = fixed_element(rdram, fixed, 5);
+    std::memcpy(rdram + (fixed - 0x80000000u), kp.fixed, 0x40);
+    std::memcpy(rdram + (floats - 0x80000000u), kp.floats, 0x40);
+    if (projection_told < 40) {
+        projection_told++;
+        say("[gold] view %u scoped with a gold weapon: its projection (made by %08X at %.1f by %.1f degrees, its scale %.3f %.3f) put back to its "
+            "unscoped one (%.1f by %.1f, %.3f %.3f)", (unsigned)view, (unsigned)projection_caller[view], across, up, made_x, made_y, kp.across, kp.up,
+            fixed_element(rdram, fixed, 0), fixed_element(rdram, fixed, 5));
+    }
+}
+
+
+// ---- (possess142) A gold weapon's laser seen by its holder, as the 5th player sees his ----
+// func_151D75C4 decides whether what's attached to a character is drawn (its laser among it): not while the character is scoped (its
+// +0x31C's +0x197) and has a camera of its own (+0x318). The 5th player's character has none (its camera is the extra one, the game
+// doesn't know it), so his laser shows as he aims through the scope, the players' never. For a gold weapon's holder the scope is read as
+// clear there (0x151D7630, $t3 the +0x197, $v0 the character): their laser shows as his does.
+extern "C" void conker_gold_laser(uint8_t* rdram, recomp_context* ctx) {
+    if (!golds_made || (int32_t)MEM_W(0, (gpr)(int32_t)scene_now) != total_war) {
+        return;
+    }
+    const uint32_t c = (uint32_t)ctx->r2;
+    if (c < characters || (c - characters) % character_size != 0 || (c - characters) / character_size >= 25) {
+        return;
+    }
+    if (gold_held(rdram, (int)((c - characters) / character_size)) >= 0) {
+        ctx->r11 = 0;
+    }
+}
+
+namespace {
+    bool kept_projection_have(uint32_t view) {
+        return view < 4 && kept_projection[view].have;
+    }
+    void put_kept_projection(uint8_t* rdram, uint32_t view, uint32_t record) {
+        const KeptProjection& kp = kept_projection[view];
+        for (uint32_t buffer = 0; buffer < 2; buffer++) {
+            std::memcpy(rdram + (record + 0x100u + buffer * 0x40u - 0x80000000u), kp.fixed, 0x40);
+        }
+        std::memcpy(rdram + (record + 0xBCu - 0x80000000u), kp.floats, 0x40);
+    }
 }

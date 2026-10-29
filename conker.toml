@@ -3471,6 +3471,18 @@ func = "func_1510B5F8"
 before_vram = 0x1510B5F8
 text = "{ extern void conker_gold_projection(uint8_t*, recomp_context*); conker_gold_projection(rdram, ctx); }"
 
+# possess142: and as it returns (0x1510B680, its matrices made): a gold weapon's scoped holder's view's projection put back to its unscoped one
+[[patches.hook]]
+func = "func_1510B5F8"
+before_vram = 0x1510B680
+text = "{ extern void conker_gold_projection_made(uint8_t*, recomp_context*); conker_gold_projection_made(rdram, ctx); }"
+
+# possess142: a gold weapon's laser seen by its holder scoped (func_151D75C4 hides what's attached to a scoped character with a camera)
+[[patches.hook]]
+func = "func_151D75C4"
+before_vram = 0x151D7630
+text = "{ extern void conker_gold_laser(uint8_t*, recomp_context*); conker_gold_laser(rdram, ctx); }"
+
 # possess136: no reticle over a gold weapon's scope: func_151674F8's layer 4 for that view drawn with the reticle's types emptied, put back
 # as it returns (0x15167A38)
 [[patches.hook]]
