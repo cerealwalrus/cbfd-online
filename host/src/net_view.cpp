@@ -1657,10 +1657,19 @@ namespace {
                         const float span_y = std::fabs((float)(t0 - t1) * 0.25f * (float)dtdy / 1024.0f);
                         if (span_x >= 24.0f && span_x <= 40.0f && span_y >= 24.0f && span_y <= 40.0f) {
                             const uint32_t game_texture = texture_words[0][1];
-                            if (scope_texture_level < 0 && (game_texture >> 24) == 0x80 && (game_texture & 0xFFFFFFu) < 0x7FF000u) {
+                            // (possess150) the game's picture read wherever it is (ours past the game's 8 MB too), or its brightest taken
+                            // as 255 when it can't be read: the 5th player's reticle (possess_test.cpp's extra view) draws from the extra
+                            // view's copy of it, which this took for no picture (only the game's 8 MB was read), so on his machine ours
+                            // was never drawn and his scope kept the game's coarse split screen picture (the possess149 test's
+                            // p5normalsniper.mp4: thick lines stopping short of the middle, big arrow ticks). Every machine's logs so far
+                            // have the game's brightest at 255 ("our crosshair drawn").
+                            if (scope_texture_level < 0) {
+                                const uint32_t texture_top = game_texture >> 24, texture_at = game_texture & 0xFFFFFFu;
                                 int level = 0;
-                                for (int i = 0; i < 32 * 32; i++) {
-                                    level = std::max(level, (int)MEM_BU(i, (gpr)(int32_t)game_texture));
+                                if ((texture_top == 0x80 || texture_top == 0x00) && texture_at + 32u * 32u <= 0x01000000u) {
+                                    for (int i = 0; i < 32 * 32; i++) {
+                                        level = std::max(level, (int)MEM_BU(i, (gpr)(int32_t)(0x80000000u | texture_at)));
+                                    }
                                 }
                                 scope_texture_level = level > 0 ? level : 0xFF;
                                 draw_scope_texture(rdram, scope_texture_level);
@@ -1707,6 +1716,19 @@ namespace {
                                 replaced = true;
                                 rects_moved++;
                             }
+                        }
+                    }
+                    // (possess150 diagnostics) a scope piece of a quarter's size not drawn from our picture: why (its texture as loaded before it)
+                    if (scope_piece && !replaced && std::abs(s0 - s1) >= 4 * 20 && std::abs(t0 - t1) >= 4 * 20) {
+                        static int unreplaced_logged = 0;
+                        if (unreplaced_logged < 12) {
+                            unreplaced_logged++;
+                            char line[220];
+                            std::snprintf(line, sizeof(line), "[net view] f=%u scope quarter %08X left as the game's: %d texture commands before it (the first %08X %08X), "
+                                "steps %08X, our picture's brightest %d%s", (unsigned)conker::netsession::frame(), address, texture_count,
+                                texture_count > 0 ? texture_words[0][0] : 0u, texture_count > 0 ? texture_words[0][1] : 0u, (uint32_t)MEM_W(20, (gpr)(int32_t)address),
+                                scope_texture_level, extended ? ", made an extended rectangle" : "");
+                            conker::netsession::log(line);
                         }
                     }
                     if (!replaced && !extended && s1 >= 0 && t1 >= 0 && s0 <= 0xFFF && t0 <= 0xFFF) {

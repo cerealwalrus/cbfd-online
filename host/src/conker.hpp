@@ -476,6 +476,9 @@ namespace conker {
         // (possess147) the 5th player's view (the extra view, drawn as view 1, camera 1 the copy of his camera): view 1's projection made
         // at his own zoom
         void fifth_view_projection(uint8_t* rdram, uint32_t camera);
+        // (possess150) and as that view begins: the 5th player's own laser taken off in it while he's scoped with a weapon not gold (the
+        // game's memory is put back after the view)
+        void fifth_view_begin(uint8_t* rdram);
     }
 }
 namespace recompui { class LauncherMenu; class GameOptionsMenu; class GameOption; }

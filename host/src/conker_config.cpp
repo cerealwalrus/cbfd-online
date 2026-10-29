@@ -230,6 +230,9 @@ namespace {
         set_game_input_description(GameInput::DPAD_DOWN, dpad);
         set_game_input_description(GameInput::DPAD_LEFT, dpad);
         set_game_input_description(GameInput::DPAD_RIGHT, dpad);
+        // (possess150) the Grenade button (look_aim.cpp's conker_grenade_start)
+        set_game_input_description(GameInput::GRENADE, "Multiplayer: throws a grenade. Hold it to keep the grenade in your hand, let go to throw "
+            "it. It does only that, unlike C-Down, which throws one too. G on the keyboard to begin with; bind it to any button.");
     }
     // The settings a new player starts with (default_settings.cpp). Each flat tab file (general, graphics, camera) gets the keys it does
     // not have yet, so a setting the player has saved is never changed, and a tab that was never saved starts with these; the controls file

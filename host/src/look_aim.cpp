@@ -3026,3 +3026,74 @@ extern "C" void conker_dpad_strafe(uint8_t* rdram, recomp_context* ctx) {
     (void)ctx;
 #endif
 }
+
+// ---- (possess150) The Grenade button ----
+// A button of its own for the grenade (Controls: Grenade, bound like any other: G on the keyboard to begin with), that the game's
+// grenade alone reads, as the D-pad is the strafe's alone (conker_dpad_strafe). The game holds and throws a grenade with C-Down: in a
+// character's movement (func_1504CB98, 0x1504CF34) C-Down pressed this frame (D_800CC288, the buttons pressed, from D_800BE710's), with
+// neither A nor B, no weapon aimed (+0x31C's +0x78 0) and grenades left (+0x19A), in the arenas (and the levels D_800BE9F0 names there),
+// starts one (+0x31C's +0x19B 1, or 5 there); then the weapons' code (func_15065A5C) holds it while C-Down is held (D_800CC290, the
+// buttons held: 0x1506A040 for the grenade, 0x1506A2F0 for the other kind) and throws it once it's let go. The Grenade button is the
+// controller's 0x0040 (no button of the Nintendo 64's: the game reads it nowhere), sent with the frame's other buttons, so every
+// machine has it alike; at those three reads it's taken as C-Down as well, and C-Down itself goes on doing everything else it does.
+namespace {
+    constexpr uint32_t grenade_button = 0x0040u, grenade_c_down = 0x0004u;
+    constexpr uint32_t grenade_characters = 0x800CC2D0u, grenade_character_size = 0x32Cu;
+
+    int grenade_character(uint32_t c) {
+        if (c < grenade_characters || (c - grenade_characters) % grenade_character_size != 0 || (c - grenade_characters) / grenade_character_size >= 25) {
+            return -1;
+        }
+        return (int)((c - grenade_characters) / grenade_character_size);
+    }
+
+    void grenade_told(const char* what, uint32_t c) {
+        static uint32_t told = 0;
+        if (told < 24) {
+            told++;
+            char line[160];
+            std::snprintf(line, sizeof(line), "[grenade] f=%u character %d: the Grenade button %s", (unsigned)conker::netsession::frame(),
+                grenade_character(c), what);
+            conker::netsession::log(line);
+        }
+    }
+}
+
+// func_1504CB98 at 0x1504CF38 ($v0 the buttons pressed this frame, D_800CC288; $s0 the character): the Grenade button pressed is C-Down's
+extern "C" void conker_grenade_start(uint8_t* rdram, recomp_context* ctx) {
+    (void)rdram;
+    const uint32_t pressed = (uint32_t)ctx->r2;
+    if ((pressed & grenade_button) == 0) {
+        return;
+    }
+    ctx->r2 = (gpr)(int32_t)(pressed | grenade_c_down);
+    grenade_told("pressed: taken as C-Down's press by the grenade's start", (uint32_t)ctx->r16);
+}
+
+// func_15065A5C at 0x1506A04C ($t7 the buttons held, D_800CC290; $s0 the character): the grenade held while the Grenade button is
+extern "C" void conker_grenade_hold(uint8_t* rdram, recomp_context* ctx) {
+    (void)rdram;
+    const uint32_t held = (uint32_t)ctx->r15;
+    if ((held & grenade_button) == 0) {
+        return;
+    }
+    ctx->r15 = (gpr)(int32_t)(held | grenade_c_down);
+    static uint32_t frames_held = 0;
+    if (frames_held++ % 60u == 0) {
+        grenade_told("held: the grenade held in the hand (let go, it's thrown)", (uint32_t)ctx->r16);
+    }
+}
+
+// func_15065A5C at 0x1506A2F8 ($t5 the buttons held; $s0 the character): the same for the other kind (+0x19B 6)
+extern "C" void conker_grenade_hold_other(uint8_t* rdram, recomp_context* ctx) {
+    (void)rdram;
+    const uint32_t held = (uint32_t)ctx->r13;
+    if ((held & grenade_button) == 0) {
+        return;
+    }
+    ctx->r13 = (gpr)(int32_t)(held | grenade_c_down);
+    static uint32_t frames_held = 0;
+    if (frames_held++ % 60u == 0) {
+        grenade_told("held (the other kind's): held in the hand", (uint32_t)ctx->r16);
+    }
+}

@@ -841,9 +841,11 @@ namespace {
         static constexpr uint16_t button_values[] = {
             0x8000, 0x4000, 0x2000, 0x0020, 0x0010, 0x1000, 0x0008,
             0x0004, 0x0002, 0x0001, 0x0800, 0x0400, 0x0200, 0x0100,
+            0x0040,
         };
-        // A..C Right, then the D-pad (N64_BUTTON_COUNT stops at C Right).
-        static_assert(std::size(button_values) == (size_t)GameInput::DPAD_RIGHT - (size_t)GameInput::N64_BUTTON_START + 1);
+        // A..C Right, then the D-pad (N64_BUTTON_COUNT stops at C Right), then (possess150) the Grenade button: the controller's 0x0040,
+        // which no Nintendo 64 button is (the grenade's own, look_aim.cpp's conker_grenade_start)
+        static_assert(std::size(button_values) == (size_t)GameInput::GRENADE - (size_t)GameInput::N64_BUTTON_START + 1);
         const int cont_profile = recompinput::profiles::get_sp_controller_profile_index();
         const int kb_profile = recompinput::profiles::get_sp_keyboard_profile_index();
         auto binding = [](int profile, GameInput input, size_t i) -> const recompinput::InputField& {

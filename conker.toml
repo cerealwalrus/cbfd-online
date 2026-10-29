@@ -1556,6 +1556,24 @@ func = "func_1504CB98"
 before_vram = 0x1504DD1C
 text = "{ extern void conker_dpad_strafe(uint8_t*, recomp_context*); conker_dpad_strafe(rdram, ctx); }"
 
+# possess150: the Grenade button (the controller's 0x0040) taken as C-Down by the grenade alone (host/src/look_aim.cpp): its start in the
+# character's movement ($v0 the buttons pressed this frame, D_800CC288; $s0 the character), and its hold in the weapons' code ($t7, and
+# $t5 for the other kind: the buttons held, D_800CC290)
+[[patches.hook]]
+func = "func_1504CB98"
+before_vram = 0x1504CF38
+text = "{ extern void conker_grenade_start(uint8_t*, recomp_context*); conker_grenade_start(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_15065A5C"
+before_vram = 0x1506A04C
+text = "{ extern void conker_grenade_hold(uint8_t*, recomp_context*); conker_grenade_hold(rdram, ctx); }"
+
+[[patches.hook]]
+func = "func_15065A5C"
+before_vram = 0x1506A2F8
+text = "{ extern void conker_grenade_hold_other(uint8_t*, recomp_context*); conker_grenade_hold_other(rdram, ctx); }"
+
 # 0.10.86: co-op, the normal camera (no weapon out) nearer Conker (host/src/net_menu.cpp, conker_coop_camera_distance):
 # func_15124B18 has set the camera's ($a0) distance from the game's table, about to return.
 [[patches.hook]]
@@ -3544,6 +3562,13 @@ text = "{ extern void conker_fifth_laser_view(uint8_t*, recomp_context*); conker
 func = "func_1510281C"
 before_vram = 0x15102834
 text = "{ extern void conker_fifth_glow_view(uint8_t*, recomp_context*); conker_fifth_glow_view(rdram, ctx); }"
+
+# possess150: the laser sight's end (func_15101378, all its ways out; $s0 the laser sight): run inside the 5th player's view, his own
+# laser taken off again while he's scoped with a weapon not gold (host/src/gold_weapons.cpp, conker_fifth_laser_update)
+[[patches.hook]]
+func = "func_15101378"
+before_vram = 0x151019B0
+text = "{ extern void conker_fifth_laser_update(uint8_t*, recomp_context*); conker_fifth_laser_update(rdram, ctx); }"
 
 # possess136: no reticle over a gold weapon's scope: func_151674F8's layer 4 for that view drawn with the reticle's types emptied, put back
 # as it returns (0x15167A38)

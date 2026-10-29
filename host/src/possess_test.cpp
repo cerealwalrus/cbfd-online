@@ -3108,6 +3108,8 @@ static void conker_possess_view_local_body(uint8_t* rdram, recomp_context* ctx) 
     if (fifth_split(rdram)) {
         conker::gold_weapons::fifth_view_projection(rdram, base);
     }
+    // (possess150) his laser left out of his own view while he's scoped (a weapon not gold), all of it, as player 1's is of his
+    conker::gold_weapons::fifth_view_begin(rdram);
     // (possess33) played or not, the extra character drawn as the bot it is while only shown (its brain's AI flag, +0x84; the game's memory
     // is put back after): shown, it's drawn; played (+0x84 0, a player's), it wasn't, with its fade, hidden bits and render item the same
     if (extra_played) {

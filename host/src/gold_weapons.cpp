@@ -669,7 +669,7 @@ namespace {
     // of the weapon's own texture until a texture not the weapon's, loads gold copies of its vertices (gold_colours, ours) and has its colour
     // combiners shiny gold (gold_combiner); the frame's call of the character's list is pointed at the copy, for that frame alone. Ours:
     // 0x80F90000 to 0x80FA0000 (net_view.cpp's ring of the HUD's lists ends at 0x80F90000, net_menu.cpp's mirror starts at 0x80FA0000), a
-    // half each frame, the frame before's left for RT64 as it draws it.
+    // half each frame, the frame before's left for RT64 as it draws it. (possess150: 0x80FA8000 to 0x80FC8000 now, 32 KB a frame: frame_end)
     struct Clone {
         uint8_t* rdram;
         uint32_t at, end;
@@ -1112,9 +1112,15 @@ void conker::gold_weapons::frame_end(uint8_t* rdram, uint32_t start, uint32_t en
     }
     // (possess132) four slots of 16 KB, one a frame (possess129-131's two halves: the revolver flashed in the hand, RT64 still drawing a
     // frame from the half being written again)
+    // (possess150) 32 KB each, at 0x80FA8000 to 0x80FC8000 (nothing else of ours there: net_menu.cpp's mirror ends by 0x80FA5000,
+    // possess_test.cpp's extra camera's buffer starts at 0x80FD0000), each list drawn more than once copied once (made_calls, below)
     static uint32_t pool_half = 0;
     pool_half = (pool_half + 1u) & 3u;
-    Clone clone{ rdram, 0x80F90000u + pool_half * 0x4000u, 0x80F90000u + pool_half * 0x4000u + 0x4000u, 0 };
+    constexpr uint32_t pool_start = 0x80FA8000u, pool_slot = 0x8000u;
+    Clone clone{ rdram, pool_start + pool_half * pool_slot, pool_start + pool_half * pool_slot + pool_slot, 0 };
+    struct Made { uint32_t to; uint32_t seg[16]; int g; bool by_vertices, whole, hide_body; uint32_t fc0, fc1, copy; };
+    std::vector<Made> made_calls;
+    uint32_t reused_calls = 0;
     // (possess132) this machine's own character: its camera's (the one whose +0x23D is this machine's player), its +0x3D0. possess131 took
     // the player's number for the character's: player 1's machine (camera 1) left none out, the host's the wrong one
     int local_character = -1;
@@ -1165,6 +1171,27 @@ void conker::gold_weapons::frame_end(uint8_t* rdram, uint32_t start, uint32_t en
         clone.hide_body = scoped && k == local_character;
         const uint32_t before_vertices = clone.vertices, before_hidden = clone.hidden, before_hidden_v = clone.hidden_vertices;
         const uint32_t before_combiners = clone.combiners;
+        // (possess150) the same list called again (the same character's in the next view: each is drawn in all 4 views), with the same
+        // segments, combiner and weapon: the copy made for the first call drawn again. possess149's 16 KB a frame ran out by the third
+        // view (the possess149 test's logs: "no room in ours" for views 3 and 4), so players 3 and 4 saw the gold weapons in the hands
+        // as the game's own, silver, and scoped with one, their own body.
+        const Made* same = nullptr;
+        for (const Made& m : made_calls) {
+            if (m.to == w.all[i].to && m.g == g && m.by_vertices == clone.by_vertices && m.whole == clone.whole && m.hide_body == clone.hide_body &&
+                m.fc0 == w.all[i].fc0 && m.fc1 == w.all[i].fc1 && std::memcmp(m.seg, seg, sizeof(seg)) == 0) {
+                same = &m;
+                break;
+            }
+        }
+        if (same != nullptr) {
+            if (same->copy != 0) {
+                MEM_W(4, (gpr)(int32_t)(w.all[i].call | 0x80000000u)) = (int32_t)same->copy;
+            }
+            reused_calls++;
+            continue;
+        }
+        Made made_now{ w.all[i].to, {}, g, clone.by_vertices, clone.whole, clone.hide_body, w.all[i].fc0, w.all[i].fc1, 0 };
+        std::memcpy(made_now.seg, seg, sizeof(seg));
         uint32_t copy = clone.list(w.all[i].to, seg, 0);
         // (possess136) a weapon's list with no colour combiner of its own (the sniper rifle's in the hand: the possess135 test's 0 combiners)
         // draws by the one set before it, the texture times the vertices' colours, so its gold came out dark: called through a list of ours,
@@ -1191,6 +1218,10 @@ void conker::gold_weapons::frame_end(uint8_t* rdram, uint32_t start, uint32_t en
         if (copy != 0) {
             MEM_W(4, (gpr)(int32_t)(w.all[i].call | 0x80000000u)) = (int32_t)copy;
         }
+        made_now.copy = copy;
+        if (made_calls.size() < 64) {
+            made_calls.push_back(made_now);
+        }
         if (tell && made.size() < 1500) {
             char piece[240];
             std::snprintf(piece, sizeof(piece), " | character %d's %s (the call at %06X of the list at %06X, %u loads): %s by its %s, %u vertices gold%s", k,
@@ -1215,8 +1246,10 @@ void conker::gold_weapons::frame_end(uint8_t* rdram, uint32_t start, uint32_t en
         return;
     }
     if (!made.empty()) {
-        say("[gold] [hand] f=%u the weapons in the hands:%s (ours used: %u bytes, %u lists, %u combiners, %u triangles and %u body vertices left out)", (unsigned)hand_frames,
-            made.c_str(), (unsigned)(clone.at - (0x80F90000u + pool_half * 0x4000u)), (unsigned)clone.lists, (unsigned)clone.combiners, (unsigned)clone.hidden, (unsigned)clone.hidden_vertices);
+        say("[gold] [hand] f=%u the weapons in the hands:%s (ours used: %u of %u bytes, %u lists, %u combiners, %u triangles and %u body vertices left "
+            "out; %u calls drawn again from a copy made for an earlier one)", (unsigned)hand_frames, made.c_str(),
+            (unsigned)(clone.at - (pool_start + pool_half * pool_slot)), (unsigned)pool_slot, (unsigned)clone.lists, (unsigned)clone.combiners,
+            (unsigned)clone.hidden, (unsigned)clone.hidden_vertices, (unsigned)reused_calls);
     }
     // who holds a gold weapon, and who holds which pickup
     std::string held;
@@ -1365,6 +1398,16 @@ namespace {
         const bool fifth = conker::possess_test::online_extra_camera();
         if (view > 4 || (view == 4 && !fifth) || (view == 0 && conker::possess_test::fifth_split_view(rdram))) {
             return -1;
+        }
+        // (possess150) view 4 the 5th player's own, scoped with a weapon not gold: no look camera has view 4 (+0x23D) while his HUD is drawn
+        // (his camera's copy in camera 1's place is view 0 then), so possess149's [fifth] lines of his scope's HUD never came. (With a gold
+        // weapon as before: his reticle as it is.)
+        if (view == 4) {
+            const uint32_t ch5 = characters + 4u * character_size;
+            const gpr aim5 = (gpr)(int32_t)MEM_W(0x31C, (gpr)(int32_t)ch5);
+            if (kseg0((uint32_t)aim5) && MEM_BU(0x197, aim5) != 0 && gold_held(rdram, 4) < 0) {
+                return 4;
+            }
         }
         const uint32_t looks = (uint32_t)MEM_W(0, (gpr)(int32_t)0x800DBFF0);
         for (uint32_t i = 0; kseg0(looks) && i < (fifth ? 5u : 4u); i++) {
@@ -2185,16 +2228,103 @@ void conker::gold_weapons::fifth_view_projection(uint8_t* rdram, uint32_t camera
     MEM_W(0x74, r) = (int32_t)b;
     std::memcpy(&b, &fy, 4);
     MEM_W(0x78, r) = (int32_t)b;
+    // (possess150: 8 of these at most, apart from the other [fifth] lines: possess149's 24 lines all went on them, as he zoomed in and out)
     static int told_zoom = -1000;
+    static uint32_t zoom_told = 0;
     const int zoom_step = (int)std::lround(std::fabs(across) * 2.0f);
-    if (zoom_step != told_zoom && fifth_told < 24) {
+    if (zoom_step != told_zoom && zoom_told < 8) {
         told_zoom = zoom_step;
-        char line[220];
-        std::snprintf(line, sizeof(line), "the 5th player's view made at his own zoom: %.1f by %.1f degrees (his camera's %.1f %.1f%s; view 1's unzoomed "
-            "%.1f by %.1f), its scales %.3f %.3f", fx, fy, across, up, gold_scoped ? ", scoped with a gold weapon: none" : "", kp.across, kp.up,
+        zoom_told++;
+        say("[fifth] the 5th player's view made at his own zoom: %.1f by %.1f degrees (his camera's %.1f %.1f%s; view 1's unzoomed %.1f by %.1f), "
+            "its scales %.3f %.3f", fx, fy, across, up, gold_scoped ? ", scoped with a gold weapon: none" : "", kp.across, kp.up,
             fixed_element(rdram, records + 0x100u, 0), fixed_element(rdram, records + 0x100u, 5));
-        fifth_say(line);
     }
+}
+
+// ---- (possess150) The 5th player's own laser out of his view while he's scoped (a weapon not gold), all of it ----
+// The possess149 test's p5normalsniper.mp4 (the laser on, scoped): green light across his view from where he aimed, and the wall there
+// lit green, with his laser's glow at the gun and its beam already left out of his view (0x15102834, 0x151028C4); player 1's own video
+// shows none of his laser at all, scoped. The laser sight (func_15101378, each frame) has five parts: the glow at the gun (+0x24 of its
+// +0x110), the dot where it hits (+0x28), a light there (+0x2C: its +0x14's +0x9, 1 off), the beam (+0x30) and a glow where it ends on
+// a character (+0x34). In the 5th player's view (the extra view: the game's memory is put back after it) they're all taken as off, as
+// the laser sight's own off does it (its +0x133's bit 0 too): as the view begins (fifth_view_begin, from possess_test.cpp), and again
+// should the laser sight be run inside it (0x151019B0, its end). The laser is the one whose checks (func_151028AC, func_1510281C) name
+// the 5th player's character as its holder. [fifth] lines of what was on and taken off.
+namespace {
+    uint32_t fifth_laser = 0;          // the 5th player's character's laser sight (its object), as last seen
+    uint32_t fifth_laser_told = 0;
+
+    bool fifth_laser_ok(uint8_t* rdram, uint32_t laser) {
+        return kseg0(laser) && (uint32_t)MEM_W(0x110, (gpr)(int32_t)laser) == characters + (uint32_t)fifth_character * character_size;
+    }
+
+    // the laser sight's parts taken as off; what was on (a bit a part: 1 the glow, 2 the dot, 4 the light, 8 the beam, 16 the end's glow)
+    uint32_t laser_parts_off(uint8_t* rdram, uint32_t laser) {
+        const gpr b = (gpr)(int32_t)(laser + 0x110u);
+        uint32_t was_on = 0;
+        auto part = [&](uint32_t off) { return (uint32_t)MEM_W(off, b); };
+        MEM_B(0x23, b) = (int8_t)(MEM_BU(0x23, b) & ~1u);
+        const uint32_t glow = part(0x24), dot = part(0x28), light = part(0x2C), beam = part(0x30), end_glow = part(0x34);
+        if (kseg0(glow) && (MEM_BU(0xD4, (gpr)(int32_t)glow) & 1u) != 0) {
+            was_on |= 1u;
+            MEM_B(0xD4, (gpr)(int32_t)glow) = (int8_t)(MEM_BU(0xD4, (gpr)(int32_t)glow) & ~1u);
+        }
+        if (kseg0(dot) && (MEM_BU(0x110, (gpr)(int32_t)dot) & 1u) != 0) {
+            was_on |= 2u;
+            MEM_B(0x110, (gpr)(int32_t)dot) = (int8_t)(MEM_BU(0x110, (gpr)(int32_t)dot) & ~1u);
+        }
+        if (kseg0(light)) {
+            const uint32_t l = (uint32_t)MEM_W(0x14, (gpr)(int32_t)light);
+            if (kseg0(l) && MEM_BU(0x9, (gpr)(int32_t)l) == 0) {
+                was_on |= 4u;
+                MEM_B(0x9, (gpr)(int32_t)l) = 1;
+            }
+        }
+        if (kseg0(beam) && (MEM_BU(0x174, (gpr)(int32_t)beam) & 1u) != 0) {
+            was_on |= 8u;
+            MEM_B(0x174, (gpr)(int32_t)beam) = (int8_t)(MEM_BU(0x174, (gpr)(int32_t)beam) & ~1u);
+        }
+        if (kseg0(end_glow) && (MEM_BU(0xAC, (gpr)(int32_t)end_glow) & 1u) != 0) {
+            was_on |= 16u;
+            MEM_B(0xAC, (gpr)(int32_t)end_glow) = (int8_t)(MEM_BU(0xAC, (gpr)(int32_t)end_glow) & ~1u);
+        }
+        return was_on;
+    }
+
+    void fifth_laser_off_told(uint32_t was_on, int where) {
+        static uint32_t told_on[2] = { 0xFFFFFFFFu, 0xFFFFFFFFu };
+        if (fifth_laser_told < 16 && told_on[where & 1] != was_on) {
+            told_on[where & 1] = was_on;
+            fifth_laser_told++;
+            say("[fifth] the 5th player scoped (a weapon not gold): his laser taken off in his own view %s; of it on:%s%s%s%s%s%s",
+                where == 0 ? "as it begins" : "after the laser sight ran again inside it", (was_on & 1u) ? " the glow at the gun" : "",
+                (was_on & 2u) ? " the dot" : "", (was_on & 4u) ? " the light" : "", (was_on & 8u) ? " the beam" : "",
+                (was_on & 16u) ? " the glow at its end" : "", was_on == 0 ? " none" : "");
+        }
+    }
+}
+
+void conker::gold_weapons::fifth_view_begin(uint8_t* rdram) {
+    if (!fifth_laser_ok(rdram, fifth_laser) || !fifth_scoped_plain(rdram)) {
+        return;
+    }
+    fifth_laser_off_told(laser_parts_off(rdram, fifth_laser), 0);
+}
+
+// func_15101378 at 0x151019B0, its end ($s0 the laser sight): run inside the 5th player's view
+extern "C" void conker_fifth_laser_update(uint8_t* rdram, recomp_context* ctx) {
+    if (!conker::possess_test::drawing_extra_view()) {
+        return;
+    }
+    const uint32_t laser = (uint32_t)ctx->r16;
+    if (!fifth_laser_ok(rdram, laser)) {
+        return;
+    }
+    fifth_laser = laser;
+    if (!fifth_scoped_plain(rdram)) {
+        return;
+    }
+    fifth_laser_off_told(laser_parts_off(rdram, laser), 1);
 }
 
 // func_1502E4C4 at 0x1502E9D0, its end ($s1 the character, its +0x74 the views it's left out of): in the 5th player's view (the extra
@@ -2239,12 +2369,19 @@ extern "C" void conker_fifth_attachments(uint8_t* rdram, recomp_context* ctx) {
 // and player 1's laser isn't (its own view is view 1: left in, as players 2 to 4 see it)
 namespace {
     void fifth_own_laser(uint8_t* rdram, recomp_context* ctx, const char* what) {
-        if (!conker::possess_test::drawing_extra_view() || !kseg0((uint32_t)ctx->r2)) {
+        if (!kseg0((uint32_t)ctx->r2)) {
+            return;
+        }
+        const uint32_t holder = (uint32_t)MEM_W(0, ctx->r2);
+        const bool fifth = holder == characters + (uint32_t)fifth_character * character_size;
+        // (possess150) his laser sight, for fifth_view_begin ($v0 its +0x110), from these checks in every view
+        if (fifth) {
+            fifth_laser = (uint32_t)ctx->r2 - 0x110u;
+        }
+        if (!conker::possess_test::drawing_extra_view()) {
             return;
         }
         const int view = (int)(int16_t)(uint16_t)(uint32_t)ctx->r5;
-        const uint32_t holder = (uint32_t)MEM_W(0, ctx->r2);
-        const bool fifth = holder == characters + (uint32_t)fifth_character * character_size;
         // (possess149 diagnostics) each kind of the 5th player's laser's checks in his view: its view, its own, and whether he's scoped
         static uint32_t told = 0;
         static int told_key[8] = { -1, -1, -1, -1, -1, -1, -1, -1 };
