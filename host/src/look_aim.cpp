@@ -703,7 +703,12 @@ namespace {
                 }
                 return true;
             }
-            if (!walking_set && new_animation && from_back > -0x800 && from_back < 0x800) {
+            // (possess130) not the shotgun's own walking (its look, kind 0x3B, the co-op mansion's): walking back there the game sets his moving
+            // angle to his facing plus half a turn with its walk's animation (0x31B with Z, 0x224 without), a hit's to the letter, so the hold
+            // stopped the walking for 6 to 19 frames each time he went back (the possess128 test, f=1840, 2380, 2813). There, only a hit's
+            // own animation (0x11D, 0x25B, as above) counts.
+            const bool shotgun_walk = MEM_BU(0x23E, camera) == 0x3B && anim_id != 0x11D && anim_id != 0x25B;
+            if (!walking_set && new_animation && from_back > -0x800 && from_back < 0x800 && !shotgun_walk) {
                 h.holding = true;
                 h.hold_anim = anim;
                 h.hold_start = now;
@@ -2557,8 +2562,15 @@ extern "C" void conker_look_targets(uint8_t* rdram, recomp_context* ctx) {
         show_shotgun_laser(rdram, (gpr)(int32_t)MEM_W(0x3D0, ctx->r16));
     }
 #endif
-    const float units_per_degree = aim_units_per_degree;
+    float units_per_degree = aim_units_per_degree;
     aim_units_per_degree = 0.0f;
+    // (possess130) the shotgun's look (kind 0x3B, the co-op mansion's) works its yaw out from his facing less the aim angle (+0x12 of +0x3D4)
+    // at 65536 units a turn, a quarter turn off (the possess128 test's [look] lines: facing DF01, the yaw 223.6; the aim 90 turning it 0.49
+    // degrees), on a path neither hook above is on, so the walking below never ran for it (its moving angle never written: the possess128
+    // test's "the walking's was 0000"): pushed to the side he walked ahead of himself (C-Up, gun_side_walk) instead of strafing.
+    if (units_per_degree == 0.0f && MEM_BU(0x23E, ctx->r16) == 0x3B) {
+        units_per_degree = 65536.0f / 360.0f;
+    }
 #if defined(CONKER_RT64)
     steady_view_check(rdram, ctx, units_per_degree);   // (possess109)
 #endif
