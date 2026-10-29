@@ -3816,6 +3816,10 @@ static void conker_possess_view_local_body(uint8_t* rdram, recomp_context* ctx) 
         std::memcpy(rdram + (keep[i].at - 0x80000000u), now[i].data(), keep[i].size);
     }
     kept_back = std::move(keep);
+    // (possess154) the gold weapons in the hands made gold in the 5th player's view too, on his machine (frame_end ran before it was added)
+    if (view_shown_here() && list > list_before) {
+        conker::gold_weapons::fifth_view_end(rdram, mem_word(rdram, list_start + 4 * buffer), list_before, list);
+    }
     // (possess37 diagnostics) the objects the view drew, and the extra character's drawing: its matrices (where each puts its origin)
     // and vertices (the first of each block), as the commands left to be drawn have them
     if (drawn_burst > 0 && list > list_before && !(local_views < 3 || local_views % 120 == 0)) {   // (possess87 diagnostics)

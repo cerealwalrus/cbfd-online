@@ -670,6 +670,10 @@ namespace {
     // combiners shiny gold (gold_combiner); the frame's call of the character's list is pointed at the copy, for that frame alone. Ours:
     // 0x80F90000 to 0x80FA0000 (net_view.cpp's ring of the HUD's lists ends at 0x80F90000, net_menu.cpp's mirror starts at 0x80FA0000), a
     // half each frame, the frame before's left for RT64 as it draws it. (possess150: 0x80FA8000 to 0x80FC8000 now, 32 KB a frame: frame_end)
+    // (possess154) the memory a walk follows lists and vertices into: the game's 8 MB, or (the 5th player's view's pass, whose commands
+    // call copies of ours past it: possess_test.cpp's extra view) all 16
+    uint32_t walk_limit = 0x00800000u;
+
     struct Clone {
         uint8_t* rdram;
         uint32_t at, end;
@@ -699,7 +703,7 @@ namespace {
             at += bytes;
             return a;
         }
-        static bool phys_ok(uint32_t a) { return a < 0x00800000u && (a & 7u) == 0; }
+        static bool phys_ok(uint32_t a) { return a < walk_limit && (a & 7u) == 0; }
         static uint32_t resolve(const uint32_t* seg, uint32_t a) {
             if ((a >> 24) == 0x80) {
                 return a & 0x1FFFFFFFu;
@@ -758,7 +762,7 @@ namespace {
                     // triangles draws nothing (possess131-133 cleared the triangle commands alone, 0x05 to 0x07, and the body stayed)
                     const uint32_t n = (w0 >> 12) & 0xFFu;
                     const uint32_t from = resolve(seg, w1);
-                    if (hide_body && n != 0 && phys_ok(from) && from + n * 0x10u <= 0x00800000u) {
+                    if (hide_body && n != 0 && phys_ok(from) && from + n * 0x10u <= walk_limit) {
                         const uint32_t v = take(n * 0x10u);
                         if (v != 0) {
                             std::memcpy(rdram + (v - 0x80000000u), rdram + from, n * 0x10u);
@@ -777,7 +781,7 @@ namespace {
                     last_weapon = true;
                     const uint32_t n = (w0 >> 12) & 0xFFu;
                     const uint32_t from = resolve(seg, w1);
-                    if (n != 0 && phys_ok(from) && from + n * 0x10u <= 0x00800000u) {
+                    if (n != 0 && phys_ok(from) && from + n * 0x10u <= walk_limit) {
                         const uint32_t v = take(n * 0x10u);
                         if (v != 0) {
                             std::memcpy(rdram + (v - 0x80000000u), rdram + from, n * 0x10u);
@@ -843,7 +847,7 @@ namespace {
             return (float)i + (float)f / 65536.0f;
         }
 
-        static bool phys_ok(uint32_t a) { return a < 0x00800000u && (a & 7u) == 0; }
+        static bool phys_ok(uint32_t a) { return a < walk_limit && (a & 7u) == 0; }
         uint32_t resolve(uint32_t a) const {
             if ((a >> 24) == 0x80) {
                 return a & 0x1FFFFFFFu;
@@ -1007,22 +1011,55 @@ namespace {
     uint32_t hand_told = 0, hand_frames = 0;
 }
 
+namespace {
+    // (possess154) this frame's slot of the pool, and how far it's used: the 5th player's view's pass goes on in it
+    uint32_t pool_frame = 0xFFFFFFFFu, pool_at = 0, pool_slot_end = 0;
+    struct WalkLimit {
+        explicit WalkLimit(bool wide) { walk_limit = wide ? 0x01000000u : 0x00800000u; }
+        ~WalkLimit() { walk_limit = 0x00800000u; }
+    };
+}
+
 void conker::gold_weapons::frame_end(uint8_t* rdram, uint32_t start, uint32_t end) {
+    frame_end_from(rdram, start, end, 0);
+}
+
+// (possess154) The 5th player's view (possess_test.cpp's extra view, its commands added at the frame's list's end once the game's views
+// are drawn, from extra_from): the gold weapons in the hands made gold there too. frame_end runs before that view is added, so on his
+// machine every gold weapon in a hand was the game's own, black (the possess153 test's screenshots). The whole list walked again (for the
+// segments as it sets them), only the calls from extra_from on changed; the lists those call are often the extra view's copies past the
+// game's 8 MB (its walker's), so by their textures alone: a list loading only the weapon's own is the weapon, all gold; one loading none
+// of them is a body, left out for the scoped holder himself.
+void conker::gold_weapons::fifth_view_end(uint8_t* rdram, uint32_t start, uint32_t extra_from, uint32_t end) {
+    if (!kseg0(extra_from) || extra_from < start || extra_from >= end) {
+        return;
+    }
+    frame_end_from(rdram, start, end, extra_from);
+}
+
+void conker::gold_weapons::frame_end_from(uint8_t* rdram, uint32_t start, uint32_t end, uint32_t extra_from) {
     if (!golds_made || (int32_t)MEM_W(0, (gpr)(int32_t)scene_now) != total_war) {
         return;
     }
     if (!kseg0(start) || !kseg0(end) || end <= start || end - start > 0x100000u) {
         return;
     }
-    hand_frames++;
+    const bool extra_pass = extra_from != 0;
     bool anyone = false;
     for (int k = 0; k < 5; k++) {
         anyone = anyone || gold_held(rdram, k) >= 0;
     }
-    const bool tell = hand_told < 300 && (hand_frames % 60u) == 0;
+    if (extra_pass && !anyone) {
+        return;
+    }
+    if (!extra_pass) {
+        hand_frames++;
+    }
+    const WalkLimit walk_limit_now(extra_pass);
+    const bool tell = !extra_pass && hand_told < 300 && (hand_frames % 60u) == 0;
     // (possess142) and, as the frame's list ends, each gold weapon's scoped holder's view's projection (both buffers) as its unscoped one,
     // whatever made it since (func_1510B5F8 puts it back as it's made: conker_gold_projection_made)
-    if (anyone) {
+    if (anyone && !extra_pass) {
         const uint32_t records = (uint32_t)MEM_W(0, (gpr)(int32_t)0x800BE628);
         for (uint32_t v = 0; v < 4 && kseg0(records); v++) {
             if (!kept_projection_have(v) || gold_scoped_view(rdram, v) < 0) {
@@ -1080,7 +1117,7 @@ void conker::gold_weapons::frame_end(uint8_t* rdram, uint32_t start, uint32_t en
     std::vector<int> owner(w.all.size(), -1);
     for (size_t i = 0; i < w.all.size(); i++) {
         owner[i] = character_at(w.all[i].matrix);
-        if (owner[i] < 0) {
+        if (owner[i] < 0 || extra_pass) {
             continue;
         }
         const int held = weapon_of(owner[i]);
@@ -1095,7 +1132,7 @@ void conker::gold_weapons::frame_end(uint8_t* rdram, uint32_t start, uint32_t en
         }
     }
     uint32_t shared_n[3] = {}, total_n[3] = {}, own_n[3] = {};
-    for (size_t i = 0; i < w.all.size(); i++) {
+    for (size_t i = 0; i < w.all.size() && !extra_pass; i++) {
         if (owner[i] < 0) {
             continue;
         }
@@ -1120,9 +1157,12 @@ void conker::gold_weapons::frame_end(uint8_t* rdram, uint32_t start, uint32_t en
     // (possess150) 32 KB each, at 0x80FA8000 to 0x80FC8000 (nothing else of ours there: net_menu.cpp's mirror ends by 0x80FA5000,
     // possess_test.cpp's extra camera's buffer starts at 0x80FD0000), each list drawn more than once copied once (made_calls, below)
     static uint32_t pool_half = 0;
-    pool_half = (pool_half + 1u) & 3u;
     constexpr uint32_t pool_start = 0x80FA8000u, pool_slot = 0x8000u;
-    Clone clone{ rdram, pool_start + pool_half * pool_slot, pool_start + pool_half * pool_slot + pool_slot, 0 };
+    const bool same_frame = extra_pass && pool_frame == hand_frames;
+    if (!same_frame) {
+        pool_half = (pool_half + 1u) & 3u;
+    }
+    Clone clone{ rdram, same_frame ? pool_at : pool_start + pool_half * pool_slot, pool_start + pool_half * pool_slot + pool_slot, 0 };
     struct Made { uint32_t to; uint32_t seg[16]; int g; bool by_vertices, whole, hide_body; uint32_t fc0, fc1, copy; };
     std::vector<Made> made_calls;
     uint32_t reused_calls = 0;
@@ -1152,6 +1192,10 @@ void conker::gold_weapons::frame_end(uint8_t* rdram, uint32_t start, uint32_t en
         if (g < 0) {
             continue;
         }
+        // (possess154) the 5th player's view's pass: its own calls alone
+        if (extra_pass && (w.all[i].call | 0x80000000u) < extra_from) {
+            continue;
+        }
         const gpr aim = (gpr)(int32_t)MEM_W(0x31C, (gpr)(int32_t)(characters + (uint32_t)k * character_size));
         const bool scoped = kseg0((uint32_t)aim) && MEM_BU(0x197, aim) != 0;
         uint32_t seg[16];
@@ -1159,7 +1203,7 @@ void conker::gold_weapons::frame_end(uint8_t* rdram, uint32_t start, uint32_t en
         clone.g = g;
         clone.in_part = false;
         clone.last_weapon = false;
-        clone.by_vertices = vertex_baseline[g];
+        clone.by_vertices = vertex_baseline[g] && !extra_pass;
         clone.whole = false;
         if (clone.by_vertices && !w.all[i].vertices.empty()) {
             bool all_own = true;
@@ -1184,7 +1228,11 @@ void conker::gold_weapons::frame_end(uint8_t* rdram, uint32_t start, uint32_t en
         if (textures_known && !only_weapon_textures) {
             clone.whole = false;
         }
-        {
+        if (extra_pass) {
+            // (possess154: its lists the view's copies, never seen by the vertices; by the textures alone)
+            clone.whole = textures_known && only_weapon_textures;
+        }
+        if (!extra_pass) {
             auto known = whole_lists.find(w.all[i].to);
             if (clone.whole) {
                 whole_lists[w.all[i].to] = g;
@@ -1270,6 +1318,22 @@ void conker::gold_weapons::frame_end(uint8_t* rdram, uint32_t start, uint32_t en
             listed[g] = true;
             say("[gold] [hand] the list character %d holds the %s with (at %06X):%s", k, golds[g].name, (unsigned)w.all[i].to, w.all[i].listing.c_str());
         }
+    }
+    // (possess154) where this frame's slot is used up to, for the 5th player's view's pass
+    pool_frame = hand_frames;
+    pool_at = clone.at;
+    pool_slot_end = clone.end;
+    if (extra_pass) {
+        static uint32_t extra_told = 0;
+        static uint32_t told_lists = 0xFFFFFFFFu;
+        if (extra_told < 20 && clone.lists != told_lists) {
+            extra_told++;
+            told_lists = clone.lists;
+            say("[gold] [hand] f=%u the 5th player's view: %u lists of its gold weapons' holders copied (%u vertices gold, %u combiners, %u body "
+                "vertices left out; ours used to %08X of %08X)", (unsigned)hand_frames, (unsigned)clone.lists, (unsigned)clone.vertices,
+                (unsigned)clone.combiners, (unsigned)clone.hidden_vertices, (unsigned)clone.at, (unsigned)clone.end);
+        }
+        return;
     }
     if (tell) {
         say("[gold] [hand] f=%u the weapons' parts by their vertices: the sniper rifle %s (%u of %u loads its own, %u shared), the revolver %s (%u/%u, %u), "
@@ -1463,13 +1527,13 @@ namespace {
         if (view > 4 || (view == 4 && !fifth) || (view == 0 && conker::possess_test::fifth_split_view(rdram))) {
             return -1;
         }
-        // (possess150) view 4 the 5th player's own, scoped with a weapon not gold: no look camera has view 4 (+0x23D) while his HUD is drawn
-        // (his camera's copy in camera 1's place is view 0 then), so possess149's [fifth] lines of his scope's HUD never came. (With a gold
-        // weapon as before: his reticle as it is.)
+        // (possess150) view 4 the 5th player's own, scoped: no look camera has view 4 (+0x23D) while his HUD is drawn (his camera's copy
+        // in camera 1's place is view 0 then), so possess149's [fifth] lines of his scope's HUD never came. (possess154: with a gold weapon
+        // too, so his gold scope's HUD is the others': no reticle, the zoom bar at the view's left edge; possess150 left it out for those.)
         if (view == 4) {
             const uint32_t ch5 = characters + 4u * character_size;
             const gpr aim5 = (gpr)(int32_t)MEM_W(0x31C, (gpr)(int32_t)ch5);
-            if (kseg0((uint32_t)aim5) && MEM_BU(0x197, aim5) != 0 && gold_held(rdram, 4) < 0) {
+            if (kseg0((uint32_t)aim5) && MEM_BU(0x197, aim5) != 0) {
                 return 4;
             }
         }
