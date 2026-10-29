@@ -1113,7 +1113,12 @@ extern "C" void conker_look_view(uint8_t* rdram, recomp_context* ctx) {
     // 58, 83, 90 within a few frames), its eye eased at once since possess101: the view jumped in and out as the ramps were crossed. Now it
     // comes in quickly (0.5 of the way a frame, so it doesn't see through walls) and goes back out slowly (0.15). Once a frame for each
     // player's camera, on every machine alike (det_math).
-    struct SteadyView { bool have = false; float height = 0.0f, distance = 0.0f; uint32_t frame = 0; };
+    // (possess106) possess105's [look-slope] lines, walking back and forth on a ramp, the aim still: the game's eye 75 to 80 across from
+    // the look-at point walking forward, 57 to 62 walking back, jumping between them the frame he turned (73 to 66, 57 to 67): the eye is
+    // placed from where the look-at point was the frame before, so it trails him by his step. The view's eye is moved on by the look-at
+    // point's step since the last frame (across the ground; none past 50, a jump), then eased as above; the height follows him more
+    // closely too (0.5 of the way a frame: a reversal on a ramp shifted the view up and down 20 with possess105's 0.35).
+    struct SteadyView { bool have = false; float height = 0.0f, distance = 0.0f; uint32_t frame = 0; float last_ax = 0.0f, last_az = 0.0f; float step_x = 0.0f, step_z = 0.0f; };
     static SteadyView steady_view[aim_players];
     const bool steady_now = player >= 0 && player < aim_players && steady_camera(rdram, camera);
     if (player >= 0 && player < aim_players && !steady_now) {
@@ -1124,18 +1129,42 @@ extern "C" void conker_look_view(uint8_t* rdram, recomp_context* ctx) {
         const float conker_y = read_float(rdram, (gpr)(int32_t)MEM_W(0x3D0, camera), 0x18);
         const float ex = read_float(rdram, camera, 0x2EC), ez = read_float(rdram, camera, 0x300);
         const float ax = read_float(rdram, camera, 0x2E0), ay = read_float(rdram, camera, 0x2E4), az = read_float(rdram, camera, 0x2E8);
-        const float dx = ex - ax, dz = ez - az;
-        const float across = std::sqrt(dx * dx + dz * dz);
         const uint32_t frame_now = conker::netsession::active() ? conker::netsession::frame() : 0u;
+        const bool new_frame = !conker::netsession::active() || frame_now != sv.frame;
+        if (sv.have && new_frame) {
+            sv.step_x = ax - sv.last_ax;
+            sv.step_z = az - sv.last_az;
+            if (sv.step_x * sv.step_x + sv.step_z * sv.step_z > 50.0f * 50.0f) {
+                sv.step_x = sv.step_z = 0.0f;
+            }
+        }
+        const float dx = ex + sv.step_x - ax, dz = ez + sv.step_z - az;
+        const float across = std::sqrt(dx * dx + dz * dz);
         if (!sv.have || std::fabs(conker_y - sv.height) > 80.0f) {
             sv.have = true;
             sv.height = conker_y;
             sv.distance = across;
             sv.frame = frame_now;
-        } else if (!conker::netsession::active() || frame_now != sv.frame) {
+            sv.step_x = sv.step_z = 0.0f;
+        } else if (new_frame) {
             sv.frame = frame_now;
-            sv.height += (conker_y - sv.height) * 0.35f;
+            sv.height += (conker_y - sv.height) * 0.5f;
             sv.distance += (across - sv.distance) * (across < sv.distance ? 0.5f : 0.15f);
+        }
+        sv.last_ax = ax;
+        sv.last_az = az;
+        if (conker::netsession::active() && player == conker::netsession::local_player()) {   // (possess106 diagnostics)
+            static uint32_t told = 0;
+            static float told_y = 0.0f;
+            if (std::fabs(conker_y - told_y) > 0.3f && told < 1500) {
+                told++;
+                const float gx = ex - ax, gz = ez - az;
+                char line[200];
+                std::snprintf(line, sizeof(line), "[steady] f=%u conker y %.1f, view height %.1f; across: the game's %.1f, moved on %.1f, the view's %.1f (step %.1f %.1f)",
+                    frame_now, conker_y, sv.height, std::sqrt(gx * gx + gz * gz), across, sv.distance, sv.step_x, sv.step_z);
+                conker::netsession::log(line);
+            }
+            told_y = conker_y;
         }
         if (across >= 1.0f) {
             const float view_ay = ay + (sv.height - conker_y);
