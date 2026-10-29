@@ -346,7 +346,7 @@ void conker::look_aim::add_camera_options(recomp::config::Config& config) {
     config.add_enum_option(options::stick_invert, "Stick: Invert Aiming",
         "Inverts the stick in R-Look (hold R and look around) and in the second aiming mode (e.g. the sniper scope, the magnum, throwables), separately from the mouse and gyro. <recomp-color primary>Invert Y</recomp-color> is the default and matches the original game: pushing the stick up looks down.",
         invert, Invert::Y);
-    // (possess64, possess117) Aiming: Lock-On taken out of the launcher: the lock-on is on for everyone, as the original game has it (conker_aim_lock_on)
+    // (possess64, possess124) Aiming: Lock-On taken out of the launcher for now: the lock-on is off for everyone, online or not (conker_aim_lock_on)
 }
 
 // The Mouse & Gyro tab. The sensitivities are RecompFrontend's options (same ids, so saved values carry
@@ -434,10 +434,10 @@ bool conker::look_aim::mouse_turns_camera() {
 // reads as clear, and the stick turns the aim as when there's no target.
 extern "C" void conker_aim_lock_on(uint8_t* rdram, recomp_context* ctx) {
 #if defined(CONKER_RT64)
-    // (possess117) on for everyone again, as the original game has it, online or not (possess64 had it off for everyone): the flag is
-    // left as the game set it, so every machine locks on as the game does for every player; the setting stays out of the launcher
+    // (possess64, possess124) off for everyone, online or not, the setting gone from the launcher for now: every machine reads the flag
+    // as clear for every player, so they all do the same (possess117 had turned it back on; possess124 undoes that)
     (void)rdram;
-    (void)ctx;
+    ctx->r9 = 0;
 #endif
 }
 
