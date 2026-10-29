@@ -566,6 +566,34 @@ extern "C" void conker_gold_scope_body(uint8_t* rdram, recomp_context* ctx) {
     }
 }
 
+// (possess129) func_1502E4C4 at 0x1502E9C8, its end: $t2 the character's +0x74 with its +0x2FC ORed in (the views it's to be left out of
+// besides, which the camera sets in first person and scoped: possess128's clearing at 0x1502E9A0 was put back here, the possess128 test's
+// player 1 never seen in his own scope). For a gold weapon's holder, scoped, its own view's bit clear again. [gold] lines of the bits.
+extern "C" void conker_gold_scope_end(uint8_t* rdram, recomp_context* ctx) {
+    if (!golds_made || (int32_t)MEM_W(0, (gpr)(int32_t)scene_now) != total_war) {
+        return;
+    }
+    const uint32_t c = (uint32_t)ctx->r17;
+    if (c < characters || (c - characters) % character_size != 0 || (c - characters) / character_size >= 4) {
+        return;
+    }
+    const int k = (int)((c - characters) / character_size);
+    const gpr aim = (gpr)(int32_t)MEM_W(0x31C, (gpr)(int32_t)c);
+    if (!kseg0((uint32_t)aim) || MEM_BU(0x197, aim) == 0 || gold_held(rdram, k) < 0) {
+        return;
+    }
+    static uint32_t told = 0;
+    const uint32_t before = (uint32_t)ctx->r10 & 0xFFu;
+    if (told < 20 && (before & (1u << k)) != 0) {
+        told++;
+        say("[gold] character %d scoped with a gold weapon: its +0x2FC %02X put it out of its own view again (+0x74 %02X): cleared; its hidden bits %02X, "
+            "its fades %u %u %u %u", k, (unsigned)MEM_BU(0x2FC, (gpr)(int32_t)c), (unsigned)before, (unsigned)MEM_BU(0xF, (gpr)(int32_t)c),
+            (unsigned)MEM_BU(0xB, (gpr)(int32_t)c), (unsigned)MEM_BU(0xC, (gpr)(int32_t)c), (unsigned)MEM_BU(0xD, (gpr)(int32_t)c),
+            (unsigned)MEM_BU(0xE, (gpr)(int32_t)c));
+    }
+    ctx->r10 = (gpr)(int32_t)(before & ~(1u << k));
+}
+
 // ---- (possess127) Where a weapon in a hand is drawn: the frame's list walked ----
 // A gold weapon on the ground draws from its own gold copy (gold_model); in a hand it's the game's own again (the possess125 test). How the
 // hand's weapon is drawn isn't known yet: whether from the same model (its list called, its vertices loaded) or another. At the end of the
@@ -573,6 +601,124 @@ extern "C" void conker_gold_scope_body(uint8_t* rdram, recomp_context* ctx) {
 // (segments as it sets them) and each call of a weapon's model (the sniper rifle's, the revolver's, the knives': the props' own, and our
 // gold copies) and each load of its vertices counted, with where from: [gold] [hand] lines, for the next step.
 namespace {
+    // a texture only weapon g's model loads (none of the other two's)
+    bool own_texture(int g, uint32_t t) {
+        if (std::find(textures[g].begin(), textures[g].end(), t) == textures[g].end()) {
+            return false;
+        }
+        for (int o = 0; o < 3; o++) {
+            if (o != g && std::find(textures[o].begin(), textures[o].end(), t) != textures[o].end()) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // (possess129) Gold in the hand: a copy of the character's list (and of any list it calls on the way) whose weapon's part, from a load
+    // of the weapon's own texture until a texture not the weapon's, loads gold copies of its vertices (gold_colours, ours) and has its colour
+    // combiners shiny gold (gold_combiner); the frame's call of the character's list is pointed at the copy, for that frame alone. Ours:
+    // 0x80F90000 to 0x80FA0000 (net_view.cpp's ring of the HUD's lists ends at 0x80F90000, net_menu.cpp's mirror starts at 0x80FA0000), a
+    // half each frame, the frame before's left for RT64 as it draws it.
+    struct Clone {
+        uint8_t* rdram;
+        uint32_t at, end;
+        int g;
+        bool in_part = false;
+        uint32_t vertices = 0, combiners = 0, lists = 0;
+        bool full = false;
+
+        uint32_t take(uint32_t bytes) {
+            bytes = (bytes + 15u) & ~15u;
+            if (at + bytes > end) {
+                full = true;
+                return 0;
+            }
+            const uint32_t a = at;
+            at += bytes;
+            return a;
+        }
+        static bool phys_ok(uint32_t a) { return a < 0x00800000u && (a & 7u) == 0; }
+        static uint32_t resolve(const uint32_t* seg, uint32_t a) {
+            if ((a >> 24) == 0x80) {
+                return a & 0x1FFFFFFFu;
+            }
+            const uint32_t s = (a >> 24) & 0x0Fu;
+            return (s == 0 ? 0u : seg[s]) + (a & 0x00FFFFFFu);
+        }
+        // the list at src (physical) copied, its weapon's part made gold: the copy's physical address, or 0 (nothing in it to change)
+        uint32_t list(uint32_t src, uint32_t* seg, int depth) {
+            if (!phys_ok(src) || depth > 8 || full) {
+                return 0;
+            }
+            uint32_t length = 0;
+            for (uint32_t c = src; phys_ok(c) && c - src < 0x4000u; c += 8) {
+                length += 8;
+                if (((uint32_t)MEM_W(0, (gpr)(int32_t)(c | 0x80000000u)) >> 24) == 0xDF) {
+                    break;
+                }
+            }
+            const uint32_t mark = at;
+            const uint32_t copy = take(length);
+            if (copy == 0) {
+                return 0;
+            }
+            std::memcpy(rdram + (copy - 0x80000000u), rdram + src, length);
+            bool changed = false;
+            for (uint32_t c = copy; c < copy + length; c += 8) {
+                const gpr cmd = (gpr)(int32_t)c;
+                const uint32_t w0 = (uint32_t)MEM_W(0, cmd), w1 = (uint32_t)MEM_W(4, cmd);
+                const uint32_t op = w0 >> 24;
+                if (op == 0xDF) {
+                    break;
+                }
+                if (op == 0xDB && ((w0 >> 16) & 0xFFu) == 0x06 && (w0 & 0xFFFFu) < 64u) {
+                    seg[(w0 & 0xFFFFu) / 4u] = w1 & 0x00FFFFFFu;
+                } else if (op == 0xFD) {
+                    const uint32_t t = resolve(seg, w1);
+                    if (own_texture(g, t)) {
+                        in_part = true;
+                    } else if (std::find(textures[g].begin(), textures[g].end(), t) == textures[g].end()) {
+                        in_part = false;
+                    }
+                } else if (op == 0xFC && in_part) {
+                    if (gold_combiner(rdram, c)) {
+                        combiners++;
+                        changed = true;
+                    }
+                } else if (op == 0x01 && in_part) {
+                    const uint32_t n = (w0 >> 12) & 0xFFu;
+                    const uint32_t from = resolve(seg, w1);
+                    if (n != 0 && phys_ok(from) && from + n * 0x10u <= 0x00800000u) {
+                        const uint32_t v = take(n * 0x10u);
+                        if (v != 0) {
+                            std::memcpy(rdram + (v - 0x80000000u), rdram + from, n * 0x10u);
+                            gold_colours(rdram, v, n, g);
+                            MEM_W(4, cmd) = (int32_t)(v & 0x1FFFFFFFu);
+                            vertices += n;
+                            changed = true;
+                        }
+                    }
+                } else if (op == 0xDE) {
+                    const uint32_t to = resolve(seg, w1);
+                    const uint32_t child = list(to, seg, depth + 1);
+                    if (child != 0) {
+                        MEM_W(4, cmd) = (int32_t)child;
+                        changed = true;
+                    }
+                    if (((w0 >> 16) & 0xFFu) == 1) {
+                        break;
+                    }
+                }
+            }
+            if (!changed) {
+                at = mark;
+                return 0;
+            }
+            lists++;
+            return copy & 0x1FFFFFFFu;
+        }
+    };
+
     struct Walk {
         uint8_t* rdram;
         uint32_t seg[16] = {};
@@ -585,6 +731,14 @@ namespace {
         // weapon is drawn from a model of its own (the possess127 test: none of the props' models called for it)
         std::string elsewhere[3];
         uint32_t elsewhere_n[3] = {}, elsewhere_told[3] = {};
+        // (possess129) where a weapon's own texture (its model's alone, not one the others' share) is loaded outside its model: the hand's
+        // weapon, part of the character's model (the possess128 test: the revolver's 1F54C0 loaded 0x2D8 into the list at 264D90, called from
+        // the frame's list, with a matrix at player 1's place as he held it). Each: the frame's command calling that list, its list, the
+        // segments as they were there, the matrix at the load and the weapon.
+        struct Site { uint32_t call, to, matrix; int g; uint32_t seg[16]; };
+        std::vector<Site> sites;
+        uint32_t top_call = 0, top_to = 0;
+        uint32_t top_seg[16] = {};
         static float fixed(uint8_t* rdram, uint32_t m, int r, int c) {
             const gpr at = (gpr)(int32_t)(m | 0x80000000u);
             const int32_t i = MEM_H((uint32_t)((r * 4 + c) * 2), at);
@@ -640,6 +794,17 @@ namespace {
                                 known.push_back(t);
                             }
                         } else if (inside < 0 && is_known) {
+                            if (depth >= 1 && top_call != 0 && own_texture(g, t) && phys_ok(matrix)) {
+                                bool have = false;
+                                for (const Site& site : sites) {
+                                    have = have || site.call == top_call;
+                                }
+                                if (!have && sites.size() < 32) {
+                                    Site site{ top_call, top_to, matrix, g, {} };
+                                    std::memcpy(site.seg, top_seg, sizeof(site.seg));
+                                    sites.push_back(site);
+                                }
+                            }
                             elsewhere_n[g]++;
                             if (elsewhere_told[g] < 3 && phys_ok(matrix)) {
                                 elsewhere_told[g]++;
@@ -692,7 +857,15 @@ namespace {
                         continue;
                     }
                     if (depth < 14) {
+                        if (depth == 0) {
+                            top_call = c;
+                            top_to = to;
+                            std::memcpy(top_seg, seg, sizeof(top_seg));
+                        }
                         run(to, depth + 1, 0, into);
+                        if (depth == 0) {
+                            top_call = 0;
+                        }
                     }
                 }
             }
@@ -702,14 +875,74 @@ namespace {
 }
 
 void conker::gold_weapons::frame_end(uint8_t* rdram, uint32_t start, uint32_t end) {
-    if (!golds_made || (int32_t)MEM_W(0, (gpr)(int32_t)scene_now) != total_war || hand_told >= 300 || (++hand_frames % 60u) != 0) {
+    if (!golds_made || (int32_t)MEM_W(0, (gpr)(int32_t)scene_now) != total_war) {
         return;
     }
     if (!kseg0(start) || !kseg0(end) || end <= start || end - start > 0x100000u) {
         return;
     }
+    hand_frames++;
+    bool anyone = false;
+    for (int k = 0; k < 5; k++) {
+        anyone = anyone || gold_held(rdram, k) >= 0;
+    }
+    const bool tell = hand_told < 300 && (hand_frames % 60u) == 0;
+    if (!anyone && !tell && (hand_frames % 30u) != 0) {
+        return;   // (each half second still, so the weapons' textures are learnt from the ones lying about)
+    }
     Walk w{ rdram };
     w.run(start & 0x1FFFFFFFu, 0, end & 0x1FFFFFFFu);
+    // (possess129) each call of a character's list that loads a gold weapon's texture, by the matrix there nearest a holder of that weapon
+    // (within 250 across), pointed at a gold copy of it
+    static uint32_t pool_half = 0;
+    pool_half ^= 1u;
+    Clone clone{ rdram, 0x80F90000u + pool_half * 0x8000u, 0x80F90000u + pool_half * 0x8000u + 0x8000u, 0 };
+    std::string made;
+    for (const Walk::Site& site : w.sites) {
+        const float mx = Walk::fixed(rdram, site.matrix, 3, 0), my = Walk::fixed(rdram, site.matrix, 3, 1), mz = Walk::fixed(rdram, site.matrix, 3, 2);
+        int best = -1;
+        float best_d = 250.0f * 250.0f;
+        for (int k = 0; k < 5; k++) {
+            if (gold_held(rdram, k) != site.g) {
+                continue;
+            }
+            const gpr ch = (gpr)(int32_t)(characters + (uint32_t)k * character_size);
+            auto f = [&](uint32_t off) { uint32_t b = (uint32_t)MEM_W(off, ch); float v; std::memcpy(&v, &b, 4); return v; };
+            const float dx = f(0x14) - mx, dy = f(0x18) - my, dz = f(0x1C) - mz;
+            const float d = dx * dx + dy * dy + dz * dz;
+            if (d < best_d) {
+                best_d = d;
+                best = k;
+            }
+        }
+        if (best < 0) {
+            continue;
+        }
+        uint32_t seg[16];
+        std::memcpy(seg, site.seg, sizeof(seg));
+        clone.g = site.g;
+        clone.in_part = false;
+        const uint32_t before_vertices = clone.vertices;
+        const uint32_t copy = clone.list(site.to, seg, 0);
+        if (copy != 0) {
+            MEM_W(4, (gpr)(int32_t)(site.call | 0x80000000u)) = (int32_t)copy;
+        }
+        if (tell) {
+            char piece[200];
+            std::snprintf(piece, sizeof(piece), " | character %d's %s (the call at %06X of the list at %06X): %s, %u vertices gold", best, golds[site.g].name,
+                (unsigned)site.call, (unsigned)site.to, copy != 0 ? "a gold copy drawn" : (clone.full ? "no room in ours" : "nothing in it made gold"),
+                (unsigned)(clone.vertices - before_vertices));
+            made += piece;
+        }
+    }
+    if (!tell) {
+        return;
+    }
+    if (!made.empty() || !w.sites.empty()) {
+        say("[gold] [hand] f=%u the weapons in the hands: %u calls of a character's list with a weapon's own texture%s (ours used: %u bytes, %u lists, "
+            "%u combiners)", (unsigned)hand_frames, (unsigned)w.sites.size(), made.c_str(), (unsigned)(clone.at - (0x80F90000u + pool_half * 0x8000u)),
+            (unsigned)clone.lists, (unsigned)clone.combiners);
+    }
     // who holds a gold weapon, and who holds which pickup
     std::string held;
     const uint32_t block = (uint32_t)MEM_W(0, (gpr)(int32_t)pickups_block);

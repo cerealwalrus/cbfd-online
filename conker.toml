@@ -3440,6 +3440,12 @@ func = "func_1502E4C4"
 before_vram = 0x1502E9A0
 text = "{ extern void conker_gold_scope_body(uint8_t*, recomp_context*); conker_gold_scope_body(rdram, ctx); }"
 
+# possess129: and at its end (0x1502E9C8, $t2 the +0x74 with the character's +0x2FC ORed in), its own view's bit clear again
+[[patches.hook]]
+func = "func_1502E4C4"
+before_vram = 0x1502E9C8
+text = "{ extern void conker_gold_scope_end(uint8_t*, recomp_context*); conker_gold_scope_end(rdram, ctx); }"
+
 # possess114: a view's passes go by its player's bit of D_800D18A0 (the match's characters out of it): for a player out of the match
 # func_15019464 (the first pass) draws the sky alone, func_150195A0 (the 3D) none of the characters and objects, and func_1510B9D0 (the
 # level) looks again. The extra camera's view is drawn as view 1, so once player 1 was out the 5th player's view was the sky alone. As
