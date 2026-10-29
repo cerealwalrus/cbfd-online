@@ -165,7 +165,7 @@ namespace {
     }
 
     void refresh_settings_buttons() {
-        players_button->set_text("Players: " + std::to_string(players) + (players >= 5 ? " (test)" : ""));
+        players_button->set_text("Players: " + std::to_string(players));
         delay_button->set_text(delay_frames <= 0 ? std::string("Input delay: Auto") : "Input delay: " + std::to_string(delay_frames) + (delay_frames == 1 ? " frame" : " frames"));
         input_button->set_text(input_name());
     }
@@ -283,8 +283,8 @@ namespace {
         delay_button = make_button(settings_row, "", recompui::ButtonStyle::Secondary, Action::Delay);
         input_button = make_button(settings_row, "", recompui::ButtonStyle::Secondary, Action::Input);
         refresh_settings_buttons();
-        make_label(setup_page, "Players and input delay are the host's choice. Controller is for this computer. With 5 players (a test), the 5th plays the "
-            "match's 5th character, a bot's: the match needs bots.", recompui::LabelStyle::Annotation);
+        make_label(setup_page, "Players and input delay are the host's choice. Controller is for this computer. With 5 players, the 5th joins the "
+            "character select as P5.", recompui::LabelStyle::Annotation);
 
         recompui::Container* setup_buttons = make_row(setup_page);
         recompui::Button* host_button = make_button(setup_buttons, "Host", recompui::ButtonStyle::Primary, Action::Host);

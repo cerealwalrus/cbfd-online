@@ -1,18 +1,19 @@
 # Online multiplayer
 
-The game's local multiplayer (the arena modes, 2 to 4 players) played over a network, each player with a full-screen view
-instead of a split screen. Everything is deterministic lockstep: the machines exchange only controller inputs, each runs
+The game's local multiplayer (every multiplayer mode, 2 to 5 players, and a 4 player co-op mansion) played over a network, each
+player with a full-screen view instead of a split screen. Everything is deterministic lockstep: the machines exchange only controller inputs, each runs
 the whole game, and the host sends a snapshot to put a machine right if its random numbers ever drift apart.
 
 A game is set up in the launcher's **Online** screen (the lobby), or with environment variables (below, for testing).
 
 ## The lobby
 
-Both players need the same build, and the ROM loaded (Start Game's Load ROM does that once).
+Every player needs the same build, and the ROM added (the launcher's Add ROM does that once).
 
-1. The host chooses **Online** in the launcher, sets Players (2 to 4), Input delay and Controller, and presses **Host**. The
-   lobby lists the players as they join. The host's router has to forward the port (UDP, 47000 by default) to the host's
-   computer, and the others need the host's public IP address.
+1. The host chooses **Online** in the launcher, sets Players (2 to 5), Input delay (Auto by default) and Controller, and presses
+   **Host**. The lobby lists the players as they join, with their nicknames and ping. The host's router has to forward the port
+   (UDP, 47000 by default) to the host's computer; the launcher's status bar says whether it's open, and opens it over UPnP where
+   the router allows. The others need the host's address.
 2. Each other player chooses **Online**, types the host's address (`address` or `address:port`), and presses **Join**.
 3. When everybody is in, the host presses **Start game**; every machine starts the game, and the host and the players choose
    the multiplayer mode in the game's own menu as usual. Anybody can **Leave** before that (and join again); a version
@@ -24,7 +25,7 @@ turn on `CONKER_IGNORE_DIRECTINPUT` by itself (it has to be set before the progr
 
 ## Playing
 
-The host is player 1 (slot 0), joiners are players 2 to 4. Every machine needs its own copy of the ROM and a build.
+The host is player 1 (slot 0), joiners are players 2 to 5. Every machine needs its own copy of the ROM and a build.
 
 Host (a UDP port, forwarded on the router for play over the internet):
 
@@ -41,7 +42,7 @@ Choose the multiplayer mode in the menu on every machine, host first. The game s
 
 ## Chat
 
-During an online game, **Y on the keyboard** (or the key chosen in Settings, Online tab, Chat: Key; it can be turned off) opens a line to type on (bottom-left of the screen). **Enter** sends it; Enter on an
+During an online game, **Y on the keyboard** (or the key chosen in Settings, General tab, Chat: Key; it can be turned off) opens a line to type on (bottom-left of the screen). **Enter** sends it; Enter on an
 empty line closes the box (Esc isn't used: it opens the settings menu). Everybody sees the lines for ten seconds, coloured by
 player. While you type your own controller is held still, and for half a second after, so the Enter isn't a press of Start. The
 lines go through the host, and are limited to 120 characters and five lines in four seconds per player. There's no gamepad
@@ -52,15 +53,14 @@ typing: a gamepad's Y does nothing. The key does what it's bound to in Controls 
 | Variable | Meaning |
 | --- | --- |
 | `CONKER_NET_HOST=<port>` | host a game on that UDP port |
-| `CONKER_NET_PLAYERS=<2..4>` | how many players the host waits for (default 2) |
+| `CONKER_NET_PLAYERS=<2..5>` | how many players the host waits for (default 2) |
 | `CONKER_NET_JOIN=<host>:<port>` | join a game |
-| `CONKER_NET_DELAY=<frames>` | input delay (default 3, about 100 ms; raise it for a slower connection) |
+| `CONKER_NET_DELAY=<frames>` | input delay (default 3, about 100 ms; 0 or `auto` works it out from the round trips, as the lobby's Auto does) |
 | `CONKER_NET_INPUT=keyboard\|gamepad\|gamepad2` | this machine's player uses only that (for two windows on one PC) |
 | `CONKER_NET_LOG=<file>` | a log of the session |
 | `CONKER_IGNORE_DIRECTINPUT=1` | ignore controllers that are not XInput ones (on by default online; `CONKER_ALLOW_DIRECTINPUT=1` turns it off) |
 | `CONKER_NET_VIEW=split` | keep the split screen (to compare) |
 | `CONKER_NET_ALLOWPAUSE=1` | let the Start button pause the game online (it stops it for everyone; off by default, the game goes on) |
-| `CONKER_NET_KEEPCULL=1` | use the game's own choice of which players are drawn for a camera |
 
 Debugging aids: `CONKER_NET_TEST_DESYNC`, `CONKER_NET_NORESYNC`, `CONKER_NET_VIEWMASK`, `CONKER_NET_AIMFIT`,
 `CONKER_NET_HUD`, `CONKER_NET_SCORESWAP`, `CONKER_NET_HIDEOLD`, `CONKER_NET_VIEWSLOT`, `CONKER_NET_GFXSYNC`,
@@ -92,7 +92,7 @@ stick turns and tilts its player's camera (already scaled by that player's Camer
 `PlayerInput::cam_*`), and every machine runs the orbit camera (`mouse_camera.cpp`) for every player's camera from those numbers, at a fixed
 1/30 s a frame instead of the clock, with trigonometry made of plain arithmetic (the C library's is picked by the processor).
 A snapshot (a resync) starts every orbit over on all machines at the same moment, since the orbit's own memory isn't in it.
-The mouse still doesn't turn the camera online. With the setting off the stick is the C-buttons as before. Protocol version 4.
+With the setting off the stick is the C-buttons as before. Protocol version 4.
 
 ## How the full-screen view works
 
@@ -115,8 +115,30 @@ Every machine has to run the same build.
 
 - During a match the Start button does not pause (the game's pause stops everything, and every machine has to go on together). It opens the game's own multiplayer pause screen instead (the PAUSED logo, the stats and the team scores), on that player's screen only: the match goes on behind it, that player's character stands still, and the normal HUD (health, radars, weapon bar) is hidden while it is open. There are two buttons, CONTINUE and QUIT; RESTART is not offered, since it would restart one machine's game alone. Quit (confirmed with Yes) ends the match for everybody: the quitter's input carries the values the game's own quit sets (D_800E0B94 and a few more, see `net_session.cpp`), every machine sets them at the same frame, and all players go back to the game's multiplayer menu together, still connected, with a "Player N ended the match" notice. With four players there is no free slot, so the menu borrows the pressing player's own slot for the moment the game reads it and puts that slot's input back right after.
 - A machine that cannot be reached for a while is dropped: the others see "Player N left the match" and go on, and a joiner whose host is gone sees a notice and goes on offline.
-- Audio is the local listener's own, positional sound is not yet per player.
-- Tested with 2 players; 3 and 4 are untested.
+- Each player hears the game from their own camera (`local_audio.cpp`): other players' sounds come from where they are.
+
+## The 5th player
+
+The game has 4 controllers and draws at most 4 views, so the 5th player is added around it (`possess_test.cpp`). They join the
+character select as **P5** (a P5 icon made from the game's P4 one), pick a team on the teams screen, and play the match's 5th
+character, which is theirs and never a computer player's. With 4 players in the match, every machine runs an extra camera for
+that character, and the 5th player's own machine draws its view at the end of each frame from the game's memory as it was
+before the views (put back after), with its own HUD, sound listener, pause menu and scopes, laid out as player 1's machine lays
+out player 1's. With fewer than 4 players in the match, the 5th player takes a free controller's place and plays it the game's
+own way.
+
+## Golden weapons (Total War)
+
+A golden sniper rifle, revolver and knives are added to the poison room (`gold_weapons.cpp`): copies of the level's own weapons,
+with pickups of their own, so they're taken and come back as the game's weapons are. They're drawn gold on the floor and in the
+hands, for every player. Scoped with one, the holder's view doesn't zoom, the reticle is left out of the scope's HUD and its zoom
+bar is moved to the view's left edge, and the holder sees their own laser beam; everyone else sees it as a normal sniper rifle's.
+
+## Steady R-Look camera
+
+While R is held the camera turns only with the aim (`look_aim.cpp`, `steady_camera`): it no longer eases after Conker, tilts on
+ramps or steps, or swings on its own; its eye is kept out of walls by the game's own camera collision. It's always on, for every
+player online and offline, with every weapon but the co-op mansion's shotgun, whose look stays the game's own.
 
 ## Aiming: Swap Sticks online (gamepad)
 
