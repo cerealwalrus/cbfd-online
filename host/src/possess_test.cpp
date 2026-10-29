@@ -4137,6 +4137,86 @@ extern "C" int conker_possess_warp(uint8_t* rdram, recomp_context* ctx) {
         ctx->r5 = (gpr)spot;
         func_15172D28(rdram, ctx);
         *ctx = saved;
+        // (possess113) where it went is its last place now, so the extra camera's frame (conker_possess_camera_frame) doesn't take the
+        // move for a comeback and make its camera again: made again, the camera put the character back where its team starts the next
+        // frame (possess112's logs: through a tower's door to 842 1254 -3871, the camera made again, then at 2007 -521 -6182, the
+        // squirrels' start, every time, through either team's tower door). The game moved the camera with it (func_15085430's
+        // func_15005818), as a player's.
+        extra_last_place[0] = position(rdram, object, 0x14);
+        extra_last_place[1] = position(rdram, object, 0x18);
+        extra_last_place[2] = position(rdram, object, 0x1C);
+        extra_have_place = true;
+        log("f=%u the extra character through the door: at %.0f %.0f %.0f", (unsigned)frames, extra_last_place[0], extra_last_place[1],
+            extra_last_place[2]);
+    }
+    return 1;
+}
+
+// (possess113) func_1508E89C's entry ($a0 a player whose last life is gone, $a1 a computer player of its team: character numbers). In a
+// match with lives, a player out of them takes a computer player of its team over once its iris has closed: its place, its body and
+// its lives (the computer player's lives to 0 and its bit in D_800D18A0 set: out of the match). The 5th player's character is a
+// computer player to the game (past D_80082FA0's players), so a player of its team out of lives took it over (possess112's logs,
+// f=20175: player 3, its last life gone, took character 4's place and its lives, and the 5th player was out of the match, watching
+// the others, with lives it never lost). It's never taken now: another computer player of the team still in the match (alive, with
+// lives left) is taken in its place, the first; with none, nothing is done, as with no computer player on the team (the player stays
+// out of the match, watching). Every machine alike, from the game's memory and the 5th player's state at the frame (as
+// conker_possess_as_player goes by).
+extern "C" int conker_possess_takeover(uint8_t* rdram, recomp_context* ctx) {
+    if (hooks_off() || !conker::netsession::active() || !extra_ready || !extra_played) {
+        return 0;
+    }
+    const int player = (int)(int16_t)(uint16_t)ctx->r4;
+    const int soldier = (int)(int16_t)(uint16_t)ctx->r5;
+    if (soldier != ch5 || player == ch5 || player < 0 || player >= 16) {
+        return 0;
+    }
+    // (as func_1508E89C goes on: the player's iris closed, and not done already; otherwise it does nothing itself)
+    const bool closed = MEM_BU(0, (gpr)(int32_t)(0x800D18A4u + (uint32_t)player)) >= 0x33;
+    const bool done = ((uint32_t)MEM_HU(0, (gpr)(int32_t)0x800D18A2) & (1u << player)) != 0;
+    if (!closed || done) {
+        return 0;
+    }
+    const int count = (int)(int8_t)MEM_B(0, (gpr)(int32_t)0x8008FD8C);
+    const int last_player = (int)MEM_W(0, (gpr)(int32_t)0x80082FA0);
+    const uint32_t out = (uint32_t)MEM_HU(0, (gpr)(int32_t)0x800D18A0);
+    const uint8_t team = MEM_BU(0x128, (gpr)(int32_t)character(player));
+    int instead = -1;
+    for (int c = std::max(0, last_player + 1); c < count && c < 16; c++) {
+        if (c == ch5 || c == player || ((out >> c) & 1u) != 0 || !in_match(rdram, c)) {
+            continue;
+        }
+        if (MEM_BU(0x128, (gpr)(int32_t)character(c)) != team) {
+            continue;
+        }
+        const uint32_t brain = brain_of(rdram, c);
+        if (brain == 0 || MEM_BU(0x120, (gpr)(int32_t)brain) != 0) {
+            continue;
+        }
+        if ((int8_t)MEM_B(0, (gpr)(int32_t)(0x800D2144u + (uint32_t)c * 0x1Cu)) <= 0) {
+            continue;
+        }
+        instead = c;
+        break;
+    }
+    // (once a run of frames the game asks it, for each player)
+    static int told_player = -1;
+    static uint32_t told_frame = 0, told = 0;
+    const bool fresh = player != told_player || frames != told_frame + 1u;
+    told_player = player;
+    told_frame = frames;
+    if (fresh && told < 40) {
+        told++;
+        if (instead >= 0) {
+            log("f=%u [death] player %d, out of lives, takes computer player %d over, not the 5th player's character %d", (unsigned)frames,
+                player + 1, instead, ch5);
+        } else {
+            log("f=%u [death] player %d, out of lives, doesn't take the 5th player's character %d over (no computer player of its team to take)",
+                (unsigned)frames, player + 1, ch5);
+        }
+    }
+    if (instead >= 0) {
+        ctx->r5 = (gpr)instead;
+        return 0;
     }
     return 1;
 }

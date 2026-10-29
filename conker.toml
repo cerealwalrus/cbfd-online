@@ -3404,6 +3404,14 @@ func = "func_15172E7C"
 before_vram = 0x15172E7C
 text = "{ extern int conker_possess_warp(uint8_t*, recomp_context*); if (conker_possess_warp(rdram, ctx)) return; }"
 
+# possess113: func_1508E89C (in a match with lives, a player out of them takes a computer player of its team over: $a0 the player, $a1
+# the computer player): the 5th player's character is a computer player to the game, and was taken over, the 5th player put out of the
+# match. Another computer player of the team is taken in its place, or none (host/src/possess_test.cpp, conker_possess_takeover).
+[[patches.hook]]
+func = "func_1508E89C"
+before_vram = 0x1508E89C
+text = "{ extern int conker_possess_takeover(uint8_t*, recomp_context*); if (conker_possess_takeover(rdram, ctx)) { ctx->r2 = 0; return; } }"
+
 # possess51: online, the 5th player on the teams screen as a player (host/src/possess_test.cpp, conker_possess_teams): put in the list
 # after the players as the screen's frame starts ($a2 the players, about to be kept), its presses from ours (the list's entry $v0, $a1
 # its presses' place), its icon's text entry noted (the P5 icon) and, as the frame ends, taken out of the list again.
