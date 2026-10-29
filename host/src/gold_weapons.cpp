@@ -48,9 +48,9 @@ namespace {
     // its pickup's: the sniper rifle's 0x56 (ids 11 and 12, the pickups of kind 24), the revolver's 0x53 (7, 19: 23), the knives' 0x3C
     // (5, 17: 14), the possess116 test's [weapons] lines; possess116 looked for the pickups' kinds among the props and found none.
     Gold golds[3] = {
-        { "sniper rifle", 0x24, 0x56, -63, -1448, 219, 0 },
-        { "revolver", 0x23, 0x53, -422, -1448, 30, 0 },
-        { "knives", 0x14, 0x3C, 96, -1448, -148, 0 },
+        { "sniper rifle", 0x24, 0x56, -63, -1408, 219, 0 },
+        { "revolver", 0x23, 0x53, -422, -1408, 30, 0 },
+        { "knives", 0x14, 0x3C, 96, -1408, -148, 0 },
     };
     bool golds_made = false;
 
@@ -325,10 +325,48 @@ namespace {
                 moved++;
             }
         }
+        // (possess125) the vertex loads (G_VTX, 0x01) by a segment's address: the game sets the segment to the model's vertices before it
+        // draws the list, so the loads' offsets, from the lowest, are the vertices' places in the model; they're made our copy's own
+        // (physical) addresses, so the copy draws its own gold vertices. Only when every load fits inside the model's vertices.
+        uint32_t seg_low = 0xFFFFFFFFu, seg_high = 0, seg_loads = 0, seg = 0xFF;
+        std::string loads;
+        for (uint32_t c = ours + n * 0x10u; c < ours + size; c += 8) {
+            const uint32_t w0 = (uint32_t)MEM_W(0, (gpr)(int32_t)c), w1 = (uint32_t)MEM_W(4, (gpr)(int32_t)c);
+            if ((w0 >> 24) != 0x01) {
+                continue;
+            }
+            if (loads.size() < 6 * 10) {
+                char piece[12];
+                std::snprintf(piece, sizeof(piece), " %08X", (unsigned)w1);
+                loads += piece;
+            }
+            const uint32_t s_id = w1 >> 24;
+            if (s_id == 0 || s_id > 0x0F || (seg != 0xFF && seg != s_id)) {
+                seg_loads = 0xFFFFFFFFu;   // (not all by one segment: left alone)
+                break;
+            }
+            seg = s_id;
+            const uint32_t off = w1 & 0x00FFFFFFu, count = (w0 >> 12) & 0xFFu;
+            seg_low = std::min(seg_low, off);
+            seg_high = std::max(seg_high, off + count * 0x10u);
+            seg_loads++;
+        }
+        uint32_t seg_moved = 0;
+        if (seg_loads != 0 && seg_loads != 0xFFFFFFFFu && seg_high - seg_low <= n * 0x10u) {
+            for (uint32_t c = ours + n * 0x10u; c < ours + size; c += 8) {
+                const uint32_t w0 = (uint32_t)MEM_W(0, (gpr)(int32_t)c), w1 = (uint32_t)MEM_W(4, (gpr)(int32_t)c);
+                if ((w0 >> 24) == 0x01) {
+                    MEM_W(4, (gpr)(int32_t)c) = (int32_t)((ours + ((w1 & 0x00FFFFFFu) - seg_low)) & 0x1FFFFFFFu);
+                    seg_moved++;
+                }
+            }
+        }
         gold_colours(rdram, ours, n);
-        say("[gold] the %s made gold: its model (%u vertices at %08X, its list at %08X, %u bytes in all) copied to %08X, %u addresses moved; "
-            "the list %s its vertices; its first commands:%s", golds[g].name, (unsigned)n, (unsigned)from, (unsigned)dl, (unsigned)size,
-            (unsigned)ours, (unsigned)moved, lit ? "LIGHTS" : "doesn't light", ops.c_str());
+        say("[gold] the %s made gold: its model (%u vertices at %08X, its list at %08X, %u bytes in all) copied to %08X, %u addresses moved, "
+            "%u vertex loads by segment %X made ours (offsets %X to %X); the list %s its vertices; its first commands:%s; its first loads:%s",
+            golds[g].name, (unsigned)n, (unsigned)from, (unsigned)dl, (unsigned)size, (unsigned)ours, (unsigned)moved, (unsigned)seg_moved,
+            (unsigned)(seg == 0xFF ? 0 : seg), (unsigned)(seg_low == 0xFFFFFFFFu ? 0 : seg_low), (unsigned)seg_high,
+            lit ? "LIGHTS" : "doesn't light", ops.c_str(), loads.c_str());
         return ours + n * 0x10u;
     }
 
