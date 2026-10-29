@@ -3926,6 +3926,7 @@ bool conker::netsession::input_for_game(int port, bool* plugged, uint16_t* butto
     if (swapped && rdram != nullptr) {
         conker::look_aim::no_weapon_walk(rdram, port, buttons);
         conker::look_aim::gun_side_walk(rdram, port, buttons);
+        conker::look_aim::shotgun_z_strafe(rdram, port, buttons);   // (possess127)
     }
     return true;
 }

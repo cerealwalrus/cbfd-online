@@ -43,14 +43,15 @@ namespace {
         uint32_t prop;     // the prop's (its setup record's +0x10: not the pickup's)
         int16_t x, y, z;
         uint8_t id;      // given as the level loads (0: none yet)
+        int pickup;      // (possess127) its entry in the match's pickups (-1: none yet)
     };
     // Where player 1 held R-Look in the room (the possess115 test's [pos] lines). (possess118) A weapon's prop has a kind of its own, not
     // its pickup's: the sniper rifle's 0x56 (ids 11 and 12, the pickups of kind 24), the revolver's 0x53 (7, 19: 23), the knives' 0x3C
     // (5, 17: 14), the possess116 test's [weapons] lines; possess116 looked for the pickups' kinds among the props and found none.
     Gold golds[3] = {
-        { "sniper rifle", 0x24, 0x56, -63, -1408, 219, 0 },
-        { "revolver", 0x23, 0x53, -422, -1408, 30, 0 },
-        { "knives", 0x14, 0x3C, 96, -1408, -148, 0 },
+        { "sniper rifle", 0x24, 0x56, -63, -1408, 219, 0, -1 },
+        { "revolver", 0x23, 0x53, -422, -1408, 30, 0, -1 },
+        { "knives", 0x14, 0x3C, 96, -1408, -148, 0, -1 },
     };
     bool golds_made = false;
 
@@ -89,6 +90,7 @@ extern "C" void conker_gold_props(uint8_t* rdram, recomp_context* ctx) {
     golds_made = false;
     for (Gold& g : golds) {
         g.id = 0;
+        g.pickup = -1;
     }
     if ((int32_t)MEM_W(0, (gpr)(int32_t)scene_now) != total_war) {
         return;
@@ -198,7 +200,7 @@ extern "C" void conker_gold_pickups(uint8_t* rdram, recomp_context* ctx) {
     if (count <= 0 || count > pickups_most) {
         return;
     }
-    for (const Gold& g : golds) {
+    for (Gold& g : golds) {
         if (g.id == 0) {
             continue;
         }
@@ -212,6 +214,7 @@ extern "C" void conker_gold_pickups(uint8_t* rdram, recomp_context* ctx) {
             }
         }
         if (have >= 0) {
+            g.pickup = have;
             continue;
         }
         if (like < 0 || count >= pickups_most) {
@@ -228,6 +231,7 @@ extern "C" void conker_gold_pickups(uint8_t* rdram, recomp_context* ctx) {
         say("[gold] the %s's pickup made: %d (id %u, kind %02X), a copy of pickup %d (id %u): state %d, flags %X", g.name, (int)count,
             (unsigned)g.id, (unsigned)g.kind, like, (unsigned)MEM_BU(0xEF0 + 4 * (uint32_t)like + 3, b), (int)MEM_W(0x1070 + 4 * (uint32_t)count, b),
             (unsigned)MEM_W(0x11F4 + 4 * (uint32_t)count, b));
+        g.pickup = count;
         count++;
         MEM_W(0xEA4, b) = count;
     }
@@ -250,7 +254,7 @@ extern "C" void func_1511DF6C(uint8_t* rdram, recomp_context* ctx);
 // they are. [gold] lines: what the copy was, and whether the list lights its vertices (then the colours aren't what's drawn).
 namespace {
     constexpr uint32_t models_ours = 0x80FF0000;   // ours: the gold weapons' models (0x5000 each, up to 0x80FFF000)
-    struct GoldModel { uint32_t prop = 0, dl = 0, from_dl = 0; };
+    struct GoldModel { uint32_t prop = 0, dl = 0, from_dl = 0, from_vertices = 0, vertices = 0, ours = 0; };
     GoldModel gold_models[3];
     constexpr uint32_t model_room = 0x5000;   // each gold weapon's own room in ours
 
@@ -269,10 +273,38 @@ namespace {
             const gpr c = (gpr)(int32_t)(at + v * 0x10u + 0xCu);
             const uint32_t r = MEM_BU(0, c), gr = MEM_BU(1, c), b = MEM_BU(2, c);
             const uint32_t l = (r * 30u + gr * 59u + b * 11u) / 100u;
-            MEM_B(0, c) = (int8_t)(uint8_t)std::min(255u, 60u + l * 90u / 100u);
-            MEM_B(1, c) = (int8_t)(uint8_t)std::min(255u, 40u + l * 70u / 100u);
-            MEM_B(2, c) = (int8_t)(uint8_t)std::min(255u, l * 15u / 100u);
+            // (possess127) brighter: the Rare logo's gold from a deep amber in the shadows to a pale yellow at the light, which the list's
+            // colour combiner adds over the texture (gold_combiner): possess123's (60 + 0.9 l, 40 + 0.7 l, 0.15 l) times the dark texture
+            // came out a dull olive (the possess125 test)
+            MEM_B(0, c) = (int8_t)(uint8_t)std::min(255u, 150u + l * 45u / 100u);
+            MEM_B(1, c) = (int8_t)(uint8_t)std::min(255u, 95u + l * 50u / 100u);
+            MEM_B(2, c) = (int8_t)(uint8_t)std::min(255u, 8u + l * 12u / 100u);
         }
+    }
+
+    // (possess127) A G_SETCOMBINE (0xFC) of the copied list made shiny gold: the colour of each cycle (a - b) * c + d as TEXEL0 * SHADE +
+    // SHADE, the texture's detail over the vertices' gold and brighter for it, where the weapon's own was TEXEL0 * SHADE (the vertices' colour
+    // times the texture: the dark gun metal kept it dull). The second cycle too when it's the first's (one cycle's lists set both alike);
+    // its alpha as it was. Returns whether it changed.
+    bool gold_combiner(uint8_t* rdram, uint32_t c) {
+        const gpr at = (gpr)(int32_t)c;
+        uint32_t w0 = (uint32_t)MEM_W(0, at), w1 = (uint32_t)MEM_W(4, at);
+        const uint32_t a0 = (w0 >> 20) & 0xF, c0 = (w0 >> 15) & 0x1F, a1 = (w0 >> 5) & 0xF, c1 = w0 & 0x1F;
+        const uint32_t b0 = (w1 >> 28) & 0xF, b1 = (w1 >> 24) & 0xF, d0 = (w1 >> 15) & 0x7, d1 = (w1 >> 6) & 0x7;
+        const bool texture_shade = a0 == 1 && c0 == 4;   // (TEXEL0 times SHADE, as a weapon's own)
+        if (!texture_shade) {
+            return false;
+        }
+        const bool second_alike = a1 == a0 && c1 == c0 && b1 == b0 && d1 == d0;
+        w0 = (w0 & ~((0xFu << 20) | (0x1Fu << 15))) | (1u << 20) | (4u << 15);
+        w1 = (w1 & ~((0xFu << 28) | (0x7u << 15))) | (15u << 28) | (4u << 15);
+        if (second_alike) {
+            w0 = (w0 & ~((0xFu << 5) | 0x1Fu)) | (1u << 5) | 4u;
+            w1 = (w1 & ~((0xFu << 24) | (0x7u << 6))) | (15u << 24) | (4u << 6);
+        }
+        MEM_W(0, at) = (int32_t)w0;
+        MEM_W(4, at) = (int32_t)w1;
+        return true;
     }
 
     // the gold copy of a prop's model: its list's address in ours, or 0
@@ -362,6 +394,26 @@ namespace {
             }
         }
         gold_colours(rdram, ours, n);
+        uint32_t combiners = 0, shiny = 0;
+        std::string combines;
+        for (uint32_t c = ours + n * 0x10u; c < ours + size; c += 8) {
+            if (((uint32_t)MEM_W(0, (gpr)(int32_t)c) >> 24) != 0xFC) {
+                continue;
+            }
+            if (combines.size() < 3 * 18) {
+                char piece[24];
+                std::snprintf(piece, sizeof(piece), " %06X:%08X", (unsigned)((uint32_t)MEM_W(0, (gpr)(int32_t)c) & 0xFFFFFFu),
+                    (unsigned)MEM_W(4, (gpr)(int32_t)c));
+                combines += piece;
+            }
+            combiners++;
+            shiny += gold_combiner(rdram, c) ? 1u : 0u;
+        }
+        say("[gold] the %s's colour combiners: %u in its list, %u made shiny gold (TEXEL0 x SHADE + SHADE); they were:%s", golds[g].name,
+            (unsigned)combiners, (unsigned)shiny, combines.c_str());
+        gold_models[g].from_vertices = from;
+        gold_models[g].vertices = n;
+        gold_models[g].ours = ours;
         say("[gold] the %s made gold: its model (%u vertices at %08X, its list at %08X, %u bytes in all) copied to %08X, %u addresses moved, "
             "%u vertex loads by segment %X made ours (offsets %X to %X); the list %s its vertices; its first commands:%s; its first loads:%s",
             golds[g].name, (unsigned)n, (unsigned)from, (unsigned)dl, (unsigned)size, (unsigned)ours, (unsigned)moved, (unsigned)seg_moved,
@@ -424,5 +476,196 @@ extern "C" void conker_gold_run(uint8_t* rdram, recomp_context* ctx) {
         ctx->r4 = p;
         func_1511DF6C(rdram, ctx);
         *ctx = saved;
+    }
+}
+
+// ---- (possess127) A gold weapon's own aim: the 5th player's view, scoped ----
+// The 5th player's view through a scope (the sniper rifle's, the revolver's, the knives') shows his own gun close up in front of him, where
+// players 1 to 4 see past nothing: func_1502E4C4 readies each character's drawing for the frame and, while its character is scoped (its
+// +0x31C's +0x197) or in first person (its camera's +0x2C 0x10000), marks it not drawn in view k (+0x74, a bit a view it isn't drawn in),
+// k its own index (0x1502E95C to 0x1502E9A0): a player's own view. The 5th player's character is the match's 5th, its bit 4, past the
+// views, and its view is drawn as view 1 (index 0), so it was never hidden there: his own body and gun drawn from inside the scope. A
+// player holding a gold weapon (the pickup it holds, the match's +0xEB0 a character, one of the gold weapons'), scoped, keeps that bit
+// clear: drawn in their own view as the 5th player is. From the game's memory, the same on every machine.
+namespace {
+    constexpr uint32_t characters = 0x800CC2D0;   // gObjects: 0x32C a character
+    constexpr uint32_t character_size = 0x32C;
+
+    int gold_held(uint8_t* rdram, int character) {
+        if (!golds_made || character < 0 || character >= 25) {
+            return -1;
+        }
+        const uint32_t block = (uint32_t)MEM_W(0, (gpr)(int32_t)pickups_block);
+        if (!kseg0(block)) {
+            return -1;
+        }
+        const int32_t held = MEM_W(0xEB0 + 4 * (uint32_t)character, (gpr)(int32_t)block);
+        for (int g = 0; g < 3; g++) {
+            if (golds[g].id != 0 && golds[g].pickup >= 0 && held == golds[g].pickup) {
+                return g;
+            }
+        }
+        return -1;
+    }
+    uint32_t scope_told = 0;
+    int scope_last[25];
+    bool scope_last_set = false;
+}
+
+// func_1502E4C4 at 0x1502E9A0: $t7 the character's +0x74 with its own view's bit set ($t4 as it was), $s1 the character.
+extern "C" void conker_gold_scope_body(uint8_t* rdram, recomp_context* ctx) {
+    if (!golds_made || (int32_t)MEM_W(0, (gpr)(int32_t)scene_now) != total_war) {
+        return;
+    }
+    const uint32_t c = (uint32_t)ctx->r17;
+    if (c < characters || (c - characters) % character_size != 0 || (c - characters) / character_size >= 25) {
+        return;
+    }
+    const int k = (int)((c - characters) / character_size);
+    const gpr aim = (gpr)(int32_t)MEM_W(0x31C, (gpr)(int32_t)c);
+    if (!kseg0((uint32_t)aim) || MEM_BU(0x197, aim) == 0) {
+        return;
+    }
+    const int g = gold_held(rdram, k);
+    if (!scope_last_set) {
+        scope_last_set = true;
+        for (int& v : scope_last) {
+            v = -2;
+        }
+    }
+    if (g != scope_last[k] && scope_told < 40) {
+        scope_told++;
+        say("[gold] character %d scoped with %s: %s", k, g >= 0 ? golds[g].name : "a weapon not gold",
+            g >= 0 ? "drawn in its own view (the 5th player's aim)" : "hidden from its own view, as the game has it");
+    }
+    scope_last[k] = g;
+    if (g >= 0) {
+        ctx->r15 = ctx->r12;
+    }
+}
+
+// ---- (possess127) Where a weapon in a hand is drawn: the frame's list walked ----
+// A gold weapon on the ground draws from its own gold copy (gold_model); in a hand it's the game's own again (the possess125 test). How the
+// hand's weapon is drawn isn't known yet: whether from the same model (its list called, its vertices loaded) or another. At the end of the
+// frame's list (func_1501878C, 0x15018C8C, from possess_test.cpp's hook), every 30 frames, the list is walked through the lists it calls
+// (segments as it sets them) and each call of a weapon's model (the sniper rifle's, the revolver's, the knives': the props' own, and our
+// gold copies) and each load of its vertices counted, with where from: [gold] [hand] lines, for the next step.
+namespace {
+    struct Walk {
+        uint8_t* rdram;
+        uint32_t seg[16] = {};
+        uint32_t steps = 0;
+        uint32_t calls[3][2] = {}, loads[3][2] = {};
+        uint32_t matrix = 0;
+        std::string samples[3];
+        uint32_t sampled[3] = {};
+
+        static bool phys_ok(uint32_t a) { return a < 0x00800000u && (a & 7u) == 0; }
+        uint32_t resolve(uint32_t a) const {
+            if ((a >> 24) == 0x80) {
+                return a & 0x1FFFFFFFu;
+            }
+            const uint32_t s = (a >> 24) & 0x0Fu;
+            return (s == 0 ? 0u : seg[s]) + (a & 0x00FFFFFFu);
+        }
+        uint32_t word(uint32_t phys) const { return (uint32_t)MEM_W(0, (gpr)(int32_t)(phys | 0x80000000u)); }
+        void note(int g, int which, bool call, uint32_t at, uint32_t list, int depth) {
+            (call ? calls : loads)[g][which]++;
+            if (sampled[g] < 4) {
+                sampled[g]++;
+                char piece[120];
+                std::snprintf(piece, sizeof(piece), " | %s %s at %06X in the list at %06X (depth %d, matrix %06X)", call ? "called" : "vertices",
+                    which == 0 ? "the game's" : "our gold", (unsigned)at, (unsigned)list, depth, (unsigned)matrix);
+                samples[g] += piece;
+            }
+        }
+        void run(uint32_t list, int depth, uint32_t end) {
+            for (uint32_t c = list; phys_ok(c) && steps < 400000u; c += 8) {
+                if (end != 0 && c >= end) {
+                    return;
+                }
+                steps++;
+                const uint32_t w0 = word(c), w1 = word(c + 4);
+                const uint32_t op = w0 >> 24;
+                if (op == 0xDF) {
+                    return;
+                }
+                if (op == 0xDB && ((w0 >> 16) & 0xFFu) == 0x06 && (w0 & 0xFFFFu) < 64u) {
+                    seg[(w0 & 0xFFFFu) / 4u] = w1 & 0x00FFFFFFu;
+                    continue;
+                }
+                if (op == 0xDA) {
+                    matrix = resolve(w1);
+                    continue;
+                }
+                if (op == 0x01) {
+                    const uint32_t a = resolve(w1);
+                    for (int g = 0; g < 3; g++) {
+                        const GoldModel& m = gold_models[g];
+                        const uint32_t game_v = m.from_vertices & 0x1FFFFFFFu, our_v = m.ours & 0x1FFFFFFFu;
+                        if (m.vertices != 0 && a >= game_v && a < game_v + m.vertices * 0x10u) {
+                            note(g, 0, false, c, list, depth);
+                        } else if (m.ours != 0 && a >= our_v && a < our_v + m.vertices * 0x10u) {
+                            note(g, 1, false, c, list, depth);
+                        }
+                    }
+                    continue;
+                }
+                if (op == 0xDE) {
+                    const uint32_t to = resolve(w1);
+                    for (int g = 0; g < 3; g++) {
+                        const GoldModel& m = gold_models[g];
+                        if (m.from_dl != 0 && to == (m.from_dl & 0x1FFFFFFFu)) {
+                            note(g, 0, true, c, list, depth);
+                        } else if (m.dl > 1 && to == (m.dl & 0x1FFFFFFFu)) {
+                            note(g, 1, true, c, list, depth);
+                        }
+                    }
+                    if (!phys_ok(to)) {
+                        continue;
+                    }
+                    if (((w0 >> 16) & 0xFFu) == 1) {   // (a branch: no return)
+                        c = to - 8;
+                        list = to;
+                        continue;
+                    }
+                    if (depth < 14) {
+                        run(to, depth + 1, 0);
+                    }
+                }
+            }
+        }
+    };
+    uint32_t hand_told = 0, hand_frames = 0;
+}
+
+void conker::gold_weapons::frame_end(uint8_t* rdram, uint32_t start, uint32_t end) {
+    if (!golds_made || (int32_t)MEM_W(0, (gpr)(int32_t)scene_now) != total_war || hand_told >= 120 || (++hand_frames % 30u) != 0) {
+        return;
+    }
+    if (!kseg0(start) || !kseg0(end) || end <= start || end - start > 0x100000u) {
+        return;
+    }
+    Walk w{ rdram };
+    w.run(start & 0x1FFFFFFFu, 0, end & 0x1FFFFFFFu);
+    // who holds a gold weapon, and who holds which pickup
+    std::string held;
+    const uint32_t block = (uint32_t)MEM_W(0, (gpr)(int32_t)pickups_block);
+    if (kseg0(block)) {
+        for (int k = 0; k < 5; k++) {
+            const int32_t p = MEM_W(0xEB0 + 4 * (uint32_t)k, (gpr)(int32_t)block);
+            const gpr aim = (gpr)(int32_t)MEM_W(0x31C, (gpr)(int32_t)(characters + (uint32_t)k * character_size));
+            char piece[64];
+            std::snprintf(piece, sizeof(piece), " %d:%d(%02X%s)", k, (int)p, kseg0((uint32_t)aim) ? (unsigned)MEM_BU(0x78, aim) : 0u,
+                gold_held(rdram, k) >= 0 ? " gold" : "");
+            held += piece;
+        }
+    }
+    hand_told++;
+    say("[gold] [hand] f=%u the frame's list walked (%u commands): the characters' pickups (weapon out):%s", (unsigned)hand_frames, (unsigned)w.steps,
+        held.c_str());
+    for (int g = 0; g < 3; g++) {
+        say("[gold] [hand]   the %s's model: called %u times (the game's), %u (our gold); its vertices loaded %u (the game's), %u (ours)%s", golds[g].name,
+            (unsigned)w.calls[g][0], (unsigned)w.calls[g][1], (unsigned)w.loads[g][0], (unsigned)w.loads[g][1], w.samples[g].c_str());
     }
 }

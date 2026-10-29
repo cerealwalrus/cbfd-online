@@ -184,6 +184,9 @@ namespace conker {
         void no_weapon_walk(uint8_t* rdram, int port, uint16_t* buttons);
         // Swap Sticks online, the tommy gun's R-Look: the left stick to the side walks him (C-Up for the game, the way pressed kept).
         void gun_side_walk(uint8_t* rdram, int port, uint16_t* buttons);
+        // (possess127) Swap Sticks online, the shotgun aimed with Z held: the left stick's C-Left and C-Right kept from the game, from the
+        // frame's agreed buttons on every machine.
+        void shotgun_z_strafe(uint8_t* rdram, int port, uint16_t* buttons);
         // What the last read of this machine's controller did (set by frontend.cpp), for net_session.cpp to send along.
         void set_sampled_swap(bool swapped);
         // R is held online but the game's look mode hasn't started (about a second): the right stick does nothing yet.
@@ -468,6 +471,8 @@ namespace conker {
     namespace gold_weapons {
         // a prop or pickup id of one of the gold weapons, this level
         bool is_gold_id(int id);
+        // (possess127) the frame's list at its end (its start, its end): where the weapons' models are drawn, logged
+        void frame_end(uint8_t* rdram, uint32_t start, uint32_t end);
     }
 }
 namespace recompui { class LauncherMenu; class GameOptionsMenu; class GameOption; }

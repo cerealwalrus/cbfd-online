@@ -2994,6 +2994,11 @@ namespace {
 }
 static void conker_possess_view_local_body(uint8_t* rdram, recomp_context* ctx);
 extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
+    // (possess127) the gold weapons' look at the frame's list, before the extra view adds to it
+    if (in_rdram((uint32_t)ctx->r17)) {
+        conker::gold_weapons::frame_end(rdram, mem_word(rdram, list_start + 4 * (MEM_BU(0, (gpr)(int32_t)matrix_buffer) & 1u)),
+            mem_word(rdram, (uint32_t)ctx->r17));
+    }
     const uint32_t views_before = local_views;
     const auto t0 = std::chrono::steady_clock::now();
     conker_possess_view_local_body(rdram, ctx);

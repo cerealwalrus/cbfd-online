@@ -204,7 +204,9 @@ namespace {
         if (player >= 0 && player < signal_players) {
             last_aim_ticks[player] = std::chrono::steady_clock::now().time_since_epoch().count();
             const gpr character = (gpr)(int32_t)MEM_W(0x3D0, camera);
-            shotgun_aiming[player] = (((uint32_t)character & 0xFF000000u) == 0x80000000u) && (MEM_BU(0x4, character) == shotgun_aim_state);
+            // (possess127) or the look's own kind (+0x23E) the shotgun's: the co-op mansion's players aren't always in Conker's 0x3B
+            shotgun_aiming[player] = MEM_BU(0x23E, camera) == shotgun_aim_state ||
+                ((((uint32_t)character & 0xFF000000u) == 0x80000000u) && (MEM_BU(0x4, character) == shotgun_aim_state));
         }
     }
 
@@ -1812,6 +1814,54 @@ void conker::look_aim::no_weapon_walk(uint8_t* rdram, int port, uint16_t* button
 #endif
 }
 
+
+// (possess127) Aiming: Swap Sticks online, the shotgun aimed (the co-op mansion's, its look's kind 0x3B) with Z held: Z (the laser sight)
+// makes C-Left and C-Right turn the aim, and with the sticks swapped those are the left stick's strafe, so walking sideways while shooting
+// pulled the aim off the zombies in jerks, against the right stick (the possess126 test's inputs: R, Z and C-Right or C-Left together,
+// 0x2011, 0x2012, 0x201A, reaching the game, the camera swapping between the shotgun's look and its laser's). The input thread was to
+// keep them back (frontend.cpp, z_turns_aim) but goes by Conker's state, 0x3B, which the co-op mansion's players aren't always in. Here
+// they're kept back where the game takes the frame's agreed buttons, by the player's own look (its camera's kind, +0x23E, or its
+// character's state), the same on every machine. Forward and back (C-Up, C-Down) still walk him.
+void conker::look_aim::shotgun_z_strafe(uint8_t* rdram, int port, uint16_t* buttons) {
+#if defined(CONKER_RT64)
+    if ((*buttons & 0x2000) == 0 || (*buttons & 0x0003) == 0) {
+        return;
+    }
+    const int player = conker::netsession::player_of_port(port);
+    const bool fifth = fifth_walks(player);
+    if (player < 0 || (player >= 4 && !fifth)) {
+        return;
+    }
+    const uint32_t base = (uint32_t)MEM_W(0, (gpr)(int32_t)0x800DBFF0);
+    if ((base & 0xFF000000u) != 0x80000000u) {
+        return;
+    }
+    for (uint32_t i = fifth ? 4u : 0u; i < (fifth ? 5u : 4u); i++) {
+        const gpr camera = (gpr)(int32_t)(base + i * 0x9A0);
+        if ((int)MEM_BU(0x23D, camera) != player) {
+            continue;
+        }
+        const gpr character = (gpr)(int32_t)MEM_W(0x3D0, camera);
+        const bool character_ok = ((uint32_t)character & 0xFF000000u) == 0x80000000u;
+        const uint8_t kind = MEM_BU(0x23E, camera);
+        const uint8_t state = character_ok ? MEM_BU(0x4, character) : 0;
+        if (kind != shotgun_aim_state && state != shotgun_aim_state) {
+            return;
+        }
+        static uint32_t told = 0;
+        if (told < 12 && port == conker::netsession::local_slot()) {
+            told++;
+            char line[200];
+            std::snprintf(line, sizeof(line), "[shotgun] f=%u player %d: Z held aiming the shotgun (its look's kind %02X, his state %02X): the left stick's "
+                "C-%s kept from the game (it turned the aim)", (unsigned)conker::netsession::frame(), player + 1, (unsigned)kind, (unsigned)state,
+                (*buttons & 0x0001) ? "Right" : "Left");
+            conker::netsession::log(line);
+        }
+        *buttons &= (uint16_t)~0x0003u;
+        return;
+    }
+#endif
+}
 
 // Aiming: Swap Sticks online, the tommy gun's R-Look (kinds 0x38 and 0x3A, The Vault): of the C-buttons the left stick presses only C-Up
 // and C-Down walk him there, C-Left and C-Right don't (the test: forward and back, never to the side). Pressed to the side, the game
