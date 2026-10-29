@@ -1382,6 +1382,49 @@ namespace {
 void conker_possess_fifth_death_screen(uint8_t* rdram, recomp_context* ctx);   // (possess88, below)
 
 // func_15122AE0, 0x15122C18: the game's cameras have run this frame.
+// (possess115 diagnostics) The 5th player aims the revolver and the sniper rifle in the first person (the second aiming mode, func_15126378,
+// the scope's), players 1 to 4 in R-Look (possess114's test). func_15126378 goes into the scope for those weapons (the look kind, +0x23E,
+// 0x23 and 0x24) with R held (+0x36C's record), its +0x3D4's +0x11A 2, +0x197 0, and its character's +0x104 0 and +0x28 0: for each
+// camera holding either, all of those, each time they change, to see which keeps players 1 to 4 out of it.
+namespace {
+    void scope_watch(uint8_t* rdram, uint32_t base) {
+        static uint32_t last[5][4] = {};
+        static uint32_t told = 0;
+        if (told >= 600) {
+            return;
+        }
+        for (uint32_t k = 0; k < 5; k++) {
+            const uint32_t camera = base + k * camera_size;
+            const uint8_t kind = MEM_BU(0x23E, (gpr)(int32_t)camera);
+            const uint32_t aim = word(rdram, camera + 0x3D4), ch = word(rdram, camera + 0x3D0), pad = word(rdram, camera + 0x36C);
+            if (!in_rdram(aim) || !in_rdram(ch)) {
+                continue;
+            }
+            const bool watched = kind == 0x23 || kind == 0x24;
+            const uint32_t held = in_rdram(pad) ? (uint32_t)MEM_HU(0, (gpr)(int32_t)pad) : 0xFFFFu;
+            const uint32_t key[4] = {
+                (uint32_t)kind | (held << 16),
+                (uint32_t)MEM_BU(0x11A, (gpr)(int32_t)aim) | ((uint32_t)MEM_BU(0x197, (gpr)(int32_t)aim) << 8) |
+                    ((uint32_t)MEM_BU(0x104, (gpr)(int32_t)ch) << 16) | ((uint32_t)MEM_BU(0x78, (gpr)(int32_t)aim) << 24),
+                (uint32_t)(int32_t)position(rdram, ch, 0x28),
+                ((uint32_t)(uint16_t)MEM_H(0x73C, (gpr)(int32_t)camera)) | ((uint32_t)MEM_W(0x2C, (gpr)(int32_t)camera) << 16) };
+            const bool was = (last[k][0] & 0xFFu) == 0x23 || (last[k][0] & 0xFFu) == 0x24;
+            if ((!watched && !was) || std::memcmp(key, last[k], sizeof(key)) == 0) {
+                continue;
+            }
+            std::memcpy(last[k], key, sizeof(key));
+            told++;
+            log("f=%u [scope] camera %u (player %u): kind %02X, held %04X (R %d); +0x3D4's +0x11A %u, +0x197 %u, +0x194 %u, +0x78 %02X; "
+                "its character %08X: +0x104 %u, +0x28 %.1f, +0x65 %u; the look's stage %d, +0x2C %08X, +0x5F0 %08X", (unsigned)frames, k,
+                (unsigned)MEM_BU(0x23D, (gpr)(int32_t)camera), (unsigned)kind, held, (held & 0x10u) != 0 ? 1 : 0,
+                (unsigned)MEM_BU(0x11A, (gpr)(int32_t)aim), (unsigned)MEM_BU(0x197, (gpr)(int32_t)aim), (unsigned)MEM_BU(0x194, (gpr)(int32_t)aim),
+                (unsigned)MEM_BU(0x78, (gpr)(int32_t)aim), ch, (unsigned)MEM_BU(0x104, (gpr)(int32_t)ch), position(rdram, ch, 0x28),
+                (unsigned)MEM_BU(0x65, (gpr)(int32_t)ch), (int)MEM_H(0x73C, (gpr)(int32_t)camera), (unsigned)MEM_W(0x2C, (gpr)(int32_t)camera),
+                (unsigned)MEM_W(0x5F0, (gpr)(int32_t)camera));
+        }
+    }
+}
+
 extern "C" void conker_possess_camera_frame(uint8_t* rdram, recomp_context* ctx) {
     if (hooks_off() || MEM_BU(0, (gpr)(int32_t)multiplayer) == 0 || (!extra_wanted && !extra_ready)) {
         return;
@@ -1390,6 +1433,7 @@ extern "C" void conker_possess_camera_frame(uint8_t* rdram, recomp_context* ctx)
     if (!in_rdram(base)) {
         return;
     }
+    scope_watch(rdram, base);   // (possess115 diagnostics)
     const uint32_t camera = base + (uint32_t)extra * camera_size;
     const recomp_context saved = *ctx;
     if (!extra_ready) {
@@ -3148,9 +3192,13 @@ static void conker_possess_view_local_body(uint8_t* rdram, recomp_context* ctx) 
             call0(func_151670C0);
             call0(func_15177A94);
         }
-        if (MEM_BU(0, (gpr)(int32_t)0x800BEAC0) == 0) {
-            call0(func_151814FC);
-        }
+        // (possess115) func_151814FC (the players' death screens, stepped by each player's character's state) is no longer run again
+        // here: player 1's entries of the HUD's tables are the 5th player's for the view (possess25), so player 1's death screen was
+        // stepped with the 5th player's fade. With player 1 out of the match (possess114's test, from f=5720) its state turned the 5th
+        // player's fade back to black each frame of its comeback, so the view's passes (func_1517EFAC: fully faded) drew the sky alone
+        // while the HUD, from ours (fifth_hud), faded in over it: 12 or 13 frames of green at every comeback (f=7271 to 7283, 7799 to
+        // 7811, 0 objects drawn), none while player 1 was in. The 5th player's death screen is stepped once a frame already, as a
+        // player's (conker_possess_fifth_death_screen), and what this would change is put back after the view anyway.
         call0(func_1517F75C);
         call0(func_1517F7B4);
         call0(func_15036148);
