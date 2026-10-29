@@ -2572,6 +2572,16 @@ namespace {
         if (kseg0(end_glow) && (MEM_BU(0xAC, (gpr)(int32_t)end_glow) & 1u) != 0) {
             was_on |= 16u;
         }
+        // (possess156) the ray from the gun to the dot: the laser sight's own drawing (func_151019C4, $a0 the laser sight, $a1 the view)
+        // leaves it out of its holder's own view (its +0x132) while he's scoped, else draws it while its +0x133's bit 0 is on. His laser's
+        // own view is his extra camera's, 4, and his view is drawn as view 1 (0): the ray drawn in it (the possess155 test's screenshot).
+        // Here, in his view alone (the game's memory is put back after it), his laser's own view is view 1, as player 1's is in his: the
+        // ray left out, the dot and the light it casts drawn as player 1 sees his. (possess150 took its bit 0 off: the ray went, with the
+        // dot and the light, which it took off as well.)
+        if (MEM_BU(0x132, (gpr)(int32_t)laser) != 0) {
+            was_on |= 32u;
+            MEM_B(0x132, (gpr)(int32_t)laser) = 0;
+        }
         return was_on;
     }
 
@@ -2585,10 +2595,10 @@ namespace {
             if (moved) {
                 moved_told++;
             }
-            say("[fifth] the 5th player scoped (a weapon not gold): his laser's beam and glow at the gun taken off in his own view %s; of it on:%s%s%s%s%s%s"
+            say("[fifth] the 5th player scoped (a weapon not gold): his laser's beam and glow at the gun taken off in his own view %s; of it on:%s%s%s%s%s%s%s"
                 "%s", where == 0 ? "as it begins" : "after the laser sight ran again inside it (its dot, light and end put back as the frame had them)",
                 (was_on & 1u) ? " the glow at the gun" : "", (was_on & 2u) ? " the dot" : "", (was_on & 4u) ? " the light" : "",
-                (was_on & 8u) ? " the beam" : "", (was_on & 16u) ? " the glow at its end" : "", was_on == 0 ? " none" : "",
+                (was_on & 8u) ? " the beam" : "", (was_on & 16u) ? " the glow at its end" : "", (was_on & 32u) ? " (its own view made view 1: the ray left out)" : "", was_on == 0 ? " none" : "",
                 where == 1 ? (std::string("; the run inside it had moved the dot ") + std::to_string((int)dot_moved) + " and the laser's start " +
                     std::to_string((int)start_moved)).c_str() : "");
         }
