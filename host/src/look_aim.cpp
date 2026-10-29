@@ -348,7 +348,7 @@ void conker::look_aim::add_camera_options(recomp::config::Config& config) {
     config.add_enum_option(options::stick_invert, "Stick: Invert Aiming",
         "Inverts the stick in R-Look (hold R and look around) and in the second aiming mode (e.g. the sniper scope, the magnum, throwables), separately from the mouse and gyro. <recomp-color primary>Invert Y</recomp-color> is the default and matches the original game: pushing the stick up looks down.",
         invert, Invert::Y);
-    // (possess64, possess124, possess126) Aiming: Lock-On taken out of the launcher for now: the lock-on is off for everyone, online or not, but for the shotgun's aim (conker_aim_lock_on)
+    // (possess64, possess124, possess139) Aiming: Lock-On taken out of the launcher: the lock-on is off for everyone, online or not, every weapon (conker_aim_lock_on)
 }
 
 // The Mouse & Gyro tab. The sensitivities are RecompFrontend's options (same ids, so saved values carry
@@ -438,12 +438,9 @@ extern "C" void conker_aim_lock_on(uint8_t* rdram, recomp_context* ctx) {
 #if defined(CONKER_RT64)
     // (possess64, possess124) off for everyone, online or not, the setting gone from the launcher for now: every machine reads the flag
     // as clear for every player, so they all do the same (possess117 had turned it back on; possess124 undoes that).
-    // (possess126) Except the shotgun's aim (kind 0x3B, the co-op mansion's): the rest of its aim (the laser, Conker's turn) still
-    // follows the lock-on's target, so with the flag clear here the two fought and the aim jerked away from the zombies; it locks on
-    // as the original game does. The kind is the same on every machine, so they all still do the same.
-    if (((uint32_t)ctx->r4 & 0xFF000000u) == 0x80000000u && MEM_BU(0x4, ctx->r4) == 0x3B) {
-        return;
-    }
+    // (possess139) possess126's exception for the shotgun (Conker's state 0x3B) taken out: the co-op mansion's players are in 0x90, so it
+    // never applied there, and the shotgun's jerks were the strafe's (possess128-132). Off for every weapon, every player, always.
+    (void)rdram;
     ctx->r9 = 0;
 #endif
 }
