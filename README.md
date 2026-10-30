@@ -4,11 +4,23 @@
 
 **CBFD Online** puts Conker's Bad Fur Day's multiplayer online: up to 5 players, each on their own PC with their own full screen. No split-screen.
 
+### Play now
+
 - Every multiplayer mode from the game, played online, with every character unlocked
+- Up to 5 players, with computer players to fill the teams (up to 10 on a team)
 - 4 player co-op through the mansion, everyone as the character they picked
-- Golden weapons in Total War
-- Host or join from the launcher, with chat, nicknames and automatic updates
+- Golden sniper rifle, revolver and knives in Total War
+- A steady R-Look aiming camera, a Grenade button of its own and D-pad strafing
+- Every player hears the game from their own camera
+- Host or join from the launcher, with chat, nicknames, ping and one-click updates
 - A pause menu just for you, while the game carries on for everyone else
+
+### Coming next
+
+- **12 players online**, with an in-game server browser to find and join games
+- **Full 4 player co-op**: fully playable zombie and war campaigns
+- **Horde mode**: zombie survival
+- **Completely revamped online races**
 
 What's changed is in the [release notes](https://github.com/cerealwalrus/cbfd-online/releases/latest), and how it works in [docs/online-multiplayer.md](docs/online-multiplayer.md).
 
