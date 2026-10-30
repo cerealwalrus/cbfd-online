@@ -22,6 +22,14 @@ namespace conker::transport {
         constexpr size_t bulk_chunk = 16 * 1024;
         constexpr size_t bulk_queue_limit = 24;   // ENet commands allowed to be waiting before the next chunk is handed over
         constexpr auto close_grace = std::chrono::seconds(3);   // a connection that doesn't finish closing by itself is cut after this
+
+        // (possess158) ENet drops a share of the unreliable packets it sends while it sees the round trip grow (its packet throttle,
+        // down by its deceleration each time): just when the session's second copies of the inputs and frames (sent unreliably on
+        // channel 3) are what gets the game past a lost packet. No deceleration: the throttle stays full and none are dropped. (ENet
+        // tells the other end too.)
+        void keep_unreliable_flowing(ENetPeer* peer) {
+            enet_peer_throttle_configure(peer, ENET_PEER_PACKET_THROTTLE_INTERVAL, ENET_PEER_PACKET_THROTTLE_ACCELERATION, 0);
+        }
     }
 
     struct Conn::State {
@@ -105,6 +113,7 @@ namespace conker::transport {
                     enet_address_get_host_ip(&ev.peer->address, text, sizeof(text));
                     st->remote = text;
                     enet_peer_timeout(ev.peer, timeout_limit, timeout_min_ms, timeout_max_ms);
+                    keep_unreliable_flowing(ev.peer);
                     by_peer[ev.peer] = st;
                     std::shared_ptr<Conn> conn(new Conn());
                     conn->state = st;
@@ -187,6 +196,14 @@ namespace conker::transport {
                     }
                     else if (!job.close && job.channel == 2) {
                         st.bulk_urgent.push_back(std::move(job.data));
+                    }
+                    else if (!job.close && job.channel == unreliable_channel) {
+                        // (possess158) out at once and on its own: not resent, not held up by anything lost before it, and nothing
+                        // waits for it (the session sends what it carries reliably too)
+                        ENetPacket* packet = enet_packet_create(job.data.data(), job.data.size(), ENET_PACKET_FLAG_UNSEQUENCED);
+                        if (packet != nullptr && enet_peer_send(st.peer, 0, packet) < 0) {
+                            enet_packet_destroy(packet);
+                        }
                     }
                     else if (!job.close) {
                         ENetPacket* packet = enet_packet_create(job.data.data(), job.data.size(), ENET_PACKET_FLAG_RELIABLE);
@@ -338,7 +355,8 @@ namespace conker::transport {
     }
 
     bool Conn::send(const uint8_t* data, size_t size, int channel) {
-        if (state == nullptr || state->is_closed.load() || state->closing.load() || size == 0 || size > max_packet || channel < 0 || channel > 2) {
+        if (state == nullptr || state->is_closed.load() || state->closing.load() || size == 0 || size > max_packet || channel < 0 || channel > unreliable_channel ||
+            (channel == unreliable_channel && size > unreliable_most)) {
             return false;
         }
         Loop::Job job;
@@ -521,6 +539,7 @@ namespace conker::transport {
             return fail(was_cancelled ? 3 : 2);
         }
         enet_peer_timeout(connected, timeout_limit, timeout_min_ms, timeout_max_ms);
+        keep_unreliable_flowing(connected);
         auto loop = std::make_shared<Loop>();
         loop->host = host;
         loop->server = false;

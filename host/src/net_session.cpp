@@ -84,7 +84,7 @@ namespace {
 
     constexpr int max_players = 5;   // (possess-test: the 5th plays a bot's character, see five_players; the game has 4 controllers)
     constexpr uint32_t magic = 0x544E4243;  // "CBNT"
-    constexpr uint32_t protocol_version = 13;   // (13: 5 player slots, and the slot a joiner asks for in its Hello)
+    constexpr uint32_t protocol_version = 14;   // (13: 5 player slots, and the slot a joiner asks for in its Hello; 14: InputMore, FrameMore)
     constexpr uint32_t check_every = 30;
     constexpr uint32_t history = 1200;       // frames of inputs kept (for resyncs)
     constexpr uint32_t max_message = 64u << 20;
@@ -92,7 +92,17 @@ namespace {
     constexpr auto client_waits_for_host = std::chrono::seconds(10);
 
     enum Msg : uint8_t { Hello = 1, Welcome = 2, Start = 3, Input = 4, Frame = 5, Check = 6, ResyncRequest = 7, Snapshot = 8, FrameRngMsg = 9, DiagRequest = 10, DiagData = 11, LobbyInfo = 12, Refused = 13, Chat = 14, Ping = 15, Pong = 16,
-        SnapHashes = 17, SnapDiff = 18, DelayChange = 19 };
+        SnapHashes = 17, SnapDiff = 18, DelayChange = 19, InputMore = 20, FrameMore = 21 };
+
+    // (possess158) Every message goes reliably and in order (ENet's channel 0), so one lost packet held every one after it until ENet
+    // sent it again, and on a connection whose round trip jumps about ENet waits long before it does (its estimate was 125 to 200 ms,
+    // +-50 to 100, in the 5 player test: 400 to 500 ms before a resend, doubling at each loss): the internet player's link lost 10 to
+    // 23 packets in 10 s at a time for 7 minutes, and every machine waited 50 ms to 2 s, 326 times. Now each input a player sends and
+    // each frame the host sends out goes a second way too, with the last few before it: once, unreliably, on its own (InputMore,
+    // FrameMore, the transport's unreliable channel). Whichever copy comes first counts (the host keeps the first input of a frame, a
+    // player the first copy of a frame), so a lost packet costs a frame's time at most: the next one carries what it had.
+    constexpr uint32_t spare_frames = 6;         // inputs or frames in each spare copy (the one sent and the 5 before it)
+    constexpr size_t spare_bytes_most = 1100;    // (one datagram: conker::transport::unreliable_most)
 
     struct PlayerInput {
         uint8_t plugged = 0;
@@ -293,6 +303,13 @@ namespace {
                 return false;
             }
             return true;
+        }
+        // (possess158) a spare copy, unreliably (see spare_frames): nothing if it can't go, and the player isn't dropped for it
+        void send_spare(const std::vector<uint8_t>& bytes) {
+            std::lock_guard lock{ send_mutex };
+            if (alive && conn != nullptr) {
+                conn->send(bytes.data(), bytes.size(), conker::transport::unreliable_channel);
+            }
         }
         void drop() {
             alive = false;
@@ -500,14 +517,36 @@ namespace {
         return on;
     }
 
+    // (possess158) Four lanes, each its own chain of multiplies, so the processor runs them side by side: the game's 8 MB is hashed
+    // every 30 frames on every machine for the checks (take_check_info, on the game's thread), and as one chain it took about as long
+    // as a quarter of a frame, once a second. Every machine has the same build, so they agree as before.
     uint32_t hash_block(const uint8_t* p, size_t n) {
-        uint64_t h = 0x9E3779B97F4A7C15ull;
-        for (size_t i = 0; i + 8 <= n; i += 8) {
+        constexpr uint64_t prime = 0x100000001B3ull;
+        uint64_t h0 = 0x9E3779B97F4A7C15ull, h1 = 0xC2B2AE3D27D4EB4Full, h2 = 0x165667B19E3779F9ull, h3 = 0x27D4EB2F165667C5ull;
+        size_t i = 0;
+        for (; i + 32 <= n; i += 32) {
+            uint64_t a, b, c, d;
+            std::memcpy(&a, p + i, 8);
+            std::memcpy(&b, p + i + 8, 8);
+            std::memcpy(&c, p + i + 16, 8);
+            std::memcpy(&d, p + i + 24, 8);
+            h0 = (h0 ^ a) * prime;
+            h1 = (h1 ^ b) * prime;
+            h2 = (h2 ^ c) * prime;
+            h3 = (h3 ^ d) * prime;
+            h0 ^= h0 >> 29;
+            h1 ^= h1 >> 29;
+            h2 ^= h2 >> 29;
+            h3 ^= h3 >> 29;
+        }
+        for (; i + 8 <= n; i += 8) {
             uint64_t v;
             std::memcpy(&v, p + i, 8);
-            h = (h ^ v) * 0x100000001B3ull;
-            h ^= h >> 29;
+            h0 = (h0 ^ v) * prime;
+            h0 ^= h0 >> 29;
         }
+        uint64_t h = h0 ^ (h1 * 0x9E3779B97F4A7C15ull) ^ (h2 * 0xC2B2AE3D27D4EB4Full) ^ (h3 * 0x165667B19E3779F9ull);
+        h ^= h >> 31;
         return (uint32_t)(h ^ (h >> 32));
     }
 
@@ -837,6 +876,46 @@ namespace {
         return false;
     }
 
+    // (possess158) Mutex held (host). The spare copy of frame f and the frames before it (spare_frames), to every player: unreliably, so
+    // a frame lost on the way is in the next one's copy, a frame's time later, instead of waiting for ENet to send it again.
+    void send_spare_frames(uint32_t f) {
+        Writer w(FrameMore);
+        w.put((uint8_t)0);
+        uint8_t count = 0;
+        for (uint32_t k = 0; k < spare_frames && k <= f; k++) {
+            const auto it = ready.find(f - k);
+            if (it == ready.end()) {
+                break;
+            }
+            Writer one(FrameMore);
+            one.put(f - k);
+            for (int s = 0; s < max_players; s++) {
+                one.put_input(it->second.p[s]);
+            }
+            one.put(it->second.snap);
+            const size_t n = one.bytes.size() - 5;
+            if (w.bytes.size() + n > spare_bytes_most) {
+                break;
+            }
+            w.bytes.insert(w.bytes.end(), one.bytes.begin() + 5, one.bytes.end());
+            count++;
+        }
+        if (count == 0) {
+            return;
+        }
+        w.bytes[5] = count;
+        const auto& bytes = w.finish();
+        for (auto& peer : peers) {
+            if (peer->alive) {
+                peer->send_spare(bytes);
+            }
+        }
+    }
+
+    // (possess158) host: whose input came in last for each recent frame (the one that let it go out), for the log of the long waits
+    int input_completing_slot = -1;
+    std::array<std::pair<uint32_t, int>, 64> frame_completed_by{};
+
     // Mutex held. Sends every frame that all connected players' inputs are in for.
     void try_broadcast() {
         while (true) {
@@ -897,6 +976,8 @@ namespace {
                     peer->send_message(bytes);
                 }
             }
+            send_spare_frames(f);
+            frame_completed_by[f % frame_completed_by.size()] = { f, input_completing_slot };
             inbox.erase(f);
             next_broadcast++;
             if (f >= history) {
@@ -917,6 +998,7 @@ namespace {
         }
         entry = { true, in };
         input_since_join[slot] = true;
+        input_completing_slot = slot;
         try_broadcast();
     }
 
@@ -1347,6 +1429,17 @@ namespace {
                     host_store_input(peer->slot, frame, in);
                 }
             }
+            else if (type == InputMore) {
+                // (possess158) the spare copy of this player's last inputs (send_spare_inputs): the frames not in yet are taken from it
+                const uint8_t count = r.get<uint8_t>();
+                for (uint8_t i = 0; i < count && !r.bad; i++) {
+                    const uint32_t frame = r.get<uint32_t>();
+                    PlayerInput in = r.get_input();
+                    if (!r.bad) {
+                        host_store_input(peer->slot, frame, in);
+                    }
+                }
+            }
             else if (type == DiagRequest) {
                 const uint32_t frame = r.get<uint32_t>();
                 if (!r.bad) {
@@ -1636,6 +1729,27 @@ namespace {
                         if (f >= history) {
                             ready.erase(ready.begin(), ready.lower_bound(f - history));
                         }
+                    }
+                    break;
+                }
+                case FrameMore: {
+                    // (possess158) the host's spare copy of its last frames (send_spare_frames): the ones not here yet are taken from it
+                    const uint8_t count = r.get<uint8_t>();
+                    uint32_t newest = 0;
+                    for (uint8_t i = 0; i < count && !r.bad; i++) {
+                        const uint32_t f = r.get<uint32_t>();
+                        FrameInputs fi;
+                        for (int s = 0; s < max_players; s++) {
+                            fi.p[s] = r.get_input();
+                        }
+                        fi.snap = r.get<uint8_t>();
+                        if (!r.bad && ready.find(f) == ready.end()) {
+                            ready[f] = fi;
+                            newest = std::max(newest, f);
+                        }
+                    }
+                    if (newest >= history) {
+                        ready.erase(ready.begin(), ready.lower_bound(newest - history));
                     }
                     break;
                 }
@@ -2955,6 +3069,32 @@ void conker::netsession::note_halt(uint8_t* rdram, uint32_t vram, uint32_t retur
 }
 
 namespace {
+    // (possess158) Mutex held (a player). The spare copy of this machine's last inputs (spare_frames of sent_inputs, the newest first):
+    // unreliably, so an input lost on its way to the host is in the next one's copy, a frame's time later.
+    void send_spare_inputs() {
+        if (peers.empty() || sent_inputs.empty()) {
+            return;
+        }
+        Writer w(InputMore);
+        w.put((uint8_t)0);
+        uint8_t count = 0;
+        for (auto it = sent_inputs.rbegin(); it != sent_inputs.rend() && count < spare_frames; ++it) {
+            Writer one(InputMore);
+            one.put(it->first).put_input(it->second);
+            const size_t n = one.bytes.size() - 5;
+            if (w.bytes.size() + n > spare_bytes_most) {
+                break;
+            }
+            w.bytes.insert(w.bytes.end(), one.bytes.begin() + 5, one.bytes.end());
+            count++;
+        }
+        if (count == 0) {
+            return;
+        }
+        w.bytes[5] = count;
+        peers[0]->send_spare(w.finish());
+    }
+
     // Mutex held. This machine's part of frame g's inputs: a dedicated server's is its notes of finished sounds (slot 0's input comes
     // from the leader), the host's goes straight in, a client's goes to the host.
     void put_own_input(uint32_t g, const PlayerInput& in) {
@@ -2972,6 +3112,7 @@ namespace {
             if (sent_inputs.size() > 120) {
                 sent_inputs.erase(sent_inputs.begin());
             }
+            send_spare_inputs();
         }
     }
 
@@ -3651,6 +3792,23 @@ void conker::netsession::on_port_read(int port) {
     waited_frames++;
     if (ms > 50.0) {
         stalls++;
+        // (possess158) whose input the long waits were for (the host: the last one in; a player: the host's frame), the first 60 and
+        // every 25th after: the 5 player test's 326 waits said nothing of where they came from
+        if (stalls <= 60 || stalls % 25 == 0) {
+            if (is_host) {
+                const auto& by = frame_completed_by[f % frame_completed_by.size()];
+                if (by.first == f && by.second >= 0) {
+                    log_line("[net] f=%u waited %.0f ms for this frame (wait %llu): the last input in was player %d's", f, ms, (unsigned long long)stalls,
+                        by.second + 1);
+                }
+                else {
+                    log_line("[net] f=%u waited %.0f ms for this frame (wait %llu)", f, ms, (unsigned long long)stalls);
+                }
+            }
+            else {
+                log_line("[net] f=%u waited %.0f ms for the host's frame (wait %llu)", f, ms, (unsigned long long)stalls);
+            }
+        }
     }
     if (dedicated && is_host && f % 600 == 0) {
         static clock::time_point server_began = clock::now();

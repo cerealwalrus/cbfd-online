@@ -486,6 +486,9 @@ namespace conker {
         // (possess150) and as that view begins: the 5th player's own laser taken off in it while he's scoped with a weapon not gold (the
         // game's memory is put back after the view)
         void fifth_view_begin(uint8_t* rdram);
+        // (possess158) the game's lights list (D_800DCD78) cut at a link that isn't the game's memory, while the 5th player's view is drawn: true
+        // when it had to (see gold_weapons.cpp)
+        bool lights_list_guard(uint8_t* rdram, const char* where);
     }
 }
 namespace recompui { class LauncherMenu; class GameOptionsMenu; class GameOption; }

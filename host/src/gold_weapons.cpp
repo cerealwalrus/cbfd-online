@@ -2498,14 +2498,45 @@ namespace {
     // the laser sight's parts as the frame's own run left them, kept as the extra view begins
     struct LaserKept {
         bool have = false;
-        uint32_t laser = 0, dot = 0, light_data = 0, end_glow = 0;
+        uint32_t laser = 0, dot = 0, light_obj = 0, light_data = 0, end_glow = 0;
         uint8_t ends[0x18] = {};          // the laser's +0x34 to +0x4C: where it starts and ends
         uint8_t dot_place[0xC] = {};      // the dot's +0x34 to +0x40
         uint8_t dot_surface[0x14] = {};   // the dot's +0x110 to +0x124: its bit, and the surface it's on
-        uint8_t light[0x14] = {};         // the light's own (+0x14's): its place and its off bit
+        uint8_t light[0x14] = {};         // the light's own (+0x14's): its place and its off bit (+0x4 on: possess158)
         uint8_t end_place[0xC] = {};      // the end's glow's +0x40 to +0x4C
     };
     LaserKept laser_kept;
+
+    // (possess158) The light the laser casts is one of the game's dynamic lights: a block of 0x34 from the heap (func_1515D520), in
+    // the list at D_800DCD78 (+0x0 the next light, +0x5 to +0x8 its colour, +0x9 off, +0xB whose, +0xE to +0x13 its place;
+    // func_1515D5F8 makes one, func_1515F10C takes one out and frees it, func_1515D69C goes through them every frame). possess151 kept
+    // its first 0x14 bytes as the 5th player's view began and wrote them back after the laser sight ran again inside it, its link to
+    // the next light among them: a light taken out of the list in between (a muzzle flash or an explosion's, ending) was linked in
+    // again, freed, and the list went on into whatever the heap put there next. The 5 player test with every computer player: the
+    // game stopped on all five machines at once, func_1515D69C writing to 0x0023D883 inside the 5th player's view (its walk of the
+    // lights, called from possess_test.cpp's extra view). The link is never kept nor written now, and the light only written back
+    // while the laser still has it and it is still in the list.
+    constexpr uint32_t lights_head = 0x800DCD78;
+    constexpr uint32_t light_link_bytes = 4;
+    constexpr uint32_t lights_most = 2048;
+
+    bool light_link_ok(uint32_t link) {
+        return link >= 0x80000000u && link < 0x80800000u && (link & 3u) == 0;
+    }
+
+    bool light_listed(uint8_t* rdram, uint32_t light) {
+        uint32_t at = (uint32_t)MEM_W(0, (gpr)(int32_t)lights_head);
+        for (uint32_t n = 0; at != 0 && n < lights_most; n++) {
+            if (!light_link_ok(at)) {
+                return false;
+            }
+            if (at == light) {
+                return true;
+            }
+            at = (uint32_t)MEM_W(0, (gpr)(int32_t)at);
+        }
+        return false;
+    }
 
     void copy_out(uint8_t* rdram, uint32_t at, uint8_t* to, uint32_t n) {
         for (uint32_t i = 0; i < n; i++) {
@@ -2537,9 +2568,10 @@ namespace {
             copy_out(rdram, k.dot + 0x110u, k.dot_surface, sizeof(k.dot_surface));
         }
         const uint32_t light = (uint32_t)MEM_W(0x2C, b);
+        k.light_obj = kseg0(light) ? light : 0u;
         k.light_data = kseg0(light) ? (uint32_t)MEM_W(0x14, (gpr)(int32_t)light) : 0u;
         if (kseg0(k.light_data)) {
-            copy_out(rdram, k.light_data, k.light, sizeof(k.light));
+            copy_out(rdram, k.light_data + light_link_bytes, k.light + light_link_bytes, sizeof(k.light) - light_link_bytes);
         }
         k.end_glow = (uint32_t)MEM_W(0x34, b);
         if (kseg0(k.end_glow)) {
@@ -2665,14 +2697,39 @@ extern "C" void conker_fifth_laser_update(uint8_t* rdram, recomp_context* ctx) {
             copy_in(rdram, k.dot + 0x34u, k.dot_place, sizeof(k.dot_place));
             copy_in(rdram, k.dot + 0x110u, k.dot_surface, sizeof(k.dot_surface));
         }
-        if (kseg0(k.light_data)) {
-            copy_in(rdram, k.light_data, k.light, sizeof(k.light));
+        if (kseg0(k.light_data) && kseg0(k.light_obj) && (uint32_t)MEM_W(0x2C, (gpr)(int32_t)(laser + 0x110u)) == k.light_obj &&
+            (uint32_t)MEM_W(0x14, (gpr)(int32_t)k.light_obj) == k.light_data && light_listed(rdram, k.light_data)) {
+            copy_in(rdram, k.light_data + light_link_bytes, k.light + light_link_bytes, sizeof(k.light) - light_link_bytes);
         }
         if (kseg0(k.end_glow) && (uint32_t)MEM_W(0x34, (gpr)(int32_t)(laser + 0x110u)) == k.end_glow) {
             copy_in(rdram, k.end_glow + 0x40u, k.end_place, sizeof(k.end_place));
         }
     }
     fifth_laser_told_line(beam_off(rdram, laser), 1, dot_moved, start_moved);
+    conker::gold_weapons::lights_list_guard(rdram, "after the 5th player's laser ran again in his view");
+}
+
+// (possess158) The game's lights (D_800DCD78) gone through as func_1515D69C goes through them, while the 5th player's view is drawn
+// (the game's memory is put back after it): a link that isn't the game's memory (or a list longer than any the game makes, a loop) is
+// cut there, so the view draws the lights before it and nothing walks into the rest. True when it had to cut. [fifth] lines of each.
+bool conker::gold_weapons::lights_list_guard(uint8_t* rdram, const char* where) {
+    static uint32_t told = 0;
+    uint32_t previous = 0;
+    uint32_t at = (uint32_t)MEM_W(0, (gpr)(int32_t)lights_head);
+    for (uint32_t n = 0; at != 0; n++) {
+        if (!light_link_ok(at) || n >= lights_most) {
+            if (told < 12) {
+                told++;
+                say("[fifth] f=%u the game's lights list cut %s: light %u's link was %08X (from %08X)", (unsigned)conker::netsession::frame(), where,
+                    (unsigned)n, (unsigned)at, (unsigned)previous);
+            }
+            MEM_W(0, (gpr)(int32_t)(previous != 0 ? previous : lights_head)) = 0;
+            return true;
+        }
+        previous = at;
+        at = (uint32_t)MEM_W(0, (gpr)(int32_t)at);
+    }
+    return false;
 }
 
 // func_1502E4C4 at 0x1502E9D0, its end ($s1 the character, its +0x74 the views it's left out of): in the 5th player's view (the extra

@@ -19,6 +19,8 @@
 
 namespace conker::transport {
     constexpr size_t max_packet = 64u << 20;
+    constexpr int unreliable_channel = 3;
+    constexpr size_t unreliable_most = 1200;   // (within one datagram of ENet's 1392-byte MTU: an unreliable packet past it would be fragmented)
 
     // Starts the library; call before anything else. False if it can't.
     bool startup();
@@ -31,6 +33,8 @@ namespace conker::transport {
         // Queues one message. False when the connection is gone. Channel 0 is the game's (inputs, frames, pings); channel 1 is for big things
         // (snapshots): each channel is in order on its own, so a snapshot on its way doesn't hold the game's messages up behind it.
         // Channel 2 is channel 1 too, but its messages go ahead of channel 1's that haven't started going out (in their own order).
+        // (possess158) Channel 3 (unreliable_channel) is sent once, unreliably and out of order (ENet's unsequenced packets): it may
+        // never arrive, and nothing waits for it; up to unreliable_most bytes, one datagram.
         bool send(const uint8_t* data, size_t size, int channel = 0);
         // Waits for the next message; timeout_ms < 0 waits for ever. False: the connection is gone (closed() is true) or the wait ran out.
         bool receive(std::vector<uint8_t>& message, int timeout_ms = -1);

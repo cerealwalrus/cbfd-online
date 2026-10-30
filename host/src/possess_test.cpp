@@ -625,12 +625,17 @@ namespace {
                 (unsigned)(weapon_was[ch5] & 0xFF), (unsigned)(weapon_was[ch5] >> 8 & 0xFF), (unsigned)(weapon_was[ch5] >> 16));
             return;
         }
+        // (possess158: 300 of these a run at most: 15,488 of them in the 5 player test's 23 minutes, every machine's log written each line)
+        static uint32_t pickup_logs = 0;
         for (int32_t i = 0; i < pickups; i++) {
             const int32_t state = MEM_W(0x1070 + 4 * (uint32_t)i, at(block));
             if (state != pickup_state_was[i]) {
-                log("f=%u [weapons] pickup %d (id %u, type %X): its state %d -> %d (its holder %d)", (unsigned)frames, (int)i,
-                    (unsigned)MEM_BU(0xEF0 + 4 * (uint32_t)i + 3, at(block)), (unsigned)MEM_W(0x1174 + 4 * (uint32_t)i, at(block)),
-                    (int)pickup_state_was[i], (int)state, (int)MEM_W(0xF70 + 4 * (uint32_t)i, at(block)));
+                if (pickup_logs < 300) {
+                    pickup_logs++;
+                    log("f=%u [weapons] pickup %d (id %u, type %X): its state %d -> %d (its holder %d)", (unsigned)frames, (int)i,
+                        (unsigned)MEM_BU(0xEF0 + 4 * (uint32_t)i + 3, at(block)), (unsigned)MEM_W(0x1174 + 4 * (uint32_t)i, at(block)),
+                        (int)pickup_state_was[i], (int)state, (int)MEM_W(0xF70 + 4 * (uint32_t)i, at(block)));
+                }
                 pickup_state_was[i] = state;
             }
         }
@@ -3244,6 +3249,9 @@ static void conker_possess_view_local_body(uint8_t* rdram, recomp_context* ctx) 
         call0(func_1517F7B4);
         call0(func_15036148);
         // func_1501878C's, after func_15019130 (func_1501A680 adds the frame's first commands: not again here)
+        // (possess158) the game's lights (func_1515D69C goes through them) checked first: possess151's laser light put a link to a freed
+        // light back into them, and every machine stopped here at once (gold_weapons.cpp, lights_list_guard)
+        conker::gold_weapons::lights_list_guard(rdram, "as the 5th player's view readies its lights");
         call0(func_1515D69C);
         call0(func_15167310);
     }
