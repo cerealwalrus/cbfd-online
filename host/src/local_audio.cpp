@@ -1027,6 +1027,12 @@ namespace {
                     (uint16_t)half(rdram, d.first + 0x44) == d.second) {
                 stop_voice(rdram, ctx, d.first);
                 detached_stopped++;
+                if (detached_stopped <= 40) {   // (possess159) which sounds the host's notes cut short here
+                    char line[160];
+                    std::snprintf(line, sizeof(line), "[audio] f=%u sound %04X (voice %08X) stopped: the host's note said it had ended, it still played here",
+                        (unsigned)conker::netsession::frame(), (unsigned)d.second, (unsigned)d.first);
+                    conker::netsession::log(line);
+                }
             }
         }
         const uint32_t now = (uint32_t)conker::netsession::frame();
@@ -1118,6 +1124,12 @@ namespace {
             func_10017594(rdram, ctx);
             *ctx = saved;
             tails_stopped++;
+            if (tails_stopped <= 40) {   // (possess159) which sounds were still playing when their time was up
+                char line[160];
+                std::snprintf(line, sizeof(line), "[audio] f=%u sound %04X (voice %08X) stopped %u frames after another sound of its character came: it still played",
+                    (unsigned)now, (unsigned)t.sound, (unsigned)t.voice, tail_frames);
+                conker::netsession::log(line);
+            }
         }
         static uint32_t last_report = 0;
         if (now / 1800u != last_report) {

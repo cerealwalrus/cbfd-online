@@ -2548,6 +2548,26 @@ namespace {
             MEM_B(i, (gpr)(int32_t)at) = (int8_t)from[i];
         }
     }
+
+    // (possess159) A laser sight or one of its parts, [part, part + size), still a block in use in the game's heap (heap_watch.cpp's
+    // range_live: not a free block, not across a block's end). What's kept here between frames (the 5th player's and player 1's
+    // laser sights, as last seen) and what a laser sight points at outlive the objects: one let go of is the heap's memory again,
+    // soon a free block's links or another object, and a write through it there breaks it. The 5 player test with every computer
+    // player, the players on one team: every machine stopped at once inside the 5th player's view as he scoped a sniper rifle not
+    // gold, allocating from a free block whose link was another object's data (possess_test.cpp, heap_watch.cpp). Nothing is written
+    // to such a part now.
+    uint32_t parts_let_be = 0;
+    bool part_live(uint8_t* rdram, uint32_t part, uint32_t size) {
+        if (conker::heap::range_live(rdram, part, size)) {
+            return true;
+        }
+        parts_let_be++;
+        if (parts_let_be <= 12 || parts_let_be % 600 == 0) {
+            say("[fifth] f=%u a laser sight's part at %08X (%X bytes) is no longer a block in use: left as it is (%u times so far)",
+                (unsigned)conker::netsession::frame(), (unsigned)part, (unsigned)size, (unsigned)parts_let_be);
+        }
+        return false;
+    }
     float kept_float(const uint8_t* bytes, uint32_t off) {
         // (bytes as MEM_BU read them: the game's own order, a word's bytes most significant first)
         const uint32_t b = ((uint32_t)bytes[off] << 24) | ((uint32_t)bytes[off + 1] << 16) | ((uint32_t)bytes[off + 2] << 8) | bytes[off + 3];
@@ -2586,7 +2606,9 @@ namespace {
         uint32_t was_on = 0;
         const uint32_t glow = (uint32_t)MEM_W(0x24, b), dot = (uint32_t)MEM_W(0x28, b), light = (uint32_t)MEM_W(0x2C, b);
         const uint32_t beam = (uint32_t)MEM_W(0x30, b), end_glow = (uint32_t)MEM_W(0x34, b);
-        if (kseg0(glow) && (MEM_BU(0xD4, (gpr)(int32_t)glow) & 1u) != 0) {
+        // (possess159) each part written only while its memory is still a block in use (part_live): a part let go of keeps its old
+        // pointer here, its memory the heap's again
+        if (kseg0(glow) && (MEM_BU(0xD4, (gpr)(int32_t)glow) & 1u) != 0 && part_live(rdram, glow, 0xD8u)) {
             was_on |= 1u;
             MEM_B(0xD4, (gpr)(int32_t)glow) = (int8_t)(MEM_BU(0xD4, (gpr)(int32_t)glow) & ~1u);
         }
@@ -2599,7 +2621,7 @@ namespace {
                 was_on |= 4u;
             }
         }
-        if (kseg0(beam) && (MEM_BU(0x174, (gpr)(int32_t)beam) & 1u) != 0) {
+        if (kseg0(beam) && (MEM_BU(0x174, (gpr)(int32_t)beam) & 1u) != 0 && part_live(rdram, beam, 0x178u)) {
             was_on |= 8u;
             MEM_B(0x174, (gpr)(int32_t)beam) = (int8_t)(MEM_BU(0x174, (gpr)(int32_t)beam) & ~1u);
         }
@@ -2646,7 +2668,8 @@ void conker::gold_weapons::fifth_view_begin(uint8_t* rdram) {
     // ray was never seen there (the possess156 test: his gold sniper rifle's ray seen by players 2 to 4, not the 5th). Here, in that view
     // alone (the game's memory is put back after it; nothing but those checks reads +0x132), his laser's own view is none (0xFF), as
     // the laser checks' hooks already have it (fifth_own_laser): his ray drawn there as players 2 to 4 see it.
-    if (kseg0(first_laser) && (uint32_t)MEM_W(0x110, (gpr)(int32_t)first_laser) == characters && MEM_BU(0x132, (gpr)(int32_t)first_laser) == 0) {
+    if (kseg0(first_laser) && (uint32_t)MEM_W(0x110, (gpr)(int32_t)first_laser) == characters && MEM_BU(0x132, (gpr)(int32_t)first_laser) == 0 &&
+        part_live(rdram, first_laser, 0x148u)) {   // (possess159: and still a block in use)
         MEM_B(0x132, (gpr)(int32_t)first_laser) = (int8_t)0xFF;
         const uint32_t c0aim = (uint32_t)MEM_W(0x31C, (gpr)(int32_t)characters);
         const bool c0scoped = kseg0(c0aim) && MEM_BU(0x197, (gpr)(int32_t)c0aim) != 0;
@@ -2656,7 +2679,9 @@ void conker::gold_weapons::fifth_view_begin(uint8_t* rdram) {
                 "players 2 to 4 see it", (unsigned)conker::netsession::frame(), gold_held(rdram, 0) >= 0 ? "a gold weapon" : "a weapon not gold");
         }
     }
-    if (!fifth_laser_ok(rdram, fifth_laser)) {
+    // (possess159) his laser sight as last seen (a frame or more ago) only while it's still a block in use: a laser sight let go of (his
+    // weapon changed, or he died) keeps its holder at +0x110 in the freed memory, and beam_off wrote to it and what it pointed at
+    if (!fifth_laser_ok(rdram, fifth_laser) || !part_live(rdram, fifth_laser, 0x148u)) {
         return;
     }
     keep_laser(rdram, fifth_laser);
@@ -2664,6 +2689,19 @@ void conker::gold_weapons::fifth_view_begin(uint8_t* rdram) {
         return;
     }
     fifth_laser_told_line(beam_off(rdram, fifth_laser), 0, 0.0f, 0.0f);
+}
+
+// (possess159) the 5th player's view left off part way (possess_test.cpp: the heap found broken in it, or an access violation): nothing
+// kept for it is used again
+void conker::gold_weapons::fifth_view_abandoned() {
+    laser_kept.have = false;
+    beam_keep.on = false;
+    beam_diag.on = false;
+    fifth_glow_out = 0;
+}
+
+bool conker::gold_weapons::fifth_scoped_plain_now(uint8_t* rdram) {
+    return fifth_scoped_plain(rdram);
 }
 
 // func_15101378 at 0x151019B0, its end ($s0 the laser sight): run inside the 5th player's view
@@ -2681,7 +2719,8 @@ extern "C" void conker_fifth_laser_update(uint8_t* rdram, recomp_context* ctx) {
     }
     float dot_moved = 0.0f, start_moved = 0.0f;
     const LaserKept& k = laser_kept;
-    if (k.have && k.laser == laser) {
+    // (possess159) and each part written back only while it's still a block in use (part_live)
+    if (k.have && k.laser == laser && part_live(rdram, laser, 0x148u)) {
         auto dist = [&](uint32_t at, const uint8_t* kept) {
             float d2 = 0.0f;
             for (uint32_t i = 0; i < 3; i++) {
@@ -2692,7 +2731,7 @@ extern "C" void conker_fifth_laser_update(uint8_t* rdram, recomp_context* ctx) {
         };
         start_moved = dist(laser + 0x34u, k.ends);
         copy_in(rdram, laser + 0x34u, k.ends, sizeof(k.ends));
-        if (kseg0(k.dot) && (uint32_t)MEM_W(0x28, (gpr)(int32_t)(laser + 0x110u)) == k.dot) {
+        if (kseg0(k.dot) && (uint32_t)MEM_W(0x28, (gpr)(int32_t)(laser + 0x110u)) == k.dot && part_live(rdram, k.dot, 0x124u)) {
             dot_moved = dist(k.dot + 0x34u, k.dot_place);
             copy_in(rdram, k.dot + 0x34u, k.dot_place, sizeof(k.dot_place));
             copy_in(rdram, k.dot + 0x110u, k.dot_surface, sizeof(k.dot_surface));
@@ -2701,7 +2740,7 @@ extern "C" void conker_fifth_laser_update(uint8_t* rdram, recomp_context* ctx) {
             (uint32_t)MEM_W(0x14, (gpr)(int32_t)k.light_obj) == k.light_data && light_listed(rdram, k.light_data)) {
             copy_in(rdram, k.light_data + light_link_bytes, k.light + light_link_bytes, sizeof(k.light) - light_link_bytes);
         }
-        if (kseg0(k.end_glow) && (uint32_t)MEM_W(0x34, (gpr)(int32_t)(laser + 0x110u)) == k.end_glow) {
+        if (kseg0(k.end_glow) && (uint32_t)MEM_W(0x34, (gpr)(int32_t)(laser + 0x110u)) == k.end_glow && part_live(rdram, k.end_glow, 0x4Cu)) {
             copy_in(rdram, k.end_glow + 0x40u, k.end_place, sizeof(k.end_place));
         }
     }

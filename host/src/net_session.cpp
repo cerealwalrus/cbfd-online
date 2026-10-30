@@ -52,6 +52,7 @@
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
+#include <share.h>
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <dbghelp.h>
@@ -467,34 +468,71 @@ namespace {
         std::fflush(log_file);
     }
 
+    // (possess159) A log file opened for this window of the game alone: on Windows kept from the others' writing (_SH_DENYWR), and one
+    // another window of the game on this computer has open (a test of several players on one computer) is left to it (*in_use). The last
+    // run's is kept beside it first, as <name>.previous.txt (a new run would overwrite it).
+    FILE* open_unshared(const std::string& path, bool* in_use) {
+        std::error_code ec;
+        const std::filesystem::path current_log(path);
+        if (std::filesystem::exists(current_log, ec)) {
+#if defined(_WIN32)
+            FILE* probe = _fsopen(path.c_str(), "r+", _SH_DENYWR);
+            if (probe == nullptr) {
+                *in_use = true;
+                return nullptr;
+            }
+            std::fclose(probe);
+#endif
+            std::filesystem::path older = current_log;
+            older.replace_extension(".previous.txt");
+            std::filesystem::remove(older, ec);
+            std::filesystem::rename(current_log, older, ec);
+        }
+#if defined(_WIN32)
+        return _fsopen(path.c_str(), "w", _SH_DENYWR);
+#else
+        return std::fopen(path.c_str(), "w");
+#endif
+    }
+
     void open_log(const std::string& default_name) {
         if (log_file != nullptr) {
             return;
         }
         const char* env = SDL_getenv("CONKER_NET_LOG");
-        const std::string path = (env != nullptr && env[0] != 0) ? std::string(env) : default_name;
+        const bool named = env != nullptr && env[0] != 0;
+        const std::string path = named ? std::string(env) : default_name;
         if (!path.empty()) {
             // Beside the game, or where it was started from; if that can't be written to (a protected folder), in the
             // folder of the settings.
-            // (the last run's log is kept beside it, as <name>.previous.txt: a new run would overwrite it)
-            {
-                std::error_code rename_error;
-                const std::filesystem::path current_log(path);
-                if (std::filesystem::exists(current_log, rename_error)) {
-                    std::filesystem::path older = current_log;
-                    older.replace_extension(".previous.txt");
-                    std::filesystem::remove(older, rename_error);
-                    std::filesystem::rename(current_log, older, rename_error);
+            // (possess159) A second window of the game on this computer takes <name>_2 (up to _5): two windows joining wrote over each
+            // other in one netplay_join.txt (its lines cut into each other). A name given (CONKER_NET_LOG) is that name alone.
+            std::string chosen;
+            for (int k = 1; k <= 5 && log_file == nullptr; k++) {
+                if (k > 1 && named) {
+                    break;
+                }
+                std::string candidate = path;
+                if (k > 1) {
+                    const std::filesystem::path p(path);
+                    candidate = (p.parent_path() / (p.stem().string() + "_" + std::to_string(k) + p.extension().string())).string();
+                }
+                bool in_use = false;
+                log_file = open_unshared(candidate, &in_use);
+                if (log_file != nullptr) {
+                    chosen = candidate;
+                } else if (!in_use) {
+                    break;   // can't be written there at all: the settings' folder below
                 }
             }
-            log_file = std::fopen(path.c_str(), "w");
             std::error_code ec;
             if (log_file != nullptr) {
-                log_path = std::filesystem::absolute(path, ec).string();
+                log_path = std::filesystem::absolute(chosen, ec).string();
             }
             else {
                 const std::filesystem::path other = recomp::get_config_path() / std::filesystem::path(path).filename();
-                log_file = std::fopen(other.string().c_str(), "w");
+                bool in_use = false;
+                log_file = open_unshared(other.string(), &in_use);
                 if (log_file != nullptr) {
                     log_path = other.string();
                 }

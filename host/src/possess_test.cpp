@@ -50,6 +50,7 @@
 #include <vector>
 #if defined(_WIN32)
 #include <share.h>
+#include <Windows.h>   // (possess159: the view's guard, view_guarded, as well as the watchdog below)
 #endif
 
 #include "recomp.h"
@@ -2512,6 +2513,98 @@ namespace {
         explicit OthersStopped(uint8_t* rdram);
         ~OthersStopped();
     };
+
+    // ---- (possess159) The view left off part way, safely ----
+    // The 5 player test with every computer player, the players all on one team (the 0.11.1 tests): twice every machine stopped at once
+    // inside this view (0.11.0's in func_1515D69C, the game's lights; 0.11.1's in func_10003C6C, the heap's allocator splitting a free
+    // block whose link was another object's data, for func_1502C1A4), each time as the 5th player scoped a weapon not gold. What the view
+    // does to the game's memory is put back after it anyway, so the view can be let go of part way, as if it hadn't been drawn this
+    // frame: the frame's own memory put back (local_copy), the list's end as before it, this thread's priority as it was, and the
+    // threads stopped for it and the audio microcode let go. view_progress keeps what that needs as the view goes on, for both ways it can
+    // be left off: the heap found broken at one of its checks (view_heap_ok), and an access violation in it (view_guarded, Windows).
+    struct ViewInProgress {
+        bool active = false;          // the view is being drawn (an access violation then is the view's)
+        bool swapped = false;         // the frame's start is in place of the game's memory: the frame's own to be put back
+        uint32_t head = 0, list_before = 0;
+        uint32_t self = 0;
+        int32_t self_priority = 0;
+        bool priority_raised = false;
+        bool rsp_locked = false;      // conker::rsp_memory_mutex held (the audio microcode kept waiting)
+        recomp_context saved{};
+        std::vector<void*> stopped;   // the other threads stopped for it (OthersStopped's)
+    };
+    ViewInProgress view_progress;
+    uint32_t view_heap_stops = 0, view_faults = 0;
+
+    // The audio microcode (main.cpp, conker::rsp_memory_mutex) kept from running while the view has the frame's start in place of the
+    // game's memory: it runs on the runtime's own thread, alongside the game's, reading the game's sound data and writing the sound it
+    // mixes and each voice's state there. Run meanwhile, it read the frame start's copy, and what it wrote was undone as the view put
+    // the game's memory back: a piece of older sound in the mix, each voice's place in its sample set back (crackles, and sounds cut or
+    // garbled), on every machine with a 5th player (the view is drawn on each). Now each waits for the other (the microcode a few
+    // milliseconds at most).
+    struct RspHold {
+        void lock() {
+            conker::rsp_memory_mutex().lock();
+            view_progress.rsp_locked = true;
+        }
+        void unlock() {
+            if (view_progress.rsp_locked) {
+                view_progress.rsp_locked = false;
+                conker::rsp_memory_mutex().unlock();
+            }
+        }
+        ~RspHold() { unlock(); }
+    };
+
+    struct ViewActive {
+        ~ViewActive() { view_progress.active = false; }
+    };
+
+    // the view let go of where it got to (the frame's own memory back, as if it hadn't been drawn this frame)
+    void view_abandon(uint8_t* rdram, recomp_context* ctx) {
+        ViewInProgress& v = view_progress;
+        extra_view_now = false;
+        fifth_hud_swapped_now = false;
+        if (v.swapped) {
+            put_back(rdram, local_copy, 0, 0);
+            v.swapped = false;
+        }
+        if (v.head != 0) {
+            MEM_W(0, (gpr)(int32_t)v.head) = (int32_t)v.list_before;
+        }
+        if (v.priority_raised) {
+            MEM_W(4, (gpr)(int32_t)v.self) = v.self_priority;
+            v.priority_raised = false;
+        }
+        second_pass_at = 0;
+        fifth_view_at = 0;
+        kept_back.clear();
+        conker::gold_weapons::fifth_view_abandoned();
+        *ctx = v.saved;
+        if (v.rsp_locked) {
+            v.rsp_locked = false;
+            conker::rsp_memory_mutex().unlock();
+        }
+    }
+
+    // the game's heap as the view goes on: true when its lists are whole (heap_watch.cpp's check); else logged, the view to be let go of
+    bool view_heap_ok(uint8_t* rdram, const char* where) {
+        const conker::heap::Check c = conker::heap::check(rdram);
+        if (c.ok) {
+            return true;
+        }
+        view_heap_stops++;
+        if (view_heap_stops <= 12 || view_heap_stops % 300 == 0) {
+            const std::string details = conker::heap::describe(rdram, c);
+            char line[1600];
+            std::snprintf(line, sizeof(line), "[heap] f=%u the 5th player's view let go of %s: %s (%u times so far; the 5th player scoped with a weapon "
+                "not gold: %s) | %s", (unsigned)conker::netsession::frame(), where, c.what, (unsigned)view_heap_stops,
+                conker::gold_weapons::fifth_scoped_plain_now(rdram) ? "yes" : "no", details.c_str());
+            conker::netsession::log(line);
+            log("f=%u %s", (unsigned)frames, line);
+        }
+        return false;
+    }
 }
 
 // func_1501878C, 0x15018C8C (its frame's display list about to be closed; $s1 the address of the list's end): the view, see above.
@@ -3027,6 +3120,65 @@ namespace {
     std::chrono::steady_clock::time_point timing_last_frame{};
 }
 static void conker_possess_view_local_body(uint8_t* rdram, recomp_context* ctx);
+
+#if defined(_MSC_VER)
+namespace {
+    // (possess159) An access violation inside the 5th player's view (the game's code run again for it, or ours with it): the view let
+    // go of (view_abandon: the frame's own memory back), not the game stopped on every machine. Only while the view is being drawn
+    // (view_progress.active): any other still goes to the crash handler. view_guarded has nothing of C++ to unwind (the view's own,
+    // left as it was, is let go: the threads it stopped and the audio microcode it held are let go by view_recover).
+    struct ViewFault {
+        void* at = nullptr;
+        uintptr_t target = 0;
+        int writing = 0;
+    };
+    ViewFault view_fault;
+
+    int view_fault_filter(EXCEPTION_POINTERS* info) {
+        if (info == nullptr || info->ExceptionRecord == nullptr || info->ExceptionRecord->ExceptionCode != EXCEPTION_ACCESS_VIOLATION ||
+            !view_progress.active) {
+            return EXCEPTION_CONTINUE_SEARCH;
+        }
+        view_fault.at = info->ExceptionRecord->ExceptionAddress;
+        view_fault.writing = info->ExceptionRecord->NumberParameters >= 2 ? (int)info->ExceptionRecord->ExceptionInformation[0] : -1;
+        view_fault.target = info->ExceptionRecord->NumberParameters >= 2 ? (uintptr_t)info->ExceptionRecord->ExceptionInformation[1] : 0;
+        return EXCEPTION_EXECUTE_HANDLER;
+    }
+
+    bool view_guarded(uint8_t* rdram, recomp_context* ctx) {
+        __try {
+            conker_possess_view_local_body(rdram, ctx);
+            return true;
+        }
+        __except (view_fault_filter(GetExceptionInformation())) {
+            return false;
+        }
+    }
+
+    void view_recover(uint8_t* rdram, recomp_context* ctx) {
+        view_faults++;
+        view_abandon(rdram, ctx);
+        for (void* handle : view_progress.stopped) {
+            ResumeThread((HANDLE)handle);
+        }
+        view_progress.stopped.clear();
+        view_progress.active = false;
+        const uintptr_t base = (uintptr_t)GetModuleHandleW(nullptr);
+        const uintptr_t at = (uintptr_t)view_fault.at;
+        const uintptr_t target = view_fault.target, ram = (uintptr_t)rdram;
+        const uint32_t n64 = target >= ram && target - ram < 0x40000000u ? (uint32_t)(target - ram) + 0x80000000u : 0u;
+        char line[300];
+        std::snprintf(line, sizeof(line), "[guard] f=%u the 5th player's view let go of: an access violation in it (at the game's +%llX, %s %llX, "
+            "the N64's %08X), the game's memory put back as the frame left it (%u times so far; the 5th player scoped with a weapon not gold: %s)",
+            (unsigned)conker::netsession::frame(), (unsigned long long)(at - base), view_fault.writing == 1 ? "writing" : view_fault.writing == 0 ?
+            "reading" : "at", (unsigned long long)target, (unsigned)n64, (unsigned)view_faults,
+            conker::gold_weapons::fifth_scoped_plain_now(rdram) ? "yes" : "no");
+        conker::netsession::log(line);
+        log("f=%u %s", (unsigned)frames, line);
+    }
+}
+#endif
+
 extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
     // (possess127) the gold weapons' look at the frame's list, before the extra view adds to it
     if (in_rdram((uint32_t)ctx->r17)) {
@@ -3035,7 +3187,14 @@ extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
     }
     const uint32_t views_before = local_views;
     const auto t0 = std::chrono::steady_clock::now();
+#if defined(_MSC_VER)
+    if (!view_guarded(rdram, ctx)) {   // (possess159)
+        view_recover(rdram, ctx);
+        return;
+    }
+#else
     conker_possess_view_local_body(rdram, ctx);
+#endif
     if (local_views == views_before) {
         return;
     }
@@ -3076,6 +3235,14 @@ static void conker_possess_view_local_body(uint8_t* rdram, recomp_context* ctx) 
         return;
     }
     start_copied = false;
+    // (possess159) the view in progress (view_abandon, view_guarded), and the audio microcode kept from running while the game's memory
+    // is swapped (RspHold): taken before the game's memory is copied, so the copy has all it wrote
+    view_progress = ViewInProgress{};
+    view_progress.active = true;
+    view_progress.saved = *ctx;
+    ViewActive view_active;
+    RspHold rsp_hold;
+    rsp_hold.lock();
     OthersStopped others(rdram);
     local_copy.assign(rdram, rdram + game_size);
     const uint32_t list_before = mem_word(rdram, head);
@@ -3092,6 +3259,14 @@ static void conker_possess_view_local_body(uint8_t* rdram, recomp_context* ctx) 
     // the game's memory as before its views were drawn, but for the frame's list (its commands so far) and the list's end
     put_back(rdram, start_copy, frame_list, list_before);
     MEM_W(0, (gpr)(int32_t)head) = (int32_t)list_before;
+    view_progress.swapped = true;
+    view_progress.head = head;
+    view_progress.list_before = list_before;
+    // (possess159) the heap checked as the view goes on (view_heap_ok): broken, the view is let go of this frame, not drawn on into it
+    if (!view_heap_ok(rdram, "as it began (the game's memory as the frame's start had it)")) {
+        view_abandon(rdram, ctx);
+        return;
+    }
     // (possess35) each character's fade and hidden bits in view 1 as the extra camera's view left them last frame (func_1502E4C4 fades
     // a character in or out in a view by its distance from the view's camera, 50 a frame, func_150617BC): put back each frame to the
     // game's (player 1's camera's), a character far from player 1 was faded in from nothing every frame, and stayed at 50 of 255
@@ -3128,6 +3303,9 @@ static void conker_possess_view_local_body(uint8_t* rdram, recomp_context* ctx) 
     if ((self >> 24) == 0x80) {
         self_priority = MEM_W(4, (gpr)(int32_t)self);
         MEM_W(4, (gpr)(int32_t)self) = 0x7FFF;
+        view_progress.self = self;
+        view_progress.self_priority = self_priority;
+        view_progress.priority_raised = true;
     }
 
     // 2. view 1 the extra camera's
@@ -3179,6 +3357,11 @@ static void conker_possess_view_local_body(uint8_t* rdram, recomp_context* ctx) 
         }
     }
 
+    if (!view_heap_ok(rdram, "after its own setup (the 5th player's camera, view and laser)")) {   // (possess159)
+        view_abandon(rdram, ctx);
+        return;
+    }
+
     // 3. its passes
     drawn_now.clear();
     extra_view_now = true;
@@ -3196,6 +3379,10 @@ static void conker_possess_view_local_body(uint8_t* rdram, recomp_context* ctx) 
     ctx->r4 = 0;
     func_15094EA0(rdram, ctx);
     *ctx = saved;
+    if (!view_heap_ok(rdram, "after its passes")) {   // (possess159)
+        view_abandon(rdram, ctx);
+        return;
+    }
     // (possess28) what each object is in sight of (func_15019130's after its views' loops: func_15112A80 and func_15113218 clear
     // and set each object's bit of the views that see it, the bit a view's passes draw it by), for the extra camera as view 1
     // (possess31) and the rest of func_15019130 after its views' loops, as it runs them: the same calls, in the same order (what each
@@ -3225,12 +3412,20 @@ static void conker_possess_view_local_body(uint8_t* rdram, recomp_context* ctx) 
             call0(func_151671E8);
         }
         call0(func_1502BEE4);
+        if (!view_heap_ok(rdram, "after func_1502BEE4 (the characters' drawing readied, the laser sights run again)")) {   // (possess159)
+            view_abandon(rdram, ctx);
+            return;
+        }
         if (tail_a) {
             call0(func_150A0D8C);
         }
         call0(func_15113218);
         call1(func_15188B74, 1);
         call1(func_151738C4, MEM_W(0, (gpr)(int32_t)0x800BE9F0));
+        if (!view_heap_ok(rdram, "before func_1502C1A4")) {   // (possess159: where 0.11.1's stopped every machine)
+            view_abandon(rdram, ctx);
+            return;
+        }
         call0(func_1502C1A4);
         call0(func_15113C88);
         if (MEM_BU(0, (gpr)(int32_t)0x800BEAC0) == 0) {
@@ -3254,6 +3449,10 @@ static void conker_possess_view_local_body(uint8_t* rdram, recomp_context* ctx) 
         conker::gold_weapons::lights_list_guard(rdram, "as the 5th player's view readies its lights");
         call0(func_1515D69C);
         call0(func_15167310);
+        if (!view_heap_ok(rdram, "after the frame's last calls")) {   // (possess159)
+            view_abandon(rdram, ctx);
+            return;
+        }
     }
     // (possess42) the game's blur (func_151D6778, D_800BE574 its strength: the screen as the frame before left it drawn faintly over a view,
     // then the view copied for the next frame) left out of the extra camera's view: it has one buffer (D_800BE570), player 1's view's
@@ -3342,6 +3541,11 @@ static void conker_possess_view_local_body(uint8_t* rdram, recomp_context* ctx) 
     // poses, showed it.)
     func_1502E474(rdram, ctx);
     *ctx = saved;
+    // (possess159: its last check, before what this machine alone does: the 5th player's HUD, on his machine)
+    if (!view_heap_ok(rdram, "after its commands")) {
+        view_abandon(rdram, ctx);
+        return;
+    }
     // (possess42) what the view had in sight, for its next frame
     keep_what_was_seen(rdram);
     MEM_W(0, (gpr)(int32_t)view_now) = was_view;
@@ -3860,8 +4064,11 @@ static void conker_possess_view_local_body(uint8_t* rdram, recomp_context* ctx) 
         list = list_before;
         patches.clear();
     }
+    view_progress.swapped = false;
+    rsp_hold.unlock();   // (possess159) the game's memory its own again: the audio microcode may run
     if ((self >> 24) == 0x80) {
         MEM_W(4, (gpr)(int32_t)self) = self_priority;
+        view_progress.priority_raised = false;
     }
     MEM_W(0, (gpr)(int32_t)head) = (int32_t)list;
     fifth_view_at = (view_shown_here() && list > list_before) ? list_before : 0;   // (possess80)
@@ -3872,6 +4079,8 @@ static void conker_possess_view_local_body(uint8_t* rdram, recomp_context* ctx) 
         std::memcpy(rdram + (keep[i].at - 0x80000000u), now[i].data(), keep[i].size);
     }
     kept_back = std::move(keep);
+    // (possess159) the game's own heap after the view (as the frame's drawing left it), checked and mended where the blocks say how
+    conker::heap::check_and_mend(rdram, "the heap after the 5th player's view");
     // (possess154) the gold weapons in the hands made gold in the 5th player's view too, on his machine (frame_end ran before it was added)
     if (view_shown_here() && list > list_before) {
         conker::gold_weapons::fifth_view_end(rdram, mem_word(rdram, list_start + 4 * buffer), list_before, list);
@@ -4229,11 +4438,13 @@ namespace {
                 stopped.push_back(handle);
             }
         }
+        view_progress.stopped = stopped;   // (possess159) for view_guarded, should the view stop on an access violation
     }
     OthersStopped::~OthersStopped() {
         for (void* handle : stopped) {
             ResumeThread((HANDLE)handle);
         }
+        view_progress.stopped.clear();
     }
 }
 #else

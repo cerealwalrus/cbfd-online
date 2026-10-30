@@ -33,6 +33,11 @@ namespace conker {
     // mod_api.cpp: functions the game exports to mods.
     void register_mod_exports();
 
+    // (possess159, main.cpp) Held while the audio microcode runs (on the runtime's own thread, reading and writing the game's memory
+    // alongside the game's thread) and while the 5th player's view has an older copy of the game's memory in place (possess_test.cpp),
+    // so the two never overlap.
+    std::mutex& rsp_memory_mutex();
+
     // cutscene_aspect.cpp: the Cutscene Aspect Ratio setting, full cutscenes in 4:3.
     namespace cutscene_aspect {
         // Every frame, as the game starts its display list: sets the renderer's aspect ratio for a
@@ -250,6 +255,27 @@ namespace conker {
     // local_audio.cpp (0.10.96): a voice the host's notes took off its slot while it still plays on this machine, to be stopped (any thread)
     namespace localaudio {
         void stop_detached(uint32_t voice, uint16_t sound);
+    }
+
+    // (possess159, heap_watch.cpp) The game's heap's two lists checked (the blocks in address order, the free ones), and whether some of
+    // the game's memory is a block in use (not a free one, nor across a block's end).
+    namespace heap {
+        struct Check {
+            bool ok = true;
+            const char* what = "";
+            uint32_t block = 0;    // the block whose link or header is wrong
+            uint32_t before = 0;   // the block before it on the list walked (0: none)
+            uint32_t value = 0;    // what was found there
+            uint32_t blocks = 0, free_blocks = 0;
+        };
+        Check check(uint8_t* rdram);
+        // the block around the fault, the one before it and who asked for that one, for the logs
+        std::string describe(uint8_t* rdram, const Check& c);
+        // [at, at + size) in one block in use, or not the heap's memory at all (the game's own data, or ours past its 4 MB)
+        bool range_live(uint8_t* rdram, uint32_t at, uint32_t size);
+        // the game's memory as the game thread has it (not inside the 5th player's view): checked, and a broken link mended where the
+        // blocks themselves still say what it was; logged
+        void check_and_mend(uint8_t* rdram, const char* where);
     }
 
     // net_menu.cpp: the online pause menu, the game's own pause screen run while the game goes on (see the file).
@@ -489,6 +515,10 @@ namespace conker {
         // (possess158) the game's lights list (D_800DCD78) cut at a link that isn't the game's memory, while the 5th player's view is drawn: true
         // when it had to (see gold_weapons.cpp)
         bool lights_list_guard(uint8_t* rdram, const char* where);
+        // (possess159) the 5th player's view left off part way (possess_test.cpp): what was kept for it let go
+        void fifth_view_abandoned();
+        // (possess159) the 5th player's character scoped with a weapon not gold, for the logs
+        bool fifth_scoped_plain_now(uint8_t* rdram);
     }
 }
 namespace recompui { class LauncherMenu; class GameOptionsMenu; class GameOption; }

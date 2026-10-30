@@ -424,6 +424,244 @@ namespace {
     }
 }
 
+// ---- (possess159) The heap's lists checked ----
+// The 5 player test with every computer player, the players all on one team: the game stopped on every machine at once inside the 5th
+// player's view (possess_test.cpp), func_10003C6C allocating (for func_15167A68, from func_1510D970, from func_1502C1A4) and writing to
+// 0xEEEBEEEF: the free block it was splitting had 0xEEEBEEEB for its link to the next block (its +0), something's data written over the
+// block's start. The heap (see the top of this file) as func_10003C6C keeps it: every block on one list in address order from
+// D_800380B4 (+0 the next, +4 the one before, the first's 0; +8 owner << 24 | size; its memory from +0xC, up to the next block's
+// header), the free ones also on a list from D_800380B8 (+0xC the next free one, +0x10 the one before, the first's 0). check() walks
+// both; a link that isn't the heap's memory, goes back, doesn't lead back, or a size running into the next block is a fault.
+namespace {
+    bool heap_block_address(uint32_t a) {
+        return a >= 0x80000000u && a < 0x80400000u && (a & 3u) == 0;
+    }
+    constexpr uint32_t blocks_most = 40000;
+}
+
+conker::heap::Check conker::heap::check(uint8_t* rdram) {
+    Check c;
+    auto fail = [&](const char* what, uint32_t block, uint32_t before, uint32_t value) {
+        c.ok = false;
+        c.what = what;
+        c.block = block;
+        c.before = before;
+        c.value = value;
+        return c;
+    };
+    uint32_t b = word(rdram, first_block), before = 0, before2 = 0;
+    for (uint32_t n = 0; b != 0; n++) {
+        if (n >= blocks_most) {
+            return fail("the blocks' list goes round", before, before2, b);
+        }
+        if (!heap_block_address(b)) {
+            return fail("a block's link to the next block isn't the heap's memory", before, before2, b);
+        }
+        if (b <= before) {
+            return fail("a block's link to the next block goes back", before, before2, b);
+        }
+        const uint32_t back = word(rdram, b + 4u);
+        if (back != before) {
+            return fail("a block's link back isn't the block before it", b, before, back);
+        }
+        const uint32_t size = word(rdram, b + 8u) & 0xFFFFFFu;
+        const uint32_t next = word(rdram, b);
+        if ((uint64_t)b + 0xCu + size > 0x80400000ull || (next != 0 && next < b + 0xCu + size)) {
+            return fail("a block's size runs into the next block", b, before, word(rdram, b + 8u));
+        }
+        c.blocks++;
+        before2 = before;
+        before = b;
+        b = next;
+    }
+    uint32_t f = word(rdram, first_free), free_before = 0;
+    for (uint32_t n = 0; f != 0; n++) {
+        if (n >= blocks_most) {
+            return fail("the free blocks' list goes round", free_before, 0, f);
+        }
+        if (!heap_block_address(f)) {
+            return fail("a free block's link to the next free one isn't the heap's memory", free_before, 0, f);
+        }
+        const uint32_t back = word(rdram, f + 0x10u);
+        if (back != free_before) {
+            return fail("a free block's link back isn't the free block before it", f, free_before, back);
+        }
+        const uint32_t next = word(rdram, f);
+        const uint32_t size = word(rdram, f + 8u) & 0xFFFFFFu;
+        if (next != 0 && (!heap_block_address(next) || next < f + 0xCu + size || word(rdram, next + 4u) != f)) {
+            return fail("a free block's link to the next block is bad", f, free_before, next);
+        }
+        c.free_blocks++;
+        free_before = f;
+        f = word(rdram, f + 0xCu);
+    }
+    return c;
+}
+
+bool conker::heap::range_live(uint8_t* rdram, uint32_t at, uint32_t size) {
+    const uint32_t first = word(rdram, first_block);
+    if (!heap_block_address(first) || at < first || at >= 0x80400000u) {
+        return true;   // not the heap's: the game's own data, or ours
+    }
+    uint32_t b = first;
+    for (uint32_t n = 0; b != 0 && n < blocks_most; n++) {
+        if (!heap_block_address(b)) {
+            return false;
+        }
+        const uint32_t data = b + 0xCu, end = data + (word(rdram, b + 8u) & 0xFFFFFFu);
+        if (at < data) {
+            return false;   // a block's header
+        }
+        if (at < end) {
+            if ((uint64_t)at + size > end) {
+                return false;   // past the block's end
+            }
+            uint32_t f = word(rdram, first_free);
+            for (uint32_t m = 0; f != 0 && m < blocks_most; m++) {
+                if (f == b || !heap_block_address(f)) {
+                    return false;   // a free block (or a free list it can't tell by)
+                }
+                f = word(rdram, f + 0xCu);
+            }
+            return true;
+        }
+        b = word(rdram, b);
+    }
+    return true;   // past the heap's last block
+}
+
+std::string conker::heap::describe(uint8_t* rdram, const Check& c) {
+    std::string out;
+    char part[240];
+    auto words = [&](uint32_t at, int n) {
+        std::string s;
+        for (int i = 0; i < n; i++) {
+            const uint32_t a = at + 4u * (uint32_t)i;
+            if (a < 0x80000000u || a >= 0x80800000u) {
+                break;
+            }
+            char w[12];
+            std::snprintf(w, sizeof(w), " %08X", (unsigned)word(rdram, a));
+            s += w;
+        }
+        return s;
+    };
+    std::snprintf(part, sizeof(part), "the block at %08X:%s; found there %08X", (unsigned)c.block,
+        heap_block_address(c.block) ? words(c.block, 6).c_str() : " (not the heap's memory)", (unsigned)c.value);
+    out += part;
+    // the block before it in address order (whose memory runs up to its header), and who asked for that block
+    uint32_t before = 0, b = word(rdram, first_block);
+    for (uint32_t n = 0; n < blocks_most && heap_block_address(b) && b < c.block; n++) {
+        before = b;
+        b = word(rdram, b);
+    }
+    if (heap_block_address(c.block) && before != 0) {
+        const uint32_t header = word(rdram, before + 8u);
+        std::snprintf(part, sizeof(part), " | the block before it at %08X: %u bytes, owner %u; its last words%s", (unsigned)before,
+            (unsigned)(header & 0xFFFFFFu), (unsigned)(header >> 24), words(c.block >= 0x80000010u ? c.block - 16u : c.block, 4).c_str());
+        out += part;
+        std::lock_guard lock{ pool_mutex };
+        const auto found = asked_blocks.find(before + 0xCu);
+        if (found != asked_blocks.end()) {
+            const Asked& a = found->second;
+            std::snprintf(part, sizeof(part), "; asked for at f=%u, %u bytes owner %u, by %08X (up %08X %08X %08X %08X)", (unsigned)a.frame,
+                (unsigned)a.size, (unsigned)a.owner, (unsigned)a.from, (unsigned)a.up[0], (unsigned)a.up[1], (unsigned)a.up[2], (unsigned)a.up[3]);
+            out += part;
+        }
+    }
+    std::snprintf(part, sizeof(part), " | %u blocks, %u free ones before it", (unsigned)c.blocks, (unsigned)c.free_blocks);
+    out += part;
+    return out;
+}
+
+namespace {
+    // the block after `holder` as the heap lays them out: right after its memory, and linking back to it (0 if no such block)
+    uint32_t block_after(uint8_t* rdram, uint32_t holder) {
+        if (!heap_block_address(holder)) {
+            return 0;
+        }
+        const uint32_t next = holder + 0xCu + (word(rdram, holder + 8u) & 0xFFFFFFu);
+        return heap_block_address(next) && word(rdram, next + 4u) == holder ? next : 0;
+    }
+
+    // a block's header is at `at` (found walking the blocks' list from its start)
+    bool is_block(uint8_t* rdram, uint32_t at) {
+        uint32_t b = word(rdram, first_block);
+        for (uint32_t n = 0; n < blocks_most && heap_block_address(b) && b <= at; n++) {
+            if (b == at) {
+                return true;
+            }
+            b = word(rdram, b);
+        }
+        return false;
+    }
+}
+
+void conker::heap::check_and_mend(uint8_t* rdram, const char* where) {
+    static uint32_t told = 0, mended = 0, unmended = 0;
+    for (int round = 0; round < 8; round++) {
+        const Check c = check(rdram);
+        if (c.ok) {
+            return;
+        }
+        // Mended only from what the blocks themselves still say: a block's memory ends at the next block's header, which links back to
+        // it. A link forward is put back to that block; a link back only when the block is the one right after the block before it.
+        bool mend = false;
+        uint32_t at = 0, was = 0, now = 0;
+        auto mend_forward = [&](uint32_t holder) {
+            const uint32_t next = block_after(rdram, holder);
+            if (next != 0) {
+                at = holder;
+                was = word(rdram, holder);
+                now = next;
+                mend = true;
+            }
+        };
+        if (std::strcmp(c.what, "a free block's link to the next block is bad") == 0 ||
+            std::strcmp(c.what, "a block's link to the next block isn't the heap's memory") == 0 ||
+            std::strcmp(c.what, "a block's link to the next block goes back") == 0) {
+            mend_forward(c.block);
+        } else if (std::strcmp(c.what, "a block's link back isn't the block before it") == 0) {
+            if (c.before != 0 && heap_block_address(c.before) && c.block == c.before + 0xCu + (word(rdram, c.before + 8u) & 0xFFFFFFu)) {
+                at = c.block + 4u;   // the block right after the one before it: its own link back is what's wrong
+                was = c.value;
+                now = c.before;
+                mend = true;
+            } else if (c.before != 0) {
+                mend_forward(c.before);   // the one before it linked to something that isn't the next block
+            }
+        } else if (std::strcmp(c.what, "a free block's link back isn't the free block before it") == 0) {
+            if (heap_block_address(c.block) && is_block(rdram, c.block) &&
+                (c.before == 0 ? word(rdram, first_free) == c.block : word(rdram, c.before + 0xCu) == c.block)) {
+                at = c.block + 0x10u;
+                was = c.value;
+                now = c.before;
+                mend = true;
+            }
+        }
+        const bool tell = told < 16 || (mended + unmended) % 300 == 0;
+        if (tell) {
+            told++;
+            const std::string details = describe(rdram, c);
+            char line[1400];
+            std::snprintf(line, sizeof(line), "[heap] f=%u %s: %s; %s (%u mended, %u not, before this) | %s", (unsigned)conker::netsession::frame(),
+                where, c.what, mend ? "mended" : "can't be mended from the blocks", (unsigned)mended, (unsigned)unmended, details.c_str());
+            conker::netsession::log(line);
+        }
+        if (!mend) {
+            unmended++;
+            return;
+        }
+        put_word(rdram, at, now);
+        mended++;
+        if (tell) {
+            char line[160];
+            std::snprintf(line, sizeof(line), "[heap]   %08X was %08X, now %08X", (unsigned)at, (unsigned)was, (unsigned)now);
+            conker::netsession::log(line);
+        }
+    }
+}
+
 // Every frame (func_10011BB8, the game thread): the game thread is noted; online, the frees left by other threads are done, and the
 // heap is walked every 900 frames.
 extern "C" void conker_heap_watch(uint8_t* rdram, recomp_context* ctx) {
@@ -441,6 +679,11 @@ extern "C" void conker_heap_watch(uint8_t* rdram, recomp_context* ctx) {
     }
     for (uint32_t pointer : frees) {
         free_on_game_thread(rdram, ctx, pointer);
+    }
+    // (possess159) the heap's lists checked each frame, and mended where the blocks still say how (the same on every machine); not inside
+    // the 5th player's view (its memory is put back after it, and it checks its own)
+    if (!conker::possess_test::drawing_extra_view()) {
+        conker::heap::check_and_mend(rdram, "the heap as the frame began");
     }
     static uint32_t last = 0xFFFFFFFFu;
     const uint32_t now = (uint32_t)conker::netsession::frame();

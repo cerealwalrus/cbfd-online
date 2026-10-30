@@ -216,6 +216,12 @@ extern "C" void recomp_entrypoint(uint8_t* rdram, recomp_context* ctx);
 // Conker's audio microcode, recompiled by RSPRecomp (recomp/audio_ucode.toml).
 RspExitReason conker_audio_ucode(uint8_t* rdram, uint32_t ucode_addr);
 
+// (possess159) See conker.hpp: the audio microcode and the 5th player's view's swap of the game's memory, never at once.
+std::mutex& conker::rsp_memory_mutex() {
+    static std::mutex mutex;
+    return mutex;
+}
+
 namespace {
     const std::u8string game_id = u8"conker.n64.us.1.0";
 
@@ -256,9 +262,19 @@ namespace {
         ultramodern::set_running_thread_variable(osRunningThread);
     }
 
+    // (possess159) The audio microcode runs on the runtime's SP task thread, alongside the game's thread, reading the game's sound data
+    // and writing the sound it mixes and each voice's state into the game's memory. In a match of 5 players every machine draws the 5th
+    // player's view with the frame's start copied over the game's memory, and puts the frame's own back after it (possess_test.cpp):
+    // a task run meanwhile read the older copy, and what it wrote was undone (a piece of older sound in the mix, each voice set back:
+    // crackles, sounds cut or garbled). Each now waits for the other.
+    RspExitReason conker_audio_ucode_held(uint8_t* rdram, uint32_t ucode_addr) {
+        std::lock_guard lock{ conker::rsp_memory_mutex() };
+        return conker_audio_ucode(rdram, ucode_addr);
+    }
+
     RspUcodeFunc* get_rsp_microcode(const OSTask* task) {
         if (task->t.type == M_AUDTASK) {
-            return conker_audio_ucode;
+            return conker_audio_ucode_held;
         }
         std::fprintf(stderr, "[host] no RSP microcode for task type %u\n", (unsigned)task->t.type);
         return nullptr;
