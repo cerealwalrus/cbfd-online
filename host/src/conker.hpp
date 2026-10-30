@@ -104,6 +104,10 @@ namespace conker {
         _SDL_GameController* local_pad();
         // From the game's init (main.cpp): starts the online session if the environment asks for one.
         void start_online(uint8_t* rdram);
+        // (0.11.3) From the launcher's buttons: a message shown in the launcher at its next update (not a Windows message box);
+        // ask_for_rom's says the ROM is needed, with an Add ROM button.
+        void ask_for_rom();
+        void launcher_notice(const std::string& header, const std::string& text);
     }
 
     // pad_mappings.cpp: C-buttons SDL maps as face buttons made the right stick (issue #28).

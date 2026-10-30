@@ -76,6 +76,32 @@ namespace {
     std::mutex title_mutex;
     std::string pending_title;
 
+    // 0.11.3: the launcher's messages (no ROM yet, a ROM added or not taken) are shown in the launcher itself, from its update,
+    // not as a Windows message box: someone playing for the first time had the launcher crash as Single Player or Online put
+    // one up (the box took the window's focus away from the launcher drawing behind it). One waits here for the next update.
+    struct LauncherNotice {
+        std::string header;
+        std::string text;
+        bool offer_add_rom = false;   // with an Add ROM button (and Not Now)
+    };
+    std::mutex notice_mutex;
+    std::vector<LauncherNotice> pending_notices;
+    // Add ROM chosen on a notice: the file dialog is opened from the next update (on Windows it's opened and closed within the
+    // call, and the notice is put away after its button's action, so a message put up from it would be put away with it)
+    std::atomic<bool> add_rom_wanted{ false };
+    bool welcome_checked = false;
+
+    void queue_notice(std::string header, std::string text, bool offer_add_rom = false) {
+        std::printf("[launcher] %s: %s\n", header.c_str(), text.c_str());
+        std::lock_guard lock(notice_mutex);
+        pending_notices.push_back({ std::move(header), std::move(text), offer_add_rom });
+    }
+
+    constexpr const char* no_rom_text =
+        "Conker's Bad Fur Day: Online needs your own copy of the game's ROM (the US N64 version) to play, offline or online.\n\n"
+        "Choose Add ROM and pick the ROM file (usually a .z64). It's kept, so you only do this once. Add ROM is also in "
+        "the top left corner of the launcher.";
+
     // Prints what SDL says about a controller (name, GUID, mapping, device), for controller reports.
     void print_controller(int index) {
         char guid[64];
@@ -399,15 +425,18 @@ namespace {
     // Load ROM picks the first).
     void show_version() {
         std::string name = conker::roms::current_name();
-        for (recompui::GameOption* option : { version_option, add_rom_option }) {
-            if (option != nullptr) {
-                if (name.empty()) {
-                    option->display_hide();
-                }
-                else {
-                    option->display_show();
-                }
+        // (0.11.3) only Version is hidden without a ROM: Add ROM is always shown (it was hidden too, from when Single Player was
+        // Load ROM without one, so someone with no ROM yet had no way to add it)
+        if (version_option != nullptr) {
+            if (name.empty()) {
+                version_option->display_hide();
             }
+            else {
+                version_option->display_show();
+            }
+        }
+        if (add_rom_option != nullptr) {
+            add_rom_option->display_show();
         }
         if ((version_option != nullptr) && !name.empty()) {
             version_option->set_title("Version: " + name);
@@ -448,7 +477,7 @@ namespace {
                 ui_context.close();
             }
         }
-        recompui::message_box(text);
+        queue_notice("ROM added", text);
     }
 
     bool rom_just_loaded() {
@@ -470,12 +499,12 @@ namespace {
                 if (!region.empty() && region != "US") {
                     std::string text = "This is the " + region + " version of Conker's Bad Fur Day. Only the US "
                         "version is supported (and ROM hacks of it that only change the game's assets).";
-                    recompui::message_box(text.c_str());
+                    queue_notice("Not this version", text);
                     return;
                 }
             }
             if (result != recomp::RomValidationError::Good) {
-                recompui::message_box(conker::rom_error_text(result));
+                queue_notice("This ROM can't be used", conker::rom_error_text(result));
                 return;
             }
             // The launcher's update picks the new version up once it's written.
@@ -502,7 +531,7 @@ namespace {
         }
         // 0.10.17: the first option is always Single Player; the ROM is added with Add ROM only (sharing the option with Load ROM
         // caused trouble: the click that picked the file started the game)
-        recompui::message_box("Add the game's ROM first: choose Add ROM, in the top left corner, and pick it.");
+        queue_notice("Add your ROM first", no_rom_text, true);
     }
 
     // The look of the game's own menus: dark wood, grey lettering, orange for what is selected. Applied before the UI is
@@ -628,6 +657,35 @@ namespace {
     void update_launcher(recompui::LauncherMenu*) {
         if (conker::roms::update()) {
             show_version();
+        }
+        // (0.11.3) the first time the launcher is up with no ROM: say so, with Add ROM at hand
+        if (!welcome_checked) {
+            welcome_checked = true;
+            if (!recomp::is_rom_valid(supported_games[0].game_id) && conker::roms::current_name().empty()) {
+                queue_notice("Welcome", no_rom_text, true);
+            }
+        }
+        if (add_rom_wanted.exchange(false)) {
+            on_add_rom_selected();
+        }
+        else if (!recompui::is_prompt_open()) {
+            LauncherNotice notice;
+            bool have = false;
+            {
+                std::lock_guard lock(notice_mutex);
+                if (!pending_notices.empty()) {
+                    notice = std::move(pending_notices.front());
+                    pending_notices.erase(pending_notices.begin());
+                    have = true;
+                }
+            }
+            if (have && notice.offer_add_rom) {
+                recompui::open_choice_prompt(notice.header, notice.text, "Add ROM", "Not Now",
+                    []() { add_rom_wanted = true; }, {}, recompui::ButtonStyle::Success, recompui::ButtonStyle::Tertiary, false);
+            }
+            else if (have) {
+                recompui::open_info_prompt(notice.header, notice.text, "OK", {}, recompui::ButtonStyle::Tertiary);
+            }
         }
         conker::menu_skin::update();
         conker::netlobby::update(supported_games[0].game_id);
@@ -1280,6 +1338,14 @@ ultramodern::input::connected_device_info_t get_connected_device_info_live(int c
     return { ultramodern::input::Device::None, ultramodern::input::Pak::None };
 }
 } // namespace
+
+void conker::frontend::ask_for_rom() {
+    queue_notice("Add your ROM first", no_rom_text, true);
+}
+
+void conker::frontend::launcher_notice(const std::string& header, const std::string& text) {
+    queue_notice(header, text);
+}
 
 std::u8string conker::program_id() {
     return SDL_getenv("CONKER_TEST_PROFILE") != nullptr ? u8"ConkerRecompiledTest" : u8"ConkerRecompiled";

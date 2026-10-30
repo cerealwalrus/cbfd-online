@@ -406,11 +406,11 @@ void conker::netlobby::update(const std::u8string& game_id) {
             if (a == Action::Show) {
                 const int ready = rom_ready(game_id);
                 if (ready < 0) {
-                    recompui::message_box("The ROM is still being saved: choose Online again in a moment.");
+                    conker::frontend::launcher_notice("One moment", "The ROM is still being saved: choose Online again in a moment.");
                     continue;
                 }
                 if (ready == 0) {
-                    recompui::message_box("Add the game's ROM first: choose Add ROM, in the top left corner, and pick it.");
+                    conker::frontend::ask_for_rom();   // (0.11.3: in the launcher, not a Windows message box)
                     continue;
                 }
                 conker::updates::check_in_background();
