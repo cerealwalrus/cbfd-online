@@ -698,6 +698,7 @@ namespace {
         // (possess132) the whole list the weapon's: every vertex load in it only that weapon's holders' (the hand's weapon is a list of its
         // own: the revolver's 13 loads at 265490, the sniper rifle's 5 at 264D90, the possess131 test), so all of it gold, its combiners too
         bool whole = false;
+        bool no_gold = false;   // (0.11.8: Banjo: his body never gold; the gun keeps its own colours on him)
         uint32_t hidden = 0, hidden_vertices = 0;
         // (0.11.4) which of the RSP's 64 vertex slots hold the body's (left out) vertices now, as the copy loads them: a triangle using
         // any of them is left out, whatever was loaded last. The body's are collapsed to one point (possess135), so a triangle joining
@@ -781,7 +782,7 @@ namespace {
                     }
                 } else if (op == 0xD7 && (w0 & 0xFFu) == 0u) {
                     in_part = false;   // (0.11.5: texturing off ends the weapon's part: Banjo's untextured body after it was drawn gold)
-                } else if (op == 0xFC && (in_part || whole)) {
+                } else if (op == 0xFC && (in_part || whole) && !no_gold) {
                     if (gold_combiner(rdram, c)) {
                         combiners++;
                         changed = true;
@@ -1299,6 +1300,14 @@ void conker::gold_weapons::frame_end_from(uint8_t* rdram, uint32_t start, uint32
             }
         }
         clone.hide_body = scoped && k == local_character;
+        clone.no_gold = conker::char_anim::is_banjo(k);
+        if (clone.no_gold) {
+            clone.whole = false;
+            clone.by_vertices = false;
+            if (!clone.hide_body) {
+                continue;
+            }
+        }
         if (textures_known && !weapon_texture) {
             // (possess153) not the weapon: nothing of it gold; copied only to leave the body out, scoped (every vertex load of it)
             if (!clone.hide_body) {

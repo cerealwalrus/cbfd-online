@@ -983,6 +983,10 @@ namespace {
     }
 }
 
+bool conker::char_anim::is_banjo(int k) {
+    return k >= 0 && k < max_chars && st[k].banjo_frame != 0xFFFFFFFFu && frames - st[k].banjo_frame < 60u;
+}
+
 // ---- as a character is drawn ----
 bool conker::char_anim::pose(uint8_t* rdram, int k, const char* tag_c, uint32_t m) {
     if (k < 0 || tag_c == nullptr) return false;

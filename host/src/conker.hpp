@@ -615,6 +615,8 @@ namespace conker {
         void frame(uint8_t* rdram);
         // as character k (an added one, `tag`) has been drawn, its bones' matrices at m: posed ours; false when it's the game's
         bool pose(uint8_t* rdram, int k, const char* tag, uint32_t m);
+        // (0.11.8) character k drawn as Banjo lately (gold_weapons.cpp leaves his body its own colours)
+        bool is_banjo(int k);
     }
 
     // bk_banjo.cpp (0.11.5): Banjo moved by Banjo-Kazooie's own animations (assets/banjo/bk_anims.bin), as Banjo-Kazooie plays them;
