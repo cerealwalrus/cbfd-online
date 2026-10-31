@@ -779,6 +779,8 @@ namespace {
                     } else if (std::find(textures[g].begin(), textures[g].end(), t) == textures[g].end()) {
                         in_part = false;
                     }
+                } else if (op == 0xD7 && (w0 & 0xFFu) == 0u) {
+                    in_part = false;   // (0.11.5: texturing off ends the weapon's part: Banjo's untextured body after it was drawn gold)
                 } else if (op == 0xFC && (in_part || whole)) {
                     if (gold_combiner(rdram, c)) {
                         combiners++;

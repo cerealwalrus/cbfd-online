@@ -514,7 +514,10 @@ bool pose(int k, const Input& in, SlotXf out[28], int* eye_slot) {
                 }
             }
             // (a fall's landing, bsjump_fall's: the jump's from 0.6667, as it lands, the floor below not known here)
-            if (landed || (!air && b.st_time > 0.1)) {
+            // (or the game's back on its feet, running or standing, not rising or falling: its airborne flag can stay set after a landing,
+            // and he stood frozen at the jump's end)
+            const bool on_feet = is_any(ga, { 0x0002, 0x000F, 0x0001, 0x0021, 0x0016, 0x0036 }) && std::fabs(in.vy) < 1.0 && b.st_time > 0.15;
+            if (landed || (!air && b.st_time > 0.1) || on_feet) {
                 set(St::Land);
                 if (b.c.anim != 0x08 || b.c.timer < 0.6667) start(b.c, 0x08, 2.0, Mode::Once, 0.6667, 0.1, true, 1.0);
                 else { b.c.sub_end = 1.0; if (b.c.mode == Mode::Stopped && b.c.timer < 0.999) b.c.mode = Mode::Once; }
