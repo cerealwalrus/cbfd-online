@@ -1263,7 +1263,9 @@ void conker::gold_weapons::frame_end_from(uint8_t* rdram, uint32_t start, uint32
                 auto it = vertex_holders.find(a);
                 all_own = all_own && it != vertex_holders.end() && weapons_own(it->second, g);
             }
-            clone.whole = all_own;
+            // (0.11.7) a body's list is many loads (20 and more), a weapon's few (the revolver's 13, the sniper rifle's 5): Banjo's whole
+            // body, only ever seen with gold sniper rifle holders before its textures were known, was taken for the weapon and drawn gold
+            clone.whole = all_own && w.all[i].vertices.size() <= 16u;
         }
         // (possess153) by the textures it loads too, once the weapon's are known (from its model lying about): a list loading none of the
         // weapon's own textures isn't the weapon, and one loading others isn't the weapon's whole. The possess152 test (two players, both
