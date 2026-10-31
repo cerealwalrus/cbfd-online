@@ -843,11 +843,10 @@ namespace {
 
     // Host: a player's logs, written in this run's folder (players\<name>\<their run>\), from a thread of its own.
     void host_receive_logs(int slot, std::vector<uint8_t> payload) {
-        std::string who;
-        {
-            std::lock_guard lock{ mtx };
-            who = log_file_name_ok(names[slot]);
-        }
+        // (0.11.12: called from host_reader with mtx already held; locking it again here threw "resource deadlock would occur" and
+        // the host's game closed as a player sent their earlier logs: every session after a player's first)
+        const std::string who0 = log_file_name_ok(names[slot]);
+        std::string who = who0;
         if (who.empty()) {
             who = "player" + std::to_string(slot + 1);
         }
