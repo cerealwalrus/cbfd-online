@@ -21,6 +21,9 @@
 namespace conker {
     namespace default_settings {
         extern const char* const general_json;
+        extern const char* const mouse_json;
+        extern const char* const mouse_gyro_json;
+        extern const char* const sound_json;
         extern const char* const graphics_json;
         extern const char* const online_json;
         extern const char* const camera_json;
@@ -314,7 +317,14 @@ namespace {
             { "graphics", conker::default_settings::graphics_json },
             { "camera", conker::default_settings::camera_json },
             { "online", conker::default_settings::online_json },   // (0.10.19)
+            { "mouse", conker::default_settings::mouse_json },     // (0.11.11)
+            { "mouse_gyro", conker::default_settings::mouse_gyro_json },
+            { "sound", conker::default_settings::sound_json },
         };
+        // (0.11.11) everyone moved to the author's settings of 31 October 2026 once (every tab's, the controls too): after that only
+        // what they change themselves is theirs (a file of its own says it's done)
+        const std::filesystem::path reset_done = folder / "defaults_0_11_11.done";
+        const bool reset_all = !std::filesystem::exists(reset_done);
         for (const auto& tab : flat_tabs) {
             try {
                 const nlohmann::json defaults = nlohmann::json::parse(tab.text, nullptr, false);
@@ -325,7 +335,7 @@ namespace {
                 nlohmann::json current = read(path);
                 bool changed = false;
                 for (auto it = defaults.begin(); it != defaults.end(); ++it) {
-                    if (!current.contains(it.key())) {
+                    if (reset_all || !current.contains(it.key())) {
                         current[it.key()] = it.value();
                         changed = true;
                     }
@@ -339,7 +349,7 @@ namespace {
         }
         try {
             const std::filesystem::path path = folder / "controls.json";
-            if (!std::filesystem::exists(path)) {
+            if (reset_all || !std::filesystem::exists(path)) {
                 const nlohmann::json defaults = nlohmann::json::parse(conker::default_settings::controls_json, nullptr, false);
                 if (defaults.is_object()) {
                     write(path, defaults);
@@ -347,6 +357,12 @@ namespace {
             }
         }
         catch (const std::exception&) {
+        }
+        if (reset_all) {
+            std::ofstream mark(reset_done, std::ios::trunc);
+            if (mark) {
+                mark << "0.11.11: every tab moved to the new defaults once\n";
+            }
         }
     }
 }
