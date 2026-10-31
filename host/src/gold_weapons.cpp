@@ -1302,8 +1302,7 @@ void conker::gold_weapons::frame_end_from(uint8_t* rdram, uint32_t start, uint32
         clone.hide_body = scoped && k == local_character;
         clone.no_gold = conker::char_anim::is_banjo(k);
         if (clone.no_gold) {
-            clone.whole = false;
-            clone.by_vertices = false;
+            clone.whole = false;   // (the gun still found by its vertices, so it stays drawn scoped: 0.11.9 hid it for a few seconds)
             if (!clone.hide_body) {
                 continue;
             }
