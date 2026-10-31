@@ -463,7 +463,114 @@ namespace {
     }
 }
 
+// (0.11.4) The quit button while the game runs (frontend.cpp): this program started again with the same arguments, plus --wait-pid
+// and this one's process ID, so the new one waits for this one to have closed (its files, its window, an online port) and opens at the
+// launcher's main screen. The arguments kept as main had them (an earlier --wait-pid left out).
+static std::vector<std::string> relaunch_args;
+
+void conker::relaunch_to_launcher() {
+#if defined(_WIN32)
+    wchar_t own[MAX_PATH * 2] = {};
+    const DWORD n = GetModuleFileNameW(nullptr, own, (DWORD)(sizeof(own) / sizeof(own[0])));
+    if (n == 0) {
+        return;
+    }
+    const auto widen = [](const std::string& text) {
+        if (text.empty()) {
+            return std::wstring();
+        }
+        const int size = MultiByteToWideChar(CP_UTF8, 0, text.c_str(), (int)text.size(), nullptr, 0);
+        std::wstring out((size_t)std::max(size, 0), L'\0');
+        MultiByteToWideChar(CP_UTF8, 0, text.c_str(), (int)text.size(), out.data(), size);
+        return out;
+    };
+    const auto quoted = [](const std::wstring& text) {
+        std::wstring out = L"\"";
+        for (wchar_t c : text) {
+            if (c == L'"') {
+                out += L'\\';
+            }
+            out += c;
+        }
+        return out + L"\"";
+    };
+    std::wstring command = quoted(std::wstring(own, n));
+    for (const std::string& arg : relaunch_args) {
+        command += L" " + quoted(widen(arg));
+    }
+    command += L" --wait-pid " + std::to_wstring(GetCurrentProcessId());
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    PROCESS_INFORMATION info{};
+    if (CreateProcessW(own, command.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &startup, &info)) {
+        CloseHandle(info.hThread);
+        CloseHandle(info.hProcess);
+    }
+#elif defined(__linux__) || defined(__APPLE__)
+    char own[4096] = {};
+#if defined(__APPLE__)
+    uint32_t size = sizeof(own);
+    if (_NSGetExecutablePath(own, &size) != 0) {
+        return;
+    }
+#else
+    const ssize_t n = readlink("/proc/self/exe", own, sizeof(own) - 1);
+    if (n <= 0) {
+        return;
+    }
+#endif
+    const std::string pid = std::to_string((long)getpid());
+    const pid_t child = fork();
+    if (child == 0) {
+        std::vector<char*> args;
+        args.push_back(own);
+        for (const std::string& arg : relaunch_args) {
+            args.push_back(const_cast<char*>(arg.c_str()));
+        }
+        args.push_back(const_cast<char*>("--wait-pid"));
+        args.push_back(const_cast<char*>(pid.c_str()));
+        args.push_back(nullptr);
+        setsid();
+        execv(own, args.data());
+        _exit(127);
+    }
+#endif
+}
+
+// (0.11.4) --wait-pid: started again by the quit button (relaunch_to_launcher): wait (up to 20 seconds) for the closing one to be gone.
+static void wait_for_closing(int argc, char** argv) {
+    for (int i = 1; i + 1 < argc; i++) {
+        if (std::strcmp(argv[i], "--wait-pid") != 0) {
+            continue;
+        }
+        const long pid = std::atol(argv[i + 1]);
+        if (pid <= 0) {
+            return;
+        }
+#if defined(_WIN32)
+        HANDLE process = OpenProcess(SYNCHRONIZE, FALSE, (DWORD)pid);
+        if (process != nullptr) {
+            WaitForSingleObject(process, 20000);
+            CloseHandle(process);
+        }
+#elif defined(__linux__) || defined(__APPLE__)
+        for (int k = 0; k < 200 && kill((pid_t)pid, 0) == 0; k++) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+#endif
+        return;
+    }
+}
+
 int main(int argc, char** argv) {
+    for (int i = 1; i < argc; i++) {
+        if (std::strcmp(argv[i], "--wait-pid") == 0 && i + 1 < argc) {
+            i++;
+            continue;
+        }
+        relaunch_args.emplace_back(argv[i]);
+    }
+    wait_for_closing(argc, argv);
 #ifdef _WIN32
     // ConkerOnline.exe is a windowed program (no console window of its own, CMakeLists.txt). Started from a command prompt
     // (--dedicated, --headless, tests), what it prints goes to that prompt's console; started any other way it has none.
@@ -514,6 +621,9 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; i++) {
         if (std::strcmp(argv[i], "--rom") == 0 && i + 1 < argc) {
             rom_path = argv[++i];
+        }
+        else if (std::strcmp(argv[i], "--wait-pid") == 0 && i + 1 < argc) {
+            i++;   // (0.11.4: wait_for_closing's, done above; its number isn't a ROM)
         }
         else if (std::strcmp(argv[i], "--seconds") == 0 && i + 1 < argc) {
             seconds = std::atoi(argv[++i]);

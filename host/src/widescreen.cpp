@@ -284,6 +284,7 @@ extern "C" void conker_frame_dl_begin(uint8_t* rdram, recomp_context* ctx) {
     RT64::setInterpolationPaused(motion_blur_this_frame);
     motion_blur_this_frame = false;
     conker::fps_counter::game_frame();
+    conker::latency_meter::frame_begin();   // (0.11.4: Show Latency)
 #endif
 }
 

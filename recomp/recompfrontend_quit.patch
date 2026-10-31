@@ -1,0 +1,75 @@
+diff --git a/recompui/include/recompui/recompui.h b/recompui/include/recompui/recompui.h
+--- a/recompui/include/recompui/recompui.h
++++ b/recompui/include/recompui/recompui.h
+@@ -3,6 +3,7 @@
+ #include <string>
+ #include <string_view>
+ #include <list>
++#include <functional>
+ 
+ #include "SDL.h"
+ #include "RmlUi/Core.h"
+@@ -103,6 +104,8 @@
+     void apply_color_hack();
+     void get_window_size(int& width, int& height);
+     void open_quit_game_prompt();
++    // (Conker) Quit while the game runs goes back to the launcher instead of closing the program: the game sets what that does.
++    void set_quit_to_launcher(std::function<void()> handler);
+     bool get_cursor_visible();
+     void set_cursor_visible(bool visible);
+     void update_supported_options();
+diff --git a/recompui/src/base/ui_state.cpp b/recompui/src/base/ui_state.cpp
+--- a/recompui/src/base/ui_state.cpp
++++ b/recompui/src/base/ui_state.cpp
+@@ -35,7 +35,29 @@
+ 
+ static std::atomic_bool cursor_enabled = true;
+ 
++static std::function<void()> quit_to_launcher;
++
++void recompui::set_quit_to_launcher(std::function<void()> handler) {
++    quit_to_launcher = std::move(handler);
++}
++
+ void recompui::open_quit_game_prompt() {
++    if (quit_to_launcher) {
++        recompui::open_choice_prompt(
++            "Quit to the launcher?",
++            "The game stops and you go back to the launcher. Any progress since your last save will be lost.",
++            "Quit",
++            "Cancel",
++            []() {
++                quit_to_launcher();
++            },
++            []() {},
++            recompui::ButtonStyle::Danger,
++            recompui::ButtonStyle::Tertiary,
++            true
++        );
++        return;
++    }
+     recompui::open_choice_prompt(
+         "Are you sure you want to quit?",
+         "Any progress since your last save will be lost.",
+diff --git a/recompui/src/config/ui_config.cpp b/recompui/src/config/ui_config.cpp
+--- a/recompui/src/config/ui_config.cpp
++++ b/recompui/src/config/ui_config.cpp
+@@ -1,4 +1,5 @@
+ #include "recompui/config.h"
++#include "SDL.h"
+ #include "elements/ui_modal.h"
+ #include "elements/ui_icon_button.h"
+ #include "ui_config_page_options_menu.h"
+@@ -173,7 +174,11 @@
+             if (ultramodern::is_game_started()) {
+                 recompui::open_quit_game_prompt();
+             } else {
+-                ultramodern::quit();
++                // (Conker) in the launcher, before the game has started: closed as closing its window does (the runtime's quit
++                // isn't for then, and aborted)
++                SDL_Event quit_event{};
++                quit_event.type = SDL_QUIT;
++                SDL_PushEvent(&quit_event);
+             }
+         });
+         auto close_button = config_modal->modal_root_context.create_element<IconButton>(header_right, "icons/X.svg", ButtonStyle::Basic);

@@ -23,6 +23,8 @@
 // The pictures are the user's own, kept on their computer; the repository doesn't contain any.
 
 #include <cstdio>
+#include <cmath>
+#include <cstring>
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -40,6 +42,7 @@
 #include "util/file.h"
 #include "elements/ui_label.h"
 #include "elements/ui_clickable.h"
+#include "elements/ui_scroll_container.h"
 
 #include <SDL.h>
 
@@ -184,7 +187,7 @@ namespace {
 
     recompui::Label* make_text(recompui::Element* parent, const std::string& rml, float letter_spacing) {
         recompui::Label* label = recompui::get_current_context().create_element<recompui::Label>(parent, std::string(), recompui::LabelStyle::Small);
-        label->set_font_family("Share Tech Mono");
+        label->set_font_family("CBFD Comic");   // (0.11.4: was Share Tech Mono)
         label->set_font_size(19.5f);
         label->set_font_weight(400);
         label->set_letter_spacing(letter_spacing);
@@ -407,7 +410,7 @@ namespace {
         lines->set_flex(1.0f, 1.0f, 0.0f);
         lines->set_gap(4.0f);
         toast_header = make_text(lines, "INCOMING TRANSMISSION", 2.0f);
-        toast_header->set_font_family("Black Ops One");
+        toast_header->set_font_family("CBFD Comic");   // (0.11.4: was Black Ops One)
         toast_header->set_font_size(19.0f);
         toast_header->set_color(hazard_yellow);
         toast_message = make_text(lines, "", 1.2f);
@@ -678,6 +681,272 @@ namespace {
     }
 }
 
+// ---- (0.11.4) The patch notes panel, and the corner buttons beside it ----
+// With the plates (the video), a panel of this build's patch notes, from its release on GitHub (update_check.cpp's release_notes): centred
+// in the space right of the menu's plates (between their right edge and the window's), and Version and Add ROM moved down to the
+// panel's top on the other side, centred in the space left of the plates. Laid out again whenever the window's width changes (the UI is
+// 1080 dp high at any size, so only its width in dp changes). Read Full Notes opens the release's page.
+namespace {
+    constexpr float notes_width = 325.0f, notes_height = 627.0f;
+    constexpr float corner_width = 330.0f;
+    constexpr float frame_inset = 12.0f;   // (the window's frame at its sides)
+    recompui::Element* notes_panel = nullptr;
+    recompui::Element* notes_list = nullptr;
+    recompui::Label* notes_build = nullptr;
+    recompui::Clickable* notes_button = nullptr;
+    recompui::Image* notes_button_lit = nullptr;
+    bool notes_button_lit_shown = false;
+    std::atomic<bool> notes_open_page{ false };
+    int notes_state_shown = -1;
+    std::vector<recompui::GameOption*> corner_options;
+    float corner_plate_top = 0.0f, corner_plate_width = 0.0f;
+    float laid_out_width = -1.0f;
+    const recompui::Color notes_cream{ 236, 229, 201, 255 };
+    const recompui::Color notes_gold{ 232, 196, 74, 255 };
+
+    // The release's text (Markdown) as the panel's lines: headings, and each bullet's bold title (or its first sentence).
+    struct NotesLine {
+        bool heading = false;
+        std::string text;
+        bool bullet = true;
+    };
+    std::string notes_plain(std::string text) {
+        for (const char* mark : { "**", "__", "`" }) {
+            for (size_t at; (at = text.find(mark)) != std::string::npos;) {
+                text.erase(at, std::strlen(mark));
+            }
+        }
+        while (!text.empty() && (text.back() == ' ' || text.back() == '.' || text.back() == ':' || text.back() == '\r')) {
+            text.pop_back();
+        }
+        return text;
+    }
+    std::vector<NotesLine> parse_notes(const std::string& body) {
+        std::vector<NotesLine> lines;
+        size_t start = 0;
+        while (start <= body.size()) {
+            size_t end = body.find('\n', start);
+            if (end == std::string::npos) {
+                end = body.size();
+            }
+            std::string line = body.substr(start, end - start);
+            start = end + 1;
+            const size_t first = line.find_first_not_of(" \t");
+            if (first == std::string::npos) {
+                continue;
+            }
+            line = line.substr(first);
+            if (line[0] == '#') {
+                const size_t text_at = line.find_first_not_of("# ");
+                if (text_at != std::string::npos) {
+                    lines.push_back({ true, notes_plain(line.substr(text_at)) });
+                }
+                continue;
+            }
+            // (0.11.4) every line in full, the panel scrolling: bullets as bullets, anything else (the intro, a paragraph) as a line of
+            // its own; only their Markdown taken out (each was cut to its bold title or 110 letters: the panel ended half way down)
+            const bool bullet = line.size() >= 2 && (line[0] == '-' || line[0] == '*') && line[1] == ' ';
+            std::string text = notes_plain(bullet ? line.substr(2) : line);
+            if (!text.empty()) {
+                lines.push_back({ false, text, bullet });
+            }
+        }
+        return lines;
+    }
+
+    recompui::Label* notes_label(recompui::Element* parent, const std::string& text, const char* font, float size, recompui::Color color) {
+        recompui::Label* label = recompui::get_current_context().create_element<recompui::Label>(parent, std::string(), recompui::LabelStyle::Small);
+        label->set_font_family(font);
+        label->set_font_size(size);
+        label->set_font_weight(400);
+        label->set_color(color);
+        label->set_pointer_events(recompui::PointerEvents::None);
+        label->set_text(text);
+        ElementAccess::attribute(label, "style", "font-effect: outline(2dp #0a0c08);");
+        return label;
+    }
+
+    void fill_notes(int state, const std::string& tag, const std::string& body) {
+        if (notes_list == nullptr) {
+            return;
+        }
+        notes_list->clear_children();
+        if (notes_build != nullptr) {
+            notes_build->set_text("BUILD " + (tag.empty() ? std::string("v") + conker::updates::current_version() : tag));
+        }
+        if (state == 0) {
+            notes_label(notes_list, "Getting the patch notes from GitHub...", "CBFD Comic", 16.0f, notes_cream);
+            return;
+        }
+        std::vector<NotesLine> lines = state == 1 ? parse_notes(body) : std::vector<NotesLine>{};
+        if (lines.empty()) {
+            notes_label(notes_list, "Couldn't get the patch notes from GitHub. Read Full Notes opens the release page.", "CBFD Comic", 16.0f, notes_cream);
+            return;
+        }
+        for (const NotesLine& line : lines) {
+            if (line.heading) {
+                recompui::Label* label = notes_label(notes_list, line.text, "Lilita One", 20.0f, notes_gold);
+                label->set_margin_top(6.0f);
+                continue;
+            }
+            if (!line.bullet) {
+                notes_label(notes_list, line.text, "CBFD Comic", 15.5f, notes_cream)->set_line_height(20.0f);
+                continue;
+            }
+            // the font's bullet (0.11.4: CBFD Comic has one now; it showed as a box), the line beside it, wrapped lines kept clear of it
+            recompui::Element* row = make_div(notes_list);
+            row->set_display(recompui::Display::Flex);
+            row->set_flex_direction(recompui::FlexDirection::Row);
+            row->set_align_items(recompui::AlignItems::FlexStart);
+            row->set_gap(6.0f);
+            notes_label(row, "\xE2\x80\xA2", "CBFD Comic", 15.5f, notes_cream)->set_line_height(20.0f);
+            recompui::Label* label = notes_label(row, line.text, "CBFD Comic", 15.5f, notes_cream);
+            label->set_line_height(20.0f);
+            label->set_flex(1.0f, 1.0f, 0.0f);
+        }
+    }
+
+    void make_notes(recompui::LauncherMenu* menu, const std::pair<std::string, std::string>& plain_plate) {
+        const std::string panel_key = load("patch_notes_panel");
+        if (panel_key.empty() || notes_panel != nullptr) {
+            return;
+        }
+        recompui::ContextId context = recompui::get_current_context();
+        notes_panel = make_div(menu);
+        notes_panel->set_position(recompui::Position::Absolute);
+        notes_panel->set_width(notes_width);
+        notes_panel->set_height(notes_height);
+        StyleAccess::z_index(notes_panel, 50);
+        recompui::Image* frame = make_layer(notes_panel, panel_key);
+        frame->set_top(0);
+        frame->set_left(0);
+        frame->set_width(100.0f, recompui::Unit::Percent);
+        frame->set_height(100.0f, recompui::Unit::Percent);
+
+        recompui::Element* header = make_div(notes_panel);
+        header->set_position(recompui::Position::Absolute);
+        header->set_top(20.0f);
+        header->set_left(0);
+        header->set_width(notes_width);
+        header->set_display(recompui::Display::Flex);
+        header->set_flex_direction(recompui::FlexDirection::Column);
+        header->set_align_items(recompui::AlignItems::Center);
+        header->set_gap(2.0f);
+        notes_label(header, "PATCH NOTES", "Lilita One", 31.0f, notes_cream);
+        notes_build = notes_label(header, std::string("BUILD v") + conker::updates::current_version(), "CBFD Comic", 15.5f, notes_gold);
+
+        // the hazard stripes under the header: a picture of their own, the panel's width (the status bar's, cut to size, didn't clip
+        // to its box and ran out past the panel)
+        const std::string stripe = load("patch_notes_stripe");
+        if (!stripe.empty()) {
+            recompui::Image* stripes = make_layer(notes_panel, stripe);
+            stripes->set_top(84.0f);
+            stripes->set_left(27.0f);
+            stripes->set_width(notes_width - 54.0f);
+            stripes->set_height(7.0f);
+        }
+
+        recompui::Element* area = make_div(notes_panel);
+        area->set_position(recompui::Position::Absolute);
+        area->set_top(104.0f);
+        area->set_left(27.0f);
+        area->set_width(notes_width - 50.0f);
+        area->set_height(notes_height - 104.0f - 96.0f);
+        area->set_display(recompui::Display::Flex);
+        area->set_flex_direction(recompui::FlexDirection::Column);
+        recompui::ScrollContainer* scroll = context.create_element<recompui::ScrollContainer>(area, recompui::ScrollDirection::Vertical);
+        notes_list = context.create_element<recompui::Element>(scroll);
+        notes_list->set_display(recompui::Display::Flex);
+        notes_list->set_flex_direction(recompui::FlexDirection::Column);
+        notes_list->set_gap(6.0f);
+        notes_list->set_padding_right(10.0f);
+
+        notes_button = context.create_element<recompui::Clickable>(notes_panel);
+        notes_button->set_position(recompui::Position::Absolute);
+        notes_button->set_left(27.0f);
+        notes_button->set_top(notes_height - 26.0f - 50.0f);
+        notes_button->set_width(notes_width - 54.0f);
+        notes_button->set_height(50.0f);
+        notes_button->set_display(recompui::Display::Flex);
+        notes_button->set_align_items(recompui::AlignItems::Center);
+        notes_button->set_justify_content(recompui::JustifyContent::Center);
+        notes_button->set_focusable(false);
+        if (!plain_plate.first.empty()) {
+            recompui::Image* plate = make_layer(notes_button, plain_plate.first);
+            plate->set_top(0);
+            plate->set_left(0);
+            plate->set_width(100.0f, recompui::Unit::Percent);
+            plate->set_height(100.0f, recompui::Unit::Percent);
+        }
+        if (!plain_plate.second.empty()) {
+            notes_button_lit = make_layer(notes_button, plain_plate.second);
+            notes_button_lit->set_top(0);
+            notes_button_lit->set_left(0);
+            notes_button_lit->set_width(100.0f, recompui::Unit::Percent);
+            notes_button_lit->set_height(100.0f, recompui::Unit::Percent);
+            notes_button_lit->display_hide();
+        }
+        recompui::Label* text = notes_label(notes_button, "READ FULL NOTES", "Lilita One", 20.0f, notes_cream);
+        text->set_position(recompui::Position::Relative);
+        StyleAccess::z_index(text, 5);
+        notes_button->add_pressed_callback([](float, float) { notes_open_page = true; });
+
+        conker::updates::fetch_notes_in_background();
+        fill_notes(0, {}, {});
+        notes_state_shown = 0;
+    }
+
+    // every frame: laid out again when the window's width changes; the notes filled in once they've come; the button lit and pressed
+    void update_notes() {
+        int width_px = 0, height_px = 0;
+        recompui::get_window_size(width_px, height_px);
+        if (height_px > 0) {
+            const float width = (float)width_px * 1080.0f / (float)height_px;
+            if (std::abs(width - laid_out_width) > 0.5f) {
+                laid_out_width = width;
+                const float plates_left = (width - corner_plate_width) / 2.0f, plates_right = plates_left + corner_plate_width;
+                // the vertical middle between the title bar (51 dp) and the status bar (the bottom 66 dp)
+                const float top = title_bar_height + ((1080.0f - hazard_height - status_bar_height) - title_bar_height - notes_height) / 2.0f;
+                if (notes_panel != nullptr) {
+                    const float space = (width - frame_inset) - plates_right;
+                    notes_panel->set_left(plates_right + (space - notes_width) / 2.0f);
+                    notes_panel->set_top(top);
+                }
+                // Version and Add ROM: their tops from the panel's, centred left of the plates (their left is from the plates' column)
+                const float space = plates_left - frame_inset;
+                const float corner_left = frame_inset + (space - corner_width) / 2.0f;
+                for (size_t i = 0; i < corner_options.size(); i++) {
+                    corner_options[i]->set_left(corner_left - plates_left);
+                    corner_options[i]->set_top(top - corner_plate_top + 56.0f * (float)i);
+                }
+            }
+        }
+        if (notes_panel == nullptr) {
+            return;
+        }
+        std::string tag, body, page;
+        const int state = conker::updates::release_notes(&tag, &body, &page);
+        if (state != notes_state_shown) {
+            notes_state_shown = state;
+            fill_notes(state, tag, body);
+        }
+        if (notes_button != nullptr && notes_button_lit != nullptr) {
+            const bool lit = notes_button->is_style_enabled(recompui::hover_state);
+            if (lit != notes_button_lit_shown) {
+                notes_button_lit_shown = lit;
+                if (lit) {
+                    notes_button_lit->display_show();
+                } else {
+                    notes_button_lit->display_hide();
+                }
+            }
+        }
+        if (notes_open_page.exchange(false)) {
+            SDL_OpenURL(page.c_str());
+        }
+    }
+}
+
 void conker::menu_skin::apply(recompui::LauncherMenu* menu, recompui::GameOptionsMenu* options, const std::vector<recompui::GameOption*>& corner) {
     skinned.clear();
     make_bars(menu);
@@ -734,6 +1003,14 @@ void conker::menu_skin::apply(recompui::LauncherMenu* menu, recompui::GameOption
         }
     }
     const bool layout = stage || video_on;   // the picture's layout (with the video, every plank is plank.png)
+    // (0.11.4) the patch notes panel, with the plates
+    if (plates_on) {
+        corner_options.clear();
+        corner_plate_top = plate_top;
+        corner_plate_width = plate_width;
+        laid_out_width = -1.0f;
+        make_notes(menu, plain_plate);
+    }
 
     if (stage) {
         menu->remove_default_title();   // the picture has the title
@@ -778,6 +1055,9 @@ void conker::menu_skin::apply(recompui::LauncherMenu* menu, recompui::GameOption
             option->set_border_width(0.0f);
             if (recompui::Label* label = option->get_label()) {
                 label->set_font_size(26.0f);
+            }
+            if (plates_on) {
+                corner_options.push_back(option);   // (0.11.4: placed beside the patch notes, update_notes)
             }
             if (plates_on && !plain_plate.first.empty()) {
                 // (0.10.41) on a small plain plate (330 x 52, the plates' shape), lit when selected
@@ -866,6 +1146,7 @@ void conker::menu_skin::apply(recompui::LauncherMenu* menu, recompui::GameOption
 // Every frame the launcher is up (from update_launcher, with the launcher's context open).
 void conker::menu_skin::update() {
     update_bars();
+    update_notes();   // (0.11.4)
     if (video_on) {
         uint32_t width = 0, height = 0;
         if (conker::background_video::take_frame(video_frame, width, height)) {

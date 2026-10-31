@@ -203,6 +203,27 @@ index 3f74ea2..3988595 100644
          void resolveOperations(std::unordered_map<uint64_t, ReplacementResolvedPath> &resolvedPathMap);
          void resolveShifts(std::unordered_map<uint64_t, ReplacementResolvedPath> &resolvedPathMap);
          static uint64_t stringToHash(const std::string &str);
+diff --git a/src/common/rt64_user_configuration.h b/src/common/rt64_user_configuration.h
+--- a/src/common/rt64_user_configuration.h
++++ b/src/common/rt64_user_configuration.h
+@@ -66,6 +66,7 @@
+             Original,
+             Display,
+             Manual,
++            NoLeSync,
+             OptionCount
+         };
+ 
+@@ -155,7 +156,8 @@
+     NLOHMANN_JSON_SERIALIZE_ENUM(UserConfiguration::RefreshRate, {
+         { UserConfiguration::RefreshRate::Original, "Original" },
+         { UserConfiguration::RefreshRate::Display, "Display" },
+-        { UserConfiguration::RefreshRate::Manual, "Manual" }
++        { UserConfiguration::RefreshRate::Manual, "Manual" },
++        { UserConfiguration::RefreshRate::NoLeSync, "NoLeSync" }
+     });
+ 
+     NLOHMANN_JSON_SERIALIZE_ENUM(UserConfiguration::InternalColorFormat, {
 diff --git a/src/gbi/rt64_gbi.cpp b/src/gbi/rt64_gbi.cpp
 index 7006549..4984e7c 100644
 --- a/src/gbi/rt64_gbi.cpp
@@ -921,14 +942,15 @@ index 00a72f6..32e9300 100644
          void buildTransformIdMap(const Workload &workload, std::multimap<uint32_t, uint32_t> &idMap, std::vector<uint32_t> &ignoredIdVector) const;
          uint64_t hashFromCall(const GameCall &call, uint32_t matrixIdHash) const;
 diff --git a/src/hle/rt64_present_queue.cpp b/src/hle/rt64_present_queue.cpp
-index 7de5b69..2ef2ef5 100644
+index 7de5b69..15cd2a0 100644
 --- a/src/hle/rt64_present_queue.cpp
 +++ b/src/hle/rt64_present_queue.cpp
-@@ -9,7 +9,23 @@
+@@ -9,7 +9,75 @@
  
  #include "rt64_workload_queue.h"
  
 +#include <atomic>
++#include <chrono>
 +
  namespace RT64 {
 +    // Frames presented to the screen so far (Conker: its FPS counter reads it, host/src/fps_counter.cpp).
@@ -941,6 +963,57 @@ index 7de5b69..2ef2ef5 100644
 +    // Vsync, as Conker's VSync option wants it (host/src/frontend.cpp): the present thread puts the swap chain to it.
 +    static std::atomic<int> vsyncWanted = 1;
 +
++    // Conker's latency meter (host/src/latency_meter.cpp): the workload made from a marked display list (latencyMark, just before
++    // the host hands it over; latencyTakeMark as that list's workload is finished), and when the screen first showed any of it (the
++    // first frame drawn toward it, interpolated) and all of it (the last), steady clock nanoseconds.
++    static std::atomic<bool> latencyMarkNow = false;
++    static std::atomic<uint64_t> latencyWorkload = 0;
++    static std::atomic<int64_t> latencyFirstNs = 0, latencyFullNs = 0;
++    static std::atomic<uint64_t> latencySerial = 0;
++    static std::mutex latencyMutex;
++
++    static int64_t latencyNowNs() {
++        return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
++    }
++
++    void latencyMark() {
++        latencyMarkNow.store(true);
++    }
++
++    void latencyTakeMark(uint64_t workloadId) {
++        if (latencyMarkNow.exchange(false)) {
++            std::scoped_lock lock(latencyMutex);
++            latencyFirstNs = 0;
++            latencyFullNs = 0;
++            latencyWorkload = workloadId;
++        }
++    }
++
++    bool latencyResult(uint64_t *serial, int64_t *firstNs, int64_t *fullNs) {
++        std::scoped_lock lock(latencyMutex);
++        *serial = latencySerial.load();
++        *firstNs = latencyFirstNs.load();
++        *fullNs = latencyFullNs.load();
++        return *serial != 0;
++    }
++
++    static void latencyPresented(uint64_t workloadId, bool last) {
++        const uint64_t marked = latencyWorkload.load();
++        if ((marked == 0) || (workloadId < marked)) {
++            return;
++        }
++        std::scoped_lock lock(latencyMutex);
++        const int64_t now = latencyNowNs();
++        if (latencyFirstNs.load() == 0) {
++            latencyFirstNs = now;
++        }
++        if (last) {
++            latencyFullNs = now;
++            latencyWorkload = 0;
++            latencySerial.fetch_add(1);
++        }
++    }
++
 +    void setVsyncWanted(bool enabled) {
 +        vsyncWanted.store(enabled ? 1 : 0, std::memory_order_relaxed);
 +    }
@@ -948,15 +1021,16 @@ index 7de5b69..2ef2ef5 100644
      // PresentQueue
  
      PresentQueue::PresentQueue() {
-@@ -402,6 +418,7 @@ namespace RT64 {
+@@ -402,6 +470,8 @@ namespace RT64 {
                  RenderCommandSemaphore *waitSemaphore = drawSemaphores[swapChainIndex].get();
                  presentTimestamp = Timer::current();
                  swapChainValid = ext.swapChain->present(swapChainIndex, &waitSemaphore, 1);
 +                presentedFrames.fetch_add(1, std::memory_order_relaxed);
++                latencyPresented(present.workloadId, i == framesToPresent - 1);
                  presentProfiler.logAndRestart();
              }
          }
-@@ -450,20 +467,28 @@ namespace RT64 {
+@@ -450,6 +520,7 @@ namespace RT64 {
          uint32_t displayTimingRate = UINT32_MAX;
          const bool displayTiming = ext.device->getCapabilities().displayTiming;
          bool swapChainValid = !ext.swapChain->needsResize();
@@ -964,16 +1038,7 @@ index 7de5b69..2ef2ef5 100644
          while (presentThreadRunning) {
              {
                  std::unique_lock<std::mutex> cursorLock(cursorMutex);
-                 cursorCondition.wait(cursorLock, [&]() {
-                     return (writeCursor != threadCursor) || !presentThreadRunning;
-                 });
- 
-                 if (presentThreadRunning) {
-                     processCursor = threadCursor;
-                     threadCursor = (threadCursor + 1) % presents.size();
-                     skipPresent = (writeCursor != threadCursor);
-                 }
-             }
+@@ -466,6 +537,13 @@ namespace RT64 {
  
              if (processCursor >= 0) {
                  std::unique_lock<std::mutex> threadLock(threadMutex);
@@ -985,11 +1050,13 @@ index 7de5b69..2ef2ef5 100644
 +                }
 +
                  const bool needsResize = ext.swapChain->needsResize() || !swapChainValid;
+                 if (needsResize) {
+                     ext.presentGraphicsWorker->commandList->begin();
 diff --git a/src/hle/rt64_present_queue.h b/src/hle/rt64_present_queue.h
-index e08b02c..084ccfd 100644
+index e08b02c..c74d84d 100644
 --- a/src/hle/rt64_present_queue.h
 +++ b/src/hle/rt64_present_queue.h
-@@ -17,6 +17,11 @@
+@@ -17,6 +17,17 @@
  namespace RT64 {
      struct WorkloadQueue;
  
@@ -997,6 +1064,12 @@ index e08b02c..084ccfd 100644
 +    uint64_t presentedFrameCount();
 +    // Vsync on or off (Conker's VSync option), from any thread: the present thread applies it.
 +    void setVsyncWanted(bool enabled);
++    // Conker's latency meter: the next display list's workload is marked (from the thread handing the list over, just before it);
++    // the state takes the mark as that workload is finished; the last measurement's serial (0: none yet) and when the screen first
++    // showed any of that workload and all of it (steady clock nanoseconds).
++    void latencyMark();
++    void latencyTakeMark(uint64_t workloadId);
++    bool latencyResult(uint64_t *serial, int64_t *firstNs, int64_t *fullNs);
 +
      struct PresentQueue {
          struct External {
@@ -1111,8 +1184,8 @@ index 0000000..b50bf1f
 +
 +namespace RT64 {
 +    namespace {
-+        // RDRAM as RT64 sees it (State::RDRAMSize is its last byte).
-+        constexpr uint32_t RiceRDRAMBytes = 0x800000;
++        // RDRAM as far as the game's data goes: its 8 MB and the port's own past them (the imported textures, 0x80A00000 on).
++        constexpr uint32_t RiceRDRAMBytes = 0x1000000;
 +
 +        uint32_t CalculateDXT(uint32_t txl2words) {
 +            if (txl2words == 0) {
@@ -1828,7 +1901,7 @@ index 61bb3b1..782ed13 100644
          void setVertexSegmentV1(bool isEnabled, uint32_t vertexElement, uint32_t vertexAddress, uint32_t baseSegmentAddress);
          template<uint32_t floatCount, uint32_t vertexSize>
 diff --git a/src/hle/rt64_state.cpp b/src/hle/rt64_state.cpp
-index 2970e71..9102bbf 100644
+index 2970e71..2c731c5 100644
 --- a/src/hle/rt64_state.cpp
 +++ b/src/hle/rt64_state.cpp
 @@ -4,6 +4,8 @@
@@ -1929,6 +2002,16 @@ index 2970e71..9102bbf 100644
          // Store the presentation rate in the workload.
          if (extended.refreshRate != UINT16_MAX) {
              workload.viOriginalRate = extended.refreshRate;
+@@ -2656,6 +2705,9 @@ namespace RT64 {
+ 
+     void State::advanceWorkload(Workload &workload, bool paused) {
+         workload.workloadId = ++workloadId;
++        if (!paused) {
++            latencyTakeMark(workload.workloadId);
++        }
+         workload.presentId = presentId;
+         workload.debuggerCamera = debuggerInspector.camera;
+         workload.debuggerRenderer = debuggerInspector.renderer;
 diff --git a/src/hle/rt64_workload.cpp b/src/hle/rt64_workload.cpp
 index b4c85f5..3e5f75e 100644
 --- a/src/hle/rt64_workload.cpp
@@ -2059,19 +2142,26 @@ index 8ea27d5..392867f 100644
  };
 \ No newline at end of file
 diff --git a/src/hle/rt64_workload_queue.cpp b/src/hle/rt64_workload_queue.cpp
-index 5a331aa..e6c0eae 100644
 --- a/src/hle/rt64_workload_queue.cpp
 +++ b/src/hle/rt64_workload_queue.cpp
-@@ -4,6 +4,8 @@
+@@ -3,6 +3,8 @@
+ //
  
  #include "rt64_workload_queue.h"
- 
-+#include "common/rt64_fblog.h"
 +
++#include "common/rt64_fblog.h"
+ 
  #include "common/rt64_thread.h"
  
- #include "rt64_present_queue.h"
-@@ -449,6 +451,15 @@ namespace RT64 {
+@@ -216,6 +218,7 @@
+         const auto refreshRate = ext.sharedResources->userConfig.refreshRate;
+         switch (refreshRate) {
+         case UserConfiguration::RefreshRate::Display:
++        case UserConfiguration::RefreshRate::NoLeSync:
+             workloadConfig.targetRate = ext.sharedResources->swapChainRate;
+             break;
+         case UserConfiguration::RefreshRate::Manual:
+@@ -449,6 +452,15 @@
                          colorFb = &fbManager.get(colorImg.address, colorImg.siz, nativeColorWidth, nativeColorHeight);
                      }
  
@@ -2087,7 +2177,7 @@ index 5a331aa..e6c0eae 100644
                      if (colorFb != nullptr) {
                          fbKey.colorTargetKey = RenderTargetKey(colorFb->addressStart, colorFb->width, colorFb->siz, Framebuffer::Type::Color);
                          colorTarget = &targetManager.get(fbKey.colorTargetKey);
-@@ -508,6 +519,16 @@ namespace RT64 {
+@@ -508,6 +520,16 @@
              colorDepthPairs.clear();
  
              const uint32_t fbPairCount = (debuggerRenderer.framebufferIndex >= 0) ? (debuggerRenderer.framebufferIndex + 1) : workload.fbPairCount;
@@ -2104,7 +2194,7 @@ index 5a331aa..e6c0eae 100644
              for (uint32_t f = 0; f < fbPairCount; f++) {
                  const FramebufferPair &fbPair = workload.fbPairs[f];
  #           if RT_ENABLED
-@@ -538,9 +559,19 @@ namespace RT64 {
+@@ -538,9 +560,19 @@
                          depthFb->nativeTarget.resetBufferHistory();
                      }
  
@@ -2124,7 +2214,7 @@ index 5a331aa..e6c0eae 100644
                      }
  
                      // Set up the dummy target used for rendering the depth if no depth framebuffer is active.
-@@ -566,6 +597,9 @@ namespace RT64 {
+@@ -566,6 +598,9 @@
                          if (depthTarget->resize(ext.workloadGraphicsWorker, rtWidth, rtHeight)) {
                              resizedTargets.emplace(depthTarget);
                              depthFb->readHeight = 0;
@@ -2134,7 +2224,7 @@ index 5a331aa..e6c0eae 100644
                          }
                      }
                  }
-@@ -577,6 +611,10 @@ namespace RT64 {
+@@ -577,6 +612,10 @@
              // Make sure all depth targets are at least bigger than their corresponding color targets.
              for (auto colorDepthPair : colorDepthPairs) {
                  if (colorDepthPair.second->resize(ext.workloadGraphicsWorker, colorDepthPair.first->width, colorDepthPair.first->height)) {
@@ -2145,7 +2235,7 @@ index 5a331aa..e6c0eae 100644
                      resizedTargets.emplace(colorDepthPair.second);
                  }
              }
-@@ -709,6 +747,12 @@ namespace RT64 {
+@@ -709,6 +748,12 @@
              for (uint32_t f = 0; f < fbPairCount; f++) {
                  const FramebufferPair &fbPair = workload.fbPairs[f];
                  bool validTargets = getTargetsFromPair(f);
@@ -2158,7 +2248,7 @@ index 5a331aa..e6c0eae 100644
                  fbManager.recordOperations(ext.workloadGraphicsWorker, &workload.fbChangePool, &workload.fbStorage, ext.shaderLibrary, ext.textureCache,
                      fbPair.startFbOperations, targetManager, fixedResScale, f, workload.submissionFrame);
  
-@@ -738,6 +782,11 @@ namespace RT64 {
+@@ -738,6 +783,11 @@
  
                          if (colorFb->height > colorFb->readHeight) {
                              uint32_t readRowCount = colorFb->height - colorFb->readHeight;
@@ -2170,7 +2260,7 @@ index 5a331aa..e6c0eae 100644
                              FramebufferChange *colorFbChange = colorFb->readChangeFromStorage(ext.workloadGraphicsWorker, workload.fbStorage, scratchFbChangePool,
                                  Framebuffer::Type::Color, colorImg.fmt, f, colorFb->readHeight, readRowCount, ext.shaderLibrary);
  
-@@ -756,10 +805,20 @@ namespace RT64 {
+@@ -756,10 +806,20 @@
                          depthFbTypeChanged = (depthFb->lastWriteType == Framebuffer::Type::Color);
  
                          bool imgFormatChanged = (colorFb == nullptr) ? colorImg.formatChanged : depthImg.formatChanged;
@@ -2191,7 +2281,7 @@ index 5a331aa..e6c0eae 100644
                              RenderTargetKey otherDepthTargetKey(depthFb->addressStart, depthFb->width, depthFb->siz, depthFb->lastWriteType);
                              RenderTarget &otherDepthTarget = targetManager.get(otherDepthTargetKey);
                              if (!otherDepthTarget.isEmpty()) {
-@@ -777,6 +836,10 @@ namespace RT64 {
+@@ -777,6 +837,10 @@
  
                          if (depthFb->height > depthFb->readHeight) {
                              uint32_t readRowCount = depthFb->height - depthFb->readHeight;
@@ -2202,7 +2292,7 @@ index 5a331aa..e6c0eae 100644
                              FramebufferChange *depthFbChange = depthFb->readChangeFromStorage(ext.workloadGraphicsWorker, workload.fbStorage, scratchFbChangePool, Framebuffer::Type::Depth,
                                  G_IM_FMT_DEPTH, f, depthFb->readHeight, readRowCount, ext.shaderLibrary);
  
-@@ -986,7 +1049,7 @@ namespace RT64 {
+@@ -986,7 +1050,7 @@
                      matchingProfiler.log();
  
                      const bool displayRateAboveOriginal = (workload.viOriginalRate > 0) && (workloadConfig.targetRate > workload.viOriginalRate);
@@ -2211,6 +2301,22 @@ index 5a331aa..e6c0eae 100644
  
                      const bool resetTicks = !generateInterpolatedFrames || (originalRateForTicks != workload.viOriginalRate) || (displayRateForTicks != workloadConfig.targetRate) || !displayRateAboveOriginal;
                      if (resetTicks) {
+@@ -1110,6 +1174,15 @@
+                         curFrameWeight = 1.0f;
+                     }
+ 
++                    // (CBFD) NoLeSync: every frame drawn is the newest game frame, shown at once, the camera's turn alone carried on
++                    // past it (frame of displayFrames, of a game frame) until the next one comes.
++                    noLeSyncCameraAhead = -1.0f;
++                    if (generateInterpolatedFrames && (ext.sharedResources->userConfig.refreshRate == UserConfiguration::RefreshRate::NoLeSync)) {
++                        noLeSyncCameraAhead = float(frame) / float(displayFrames);
++                        curFrameWeight = 1.0f;
++                        prevFrameWeight = 0.0f;
++                    }
++
+                     const bool uploadExtras = (frame == 0) && workloadConfig.raytracingEnabled;
+                     if (uploadExtras) {
+                         BufferUploader::Upload extrasUpload = { workload.drawData.extraParams.data(), { 0, workload.drawData.extraParams.size() }, sizeof(interop::ExtraParams), RenderBufferFlag::STORAGE, {}, &workload.drawBuffers.extraParamsBuffer };
 diff --git a/src/render/rt64_framebuffer_renderer.cpp b/src/render/rt64_framebuffer_renderer.cpp
 index 9fae0d4..cf6687f 100644
 --- a/src/render/rt64_framebuffer_renderer.cpp
@@ -2465,18 +2571,20 @@ index 9fae0d4..cf6687f 100644
                          bool usesViewport = (proj.type == Projection::Type::Perspective) || (proj.type == Projection::Type::Orthographic);
                          if (usesViewport) {
 diff --git a/src/render/rt64_projection_processor.cpp b/src/render/rt64_projection_processor.cpp
-index e842dcc..c8cc898 100644
 --- a/src/render/rt64_projection_processor.cpp
 +++ b/src/render/rt64_projection_processor.cpp
-@@ -4,6 +4,7 @@
+@@ -4,6 +4,10 @@
  
  #include "rt64_projection_processor.h"
  
++#include <algorithm>
++#include <cmath>
++
 +#include "common/rt64_fblog.h"
  #include "common/rt64_math.h"
  #include "hle/rt64_workload_queue.h"
  
-@@ -14,7 +15,40 @@ namespace RT64 {
+@@ -14,7 +18,40 @@
          matrix[2][0] *= aspectRatioScale;
          matrix[3][0] *= aspectRatioScale;
      }
@@ -2518,7 +2626,85 @@ index e842dcc..c8cc898 100644
      // ProjectionProcessor
  
      ProjectionProcessor::ProjectionProcessor() { }
-@@ -83,6 +117,9 @@ namespace RT64 {
+@@ -22,6 +59,11 @@
+     ProjectionProcessor::~ProjectionProcessor() {
+         bufferUploader.reset(nullptr);
+     }
++
++    float noLeSyncCameraAhead = -1.0f;
++    static bool noLeSyncHaveTurn = false;
++    static hlslpp::float4x4 noLeSyncTurn;
++    static uint32_t noLeSyncWidth = 0;
+ 
+     void ProjectionProcessor::setup(RenderWorker *worker) {
+         bufferUploader = std::make_unique<BufferUploader>(worker->device);
+@@ -39,6 +81,65 @@
+             drawData.prevViewTransforms = drawData.viewTransforms;
+             drawData.prevProjTransforms = drawData.projTransforms;
+             drawData.prevViewProjTransforms = drawData.viewProjTransforms;
++        }
++
++        // (CBFD) NoLeSync: the turn of the picture's main camera (the perspective projection with the most calls), carried on past the
++        // newest frame at the rate it turned from the one before, as a turn in the camera's own space: its place kept.
++        noLeSyncHaveTurn = false;
++        if (noLeSyncCameraAhead > 0.0f) {
++            uint32_t mostCalls = 0;
++            for (size_t s = 0; s < p.curFrame->perspectiveScenes.size(); s++) {
++                const GameScene &scene = p.curFrame->perspectiveScenes[s];
++                for (size_t i = 0; i < scene.projections.size(); i++) {
++                    const GameIndices::Projection &sceneProj = scene.projections[i];
++                    const Workload &workload = p.workloadQueue->workloads[sceneProj.workloadIndex];
++                    const FramebufferPair &fbPair = workload.fbPairs[sceneProj.fbPairIndex];
++                    const Projection &proj = fbPair.projections[sceneProj.projectionIndex];
++                    if ((proj.type != Projection::Type::Perspective) || proj.scissorRect.isNull() || (proj.gameCallCount <= mostCalls) || (p.prevFrame == nullptr)) {
++                        continue;
++                    }
++                    const GameFrameMap::WorkloadMap &workloadMap = p.curFrame->frameMap.workloads[sceneProj.workloadIndex];
++                    if (!workloadMap.mapped) {
++                        continue;
++                    }
++                    const GameFrameMap::ViewProjectionMap &viewProjMap = workloadMap.viewProjections[proj.transformsIndex];
++                    if (!viewProjMap.mapped) {
++                        continue;
++                    }
++                    const Workload &prevWorkload = p.workloadQueue->workloads[workloadMap.prevWorkloadIndex];
++                    const hlslpp::float4x4 prevView = prevWorkload.drawData.viewTransforms[viewProjMap.prevTransformIndex];
++                    const hlslpp::float4x4 curView = workload.drawData.viewTransforms[proj.transformsIndex];
++                    const hlslpp::float4x4 prevCamera = hlslpp::inverse(prevView);
++                    const hlslpp::float4x4 curCamera = hlslpp::inverse(curView);
++                    interop::float4x4 aheadCamera = viewProjMap.rigidBody.lerp(1.0f + noLeSyncCameraAhead, prevCamera, curCamera, true);
++                    const interop::float4x4 curCameraRows = curCamera;
++                    for (int c = 0; c < 4; c++) {
++                        aheadCamera[3][c] = curCameraRows[3][c];
++                    }
++                    // the view ahead is the newest view turned: curView * turn
++                    // The camera ahead is lerped past the newest frame, element by element where it isn't decomposed: a rotation
++                    // carried on so isn't one any more (it stretched and sheared the picture as it turned, "melted"). So the turn is
++                    // made a rotation again: its rows made unit length and square to each other, no move, and no more than 15
++                    // degrees.
++                    interop::float4x4 turn = hlslpp::mul(curCamera, hlslpp::inverse(hlslpp::float4x4(aheadCamera)));
++                    hlslpp::float3 r0(turn[0][0], turn[0][1], turn[0][2]);
++                    hlslpp::float3 r1(turn[1][0], turn[1][1], turn[1][2]);
++                    r0 = hlslpp::normalize(r0);
++                    r1 = hlslpp::normalize(r1 - r0 * float(hlslpp::dot(r0, r1)));
++                    hlslpp::float3 r2 = hlslpp::cross(r0, r1);
++                    const float trace = float(r0.x) + float(r1.y) + float(r2.z);
++                    const float angle = std::acos(std::clamp((trace - 1.0f) * 0.5f, -1.0f, 1.0f));
++                    const bool sane = std::isfinite(angle) && (angle <= (15.0f * 3.14159265f / 180.0f));
++                    noLeSyncTurn = sane ? hlslpp::float4x4(
++                        float(r0.x), float(r0.y), float(r0.z), 0.0f,
++                        float(r1.x), float(r1.y), float(r1.z), 0.0f,
++                        float(r2.x), float(r2.y), float(r2.z), 0.0f,
++                        0.0f, 0.0f, 0.0f, 1.0f) : hlslpp::float4x4::identity();
++                    noLeSyncWidth = fbPair.colorImage.width;
++                    noLeSyncHaveTurn = true;
++                    mostCalls = proj.gameCallCount;
++                }
++            }
+         }
+ 
+         for (size_t s = 0; s < p.curFrame->perspectiveScenes.size(); s++) {
+@@ -83,6 +184,9 @@
              const uint32_t curProjGroupIndex = workload.drawData.viewProjTransformGroups[proj.transformsIndex];
              const TransformGroup &curProjGroup = workload.drawData.transformGroups[curProjGroupIndex];
              bool adjustAspectRatio = (curProjGroup.aspectMode == G_EX_ASPECT_ADJUST);
@@ -2528,7 +2714,7 @@ index e842dcc..c8cc898 100644
              if (curProjGroup.aspectMode == G_EX_ASPECT_AUTO) {
                  FixedRect intersectionRect = proj.scissorRect;
                  if (proj.usesViewport()) {
-@@ -92,13 +129,43 @@ namespace RT64 {
+@@ -92,13 +196,43 @@
                  }
  
                  if (!intersectionRect.isEmpty()) {
@@ -2573,7 +2759,7 @@ index e842dcc..c8cc898 100644
              interop::float4x4 &viewMatrix = drawData.modViewTransforms[proj.transformsIndex];
              interop::float4x4 &projMatrix = drawData.modProjTransforms[proj.transformsIndex];
              interop::float4x4 &viewProjMatrix = drawData.modViewProjTransforms[proj.transformsIndex];
-@@ -112,7 +179,7 @@ namespace RT64 {
+@@ -112,17 +246,39 @@
                  projMatrix = workload.debuggerCamera.projMatrix;
              }
  
@@ -2582,7 +2768,18 @@ index e842dcc..c8cc898 100644
  
              interop::float4x4 &prevViewTransform = drawData.prevViewTransforms[proj.transformsIndex];
              interop::float4x4 &prevProjTransform = drawData.prevProjTransforms[proj.transformsIndex];
-@@ -120,9 +187,21 @@ namespace RT64 {
+-            if ((prevProjMatrix != nullptr) && (prevViewMatrix != nullptr) && (rigidBody != nullptr)) {
++            if (noLeSyncCameraAhead >= 0.0f) {
++                // NoLeSync: the newest game frame as it is, but the main camera's turn carried on past it (noLeSyncTurn, worked out
++                // once for the frame in process()), the same turn for every perspective projection of the picture: the game puts
++                // its characters' bones in projections of their own, and turning each by its own way tore the models apart.
++                if (noLeSyncHaveTurn && (proj.type == Projection::Type::Perspective) && (fbPair.colorImage.width == noLeSyncWidth)) {
++                    viewMatrix = hlslpp::mul(hlslpp::float4x4(viewMatrix), noLeSyncTurn);
++                }
++                prevViewTransform = viewMatrix;
++                prevProjTransform = projMatrix;
++            }
++            else if ((prevProjMatrix != nullptr) && (prevViewMatrix != nullptr) && (rigidBody != nullptr)) {
                  const interop::float4x4 curViewTransform = viewMatrix;
                  const interop::float4x4 curProjTransform = projMatrix;
                  interop::float4x4 adjustedPrevProj = *prevProjMatrix;
@@ -2607,10 +2804,12 @@ index e842dcc..c8cc898 100644
  
                  // We only interpolate the projection if the view matrix has been interpolated.
                  const bool interpolateProjection = rigidBody->lerpTranslation || rigidBody->lerpRotation;
-@@ -144,6 +223,31 @@ namespace RT64 {
+@@ -144,8 +300,35 @@
  
              interop::float4x4 &prevViewProjTransform = drawData.prevViewProjTransforms[proj.transformsIndex];
              prevViewProjTransform = hlslpp::mul(prevViewTransform, prevProjTransform);
+-        }
+-    }
 +
 +            // A shadow's silhouette (Conker's Bad Fur Day draws each into a 64 pixel wide 8-bit image, 0x800DE080, then
 +            // lays it on the ground under the character as a texture): its camera is interpolated whole, each frame's
@@ -2636,9 +2835,27 @@ index e842dcc..c8cc898 100644
 +                    prevViewProjTransform = lerpMatrix(prevAimed, curAimed, p.prevFrameWeight);
 +                }
 +            }
-         }
-     }
++        }
++    }
++
++
  
+     void ProjectionProcessor::upload(const ProcessParams &p) {
+         uploads.clear();
+diff --git a/src/render/rt64_projection_processor.h b/src/render/rt64_projection_processor.h
+--- a/src/render/rt64_projection_processor.h
++++ b/src/render/rt64_projection_processor.h
+@@ -9,6 +9,10 @@
+ #include "rt64_buffer_uploader.h"
+ 
+ namespace RT64 {
++    // (CBFD: NoLeSync) how far past the newest game frame the camera's turn is carried for the frame being drawn, in game frames
++    // (0 is the newest frame itself); below 0 when the framerate isn't NoLeSync.
++    extern float noLeSyncCameraAhead;
++
+     struct ProjectionProcessor {
+         std::unique_ptr<BufferUploader> bufferUploader;
+         std::vector<BufferUploader::Upload> uploads;
 diff --git a/src/render/rt64_texture_cache.cpp b/src/render/rt64_texture_cache.cpp
 index 0848f3e..a153536 100644
 --- a/src/render/rt64_texture_cache.cpp

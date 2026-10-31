@@ -917,6 +917,25 @@ index 5593172..a5c8c38 100644
  
  if (WIN32)
      add_compile_definitions(NOMINMAX)
+diff --git a/ultramodern/include/ultramodern/config.hpp b/ultramodern/include/ultramodern/config.hpp
+--- a/ultramodern/include/ultramodern/config.hpp
++++ b/ultramodern/include/ultramodern/config.hpp
+@@ -49,6 +49,7 @@
+             Original,
+             Display,
+             Manual,
++            NoLeSync,
+             OptionCount
+         };
+         enum class HighPrecisionFramebuffer {
+@@ -126,6 +127,7 @@
+             {ultramodern::renderer::RefreshRate::Original, "Original"},
+             {ultramodern::renderer::RefreshRate::Display, "Display"},
+             {ultramodern::renderer::RefreshRate::Manual, "Manual"},
++            {ultramodern::renderer::RefreshRate::NoLeSync, "NoLeSync"},
+         });
+ 
+         NLOHMANN_JSON_SERIALIZE_ENUM(ultramodern::renderer::HighPrecisionFramebuffer, {
 diff --git a/ultramodern/include/ultramodern/save_states.hpp b/ultramodern/include/ultramodern/save_states.hpp
 new file mode 100644
 index 0000000..0c9078a
@@ -1147,7 +1166,6 @@ index 46aea61..8f19c0e 100644
  // Time
  std::chrono::high_resolution_clock::time_point get_start();
 diff --git a/ultramodern/src/events.cpp b/ultramodern/src/events.cpp
-index 17d7a47..d4fb0de 100644
 --- a/ultramodern/src/events.cpp
 +++ b/ultramodern/src/events.cpp
 @@ -17,6 +17,7 @@
@@ -1158,7 +1176,7 @@ index 17d7a47..d4fb0de 100644
  
  static ultramodern::events::callbacks_t events_callbacks{};
  
-@@ -184,6 +185,9 @@ extern moodycamel::LightweightSemaphore graphics_shutdown_ready;
+@@ -184,14 +185,15 @@
  
  void set_dummy_vi(bool odd);
  
@@ -1168,16 +1186,15 @@ index 17d7a47..d4fb0de 100644
  void vi_thread_func() {
      ultramodern::set_native_thread_name("VI Thread");
      // This thread should be prioritized over every other thread in the application, as it's what allows
-@@ -191,8 +195,6 @@ void vi_thread_func() {
+     // the game to generate new audio and gfx lists.
      ultramodern::set_native_thread_priority(ultramodern::ThreadPriority::Critical);
      using namespace std::chrono_literals;
- 
--    int remaining_retraces = 1;
 -
+-    int remaining_retraces = 1;
+ 
      while (!exited) {
          // Determine the next VI time (more accurate than adding 16ms each VI interrupt)
-         auto next = ultramodern::get_start() + (total_vis * 1000000us) / (60 * ultramodern::get_speed_multiplier());
-@@ -295,6 +297,7 @@ void task_thread_func(uint8_t* rdram, moodycamel::LightweightSemaphore* thread_r
+@@ -295,6 +297,7 @@
  
          // Tell the game that the RSP has completed
          sp_complete();
@@ -1185,7 +1202,15 @@ index 17d7a47..d4fb0de 100644
      }
  }
  
-@@ -379,6 +382,7 @@ void gfx_thread_func(uint8_t* rdram, moodycamel::LightweightSemaphore* thread_re
+@@ -311,6 +314,7 @@
+         case ultramodern::renderer::RefreshRate::Manual:
+             return config.rr_manual_value;
+         case ultramodern::renderer::RefreshRate::Display:
++        case ultramodern::renderer::RefreshRate::NoLeSync:
+             return display_refresh_rate.load();
+     }
+ }
+@@ -379,6 +383,7 @@
                  [[maybe_unused]] auto renderer_end = std::chrono::high_resolution_clock::now();
  
                  dp_complete();
@@ -1193,7 +1218,7 @@ index 17d7a47..d4fb0de 100644
                  // TODO hook the parsed event up to the actual parsing point when a callback is added to RT64.
                  ultramodern::extensions::on_displaylist_parsed(displaylist);
                  ultramodern::extensions::on_displaylist_completed(displaylist);
-@@ -565,6 +569,9 @@ extern "C" PTR(void) osViGetCurrentFramebuffer() {
+@@ -565,6 +570,9 @@
  void ultramodern::submit_rsp_task(RDRAM_ARG PTR(OSTask) task_) {
      OSTask* task = TO_PTR(OSTask, task_);
  
@@ -1203,10 +1228,12 @@ index 17d7a47..d4fb0de 100644
      // Send gfx tasks to the graphics action queue
      if (task->t.type == M_GFXTASK) {
          events_context.action_queue.enqueue(SpTaskAction{ *task });
-@@ -575,6 +582,57 @@ void ultramodern::submit_rsp_task(RDRAM_ARG PTR(OSTask) task_) {
+@@ -573,6 +581,57 @@
+     else {
+         events_context.sp_task_queue.enqueue(task);
      }
- }
- 
++}
++
 +// --- Save states (save_states.hpp) ---
 +
 +ultramodern::save_states::EventState ultramodern::save_states::get_event_state(RDRAM_ARG1) {
@@ -1256,11 +1283,9 @@ index 17d7a47..d4fb0de 100644
 +    events_context.dp.mq = state.dp_mq; events_context.dp.msg = state.dp_msg;
 +    events_context.ai.mq = state.ai_mq; events_context.ai.msg = state.ai_msg;
 +    events_context.si.mq = state.si_mq; events_context.si.msg = state.si_msg;
-+}
-+
- void ultramodern::send_si_message() {
-     ultramodern::enqueue_external_message_src(events_context.si.mq, events_context.si.msg, false, ultramodern::EventMessageSource::Si);
  }
+ 
+ void ultramodern::send_si_message() {
 diff --git a/ultramodern/src/mesgqueue.cpp b/ultramodern/src/mesgqueue.cpp
 index 9944a02..dc03182 100644
 --- a/ultramodern/src/mesgqueue.cpp

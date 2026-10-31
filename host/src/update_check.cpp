@@ -224,6 +224,11 @@ namespace {
         return https_get(L"api.github.com", "/repos/" + repo + "/releases/latest", L"Accept: application/vnd.github+json", true);
     }
 
+    // (0.11.4) any of the API's pages (the launcher's patch notes: a release by its tag)
+    Answer api_get(const std::string& path) {
+        return https_get(L"api.github.com", path, L"Accept: application/vnd.github+json", true);
+    }
+
     Answer page_without_redirect(const std::string& path) {
         return https_get(L"github.com", path, nullptr, false);
     }
@@ -247,6 +252,19 @@ namespace {
         // (the status is written after the body, on a line of its own)
         const std::string out = run("curl -s -m 8 -w '\\n%{http_code}' -H 'Accept: application/vnd.github+json' -H 'User-Agent: ConkerRecomp-update-check' 'https://api.github.com/repos/" +
                                     repo + "/releases/latest' 2>/dev/null");
+        const size_t line = out.rfind('\n');
+        if (line != std::string::npos) {
+            answer.status = std::atoi(out.c_str() + line + 1);
+            answer.body = out.substr(0, line);
+        }
+        return answer;
+    }
+
+    // (0.11.4) any of the API's pages (the launcher's patch notes: a release by its tag)
+    Answer api_get(const std::string& path) {
+        Answer answer;
+        const std::string out = run("curl -s -m 8 -w '\\n%{http_code}' -H 'Accept: application/vnd.github+json' -H 'User-Agent: ConkerRecomp-update-check' 'https://api.github.com" +
+                                    path + "' 2>/dev/null");
         const size_t line = out.rfind('\n');
         if (line != std::string::npos) {
             answer.status = std::atoi(out.c_str() + line + 1);
@@ -391,6 +409,130 @@ void conker::updates::check_again() {
 
 const char* conker::updates::current_version() {
     return CONKER_ONLINE_VERSION;
+}
+
+// --- (0.11.4) The launcher's patch notes, from GitHub: this build's own release (its tag, v<version>), or the newest one if it has none
+// on GitHub (a build not released yet), its text as written on GitHub (Markdown) ---
+
+namespace {
+    std::mutex notes_mutex;
+    std::atomic<bool> notes_started{ false };
+    std::atomic<int> notes_state{ 0 };   // 0 fetching, 1 found, 2 couldn't
+    std::string notes_tag, notes_body, notes_page;
+
+    // A JSON string's value by its key ("body": "..."), its escapes undone (\n, \", \uXXXX as UTF-8...).
+    std::string json_string(const std::string& json, const char* key) {
+        const std::string quoted = std::string("\"") + key + "\"";
+        const size_t at = json.find(quoted);
+        if (at == std::string::npos) {
+            return {};
+        }
+        size_t i = json.find(':', at + quoted.size());
+        if (i == std::string::npos) {
+            return {};
+        }
+        i = json.find_first_not_of(" \t\r\n", i + 1);
+        if (i == std::string::npos || json[i] != '"') {
+            return {};
+        }
+        std::string out;
+        const auto utf8 = [&out](uint32_t cp) {
+            if (cp < 0x80) {
+                out += (char)cp;
+            } else if (cp < 0x800) {
+                out += (char)(0xC0 | (cp >> 6));
+                out += (char)(0x80 | (cp & 0x3F));
+            } else if (cp < 0x10000) {
+                out += (char)(0xE0 | (cp >> 12));
+                out += (char)(0x80 | ((cp >> 6) & 0x3F));
+                out += (char)(0x80 | (cp & 0x3F));
+            } else {
+                out += (char)(0xF0 | (cp >> 18));
+                out += (char)(0x80 | ((cp >> 12) & 0x3F));
+                out += (char)(0x80 | ((cp >> 6) & 0x3F));
+                out += (char)(0x80 | (cp & 0x3F));
+            }
+        };
+        for (i = i + 1; i < json.size(); i++) {
+            const char c = json[i];
+            if (c == '"') {
+                break;
+            }
+            if (c != '\\' || i + 1 >= json.size()) {
+                out += c;
+                continue;
+            }
+            const char e = json[++i];
+            switch (e) {
+            case 'n': out += '\n'; break;
+            case 'r': break;
+            case 't': out += '\t'; break;
+            case 'b': case 'f': break;
+            case 'u': {
+                if (i + 4 >= json.size()) {
+                    return out;
+                }
+                uint32_t cp = (uint32_t)std::strtoul(json.substr(i + 1, 4).c_str(), nullptr, 16);
+                i += 4;
+                if (cp >= 0xD800 && cp < 0xDC00 && i + 6 < json.size() && json[i + 1] == '\\' && json[i + 2] == 'u') {
+                    const uint32_t low = (uint32_t)std::strtoul(json.substr(i + 3, 4).c_str(), nullptr, 16);
+                    if (low >= 0xDC00 && low < 0xE000) {
+                        cp = 0x10000 + ((cp - 0xD800) << 10) + (low - 0xDC00);
+                        i += 6;
+                    }
+                }
+                utf8(cp);
+                break;
+            }
+            default: out += e; break;
+            }
+        }
+        return out;
+    }
+}
+
+void conker::updates::fetch_notes_in_background() {
+    if (notes_started.exchange(true)) {
+        return;
+    }
+    if (SDL_getenv("CONKER_NO_UPDATE_CHECK") != nullptr) {
+        notes_state = 2;
+        return;
+    }
+    std::thread([]() {
+        const std::string repo = repo_name();
+        Answer answer = api_get("/repos/" + repo + "/releases/tags/v" + std::string(CONKER_ONLINE_VERSION));
+        if (answer.status != 200) {
+            answer = api_get("/repos/" + repo + "/releases/latest");
+        }
+        std::string tag, body;
+        if (answer.status == 200) {
+            tag = find_tag(answer.body);
+            body = json_string(answer.body, "body");
+        }
+        {
+            std::lock_guard lock{ notes_mutex };
+            notes_tag = tag;
+            notes_body = body;
+            notes_page = "https://github.com/" + repo + (tag.empty() ? std::string("/releases/latest") : "/releases/tag/" + tag);
+        }
+        notes_state = (answer.status == 200 && !body.empty()) ? 1 : 2;
+    }).detach();
+}
+
+int conker::updates::release_notes(std::string* tag, std::string* body, std::string* page) {
+    const int state = notes_state.load();
+    std::lock_guard lock{ notes_mutex };
+    if (tag != nullptr) {
+        *tag = notes_tag;
+    }
+    if (body != nullptr) {
+        *body = notes_body;
+    }
+    if (page != nullptr) {
+        *page = notes_page.empty() ? "https://github.com/" + repo_name() + "/releases" : notes_page;
+    }
+    return state;
 }
 
 // --- Installing ---

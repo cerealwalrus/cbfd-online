@@ -1,0 +1,232 @@
+diff --git a/recompui/include/recompui/config.h b/recompui/include/recompui/config.h
+--- a/recompui/include/recompui/config.h
++++ b/recompui/include/recompui/config.h
+@@ -95,6 +95,10 @@
+          */
+         recomp::config::Config &create_config_tab(const std::string &name, const std::string &id, bool requires_confirmation);
+ 
++        // (Conker) A config with no tab of its own (loaded and saved as a tab's is, <id>.json): the Controls tab's Mouse page shows the
++        // "mouse" one (ui_config_tab_controls.cpp).
++        recomp::config::Config &create_hidden_config(const std::string &name, const std::string &id);
++
+         /**
+          * @brief Adds a new tab to the config modal. This is for manually rendering your own tab's UI.
+          * 
+diff --git a/recompui/src/config/ui_config.cpp b/recompui/src/config/ui_config.cpp
+--- a/recompui/src/config/ui_config.cpp
++++ b/recompui/src/config/ui_config.cpp
+@@ -65,6 +65,11 @@
+         });
+     }
+ 
++    recomp::config::Config &config::create_hidden_config(const std::string &name, const std::string &id) {
++        configs.push_back(std::make_pair(id, recomp::config::Config(name, id, false)));
++        return configs.back().second;
++    }
++
+     recomp::config::Config &config::create_config_tab(const std::string &name, const std::string &id, bool requires_confirmation) {
+         configs.push_back(std::make_pair(id, recomp::config::Config(name, id, requires_confirmation)));
+         recomp::config::Config &new_config = configs.back().second;
+diff --git a/recompui/src/config/ui_config_page_controls.h b/recompui/src/config/ui_config_page_controls.h
+--- a/recompui/src/config/ui_config_page_controls.h
++++ b/recompui/src/config/ui_config_page_controls.h
+@@ -11,6 +11,7 @@
+ #include "elements/ui_toggle.h"
+ #include "elements/ui_modal.h"
+ #include "composites/ui_player_card.h"
++#include <functional>
+ 
+ namespace recompui {
+ 
+@@ -150,7 +151,11 @@
+     std::vector<PlayerCard*> player_cards;
+     std::vector<GameInputRowsWrapper*> rows_wrappers;
+     std::vector<GameInputRow*> game_input_rows;
+-    IconToggle *keyboard_toggle;
++    IconToggle *keyboard_toggle = nullptr;
++    // (Conker) the footer: the controller's button on its own, the keyboard's and the mouse's together
++    IconButton *cont_button = nullptr;
++    IconButton *keyboard_button = nullptr;
++    void style_device_buttons();
+     Element *description_container = nullptr;
+     on_player_bind_callback on_player_bind;
+     Element *nav_up_element = nullptr;
+@@ -200,6 +205,11 @@
+ public:
+     ConfigPageControls(ResourceId rid, Element *parent);
+     virtual ~ConfigPageControls();
++
++    // (Conker) the footer's Mouse button, beside the controller and keyboard toggle (the Controls tab's Mouse page,
++    // ui_config_tab_controls.cpp), and going back to the controller's or the keyboard's controls from it
++    static std::function<void()> mouse_button_pressed;
++    void show_keyboard_mappings(bool keyboard);
+     
+     void force_update();
+ 
+diff --git a/recompui/src/config/ui_config_page_controls.cpp b/recompui/src/config/ui_config_page_controls.cpp
+--- a/recompui/src/config/ui_config_page_controls.cpp
++++ b/recompui/src/config/ui_config_page_controls.cpp
+@@ -182,6 +182,30 @@
+     render_all();
+ }
+ 
++std::function<void()> ConfigPageControls::mouse_button_pressed;
++
++void ConfigPageControls::show_keyboard_mappings(bool keyboard) {
++    single_player_show_keyboard_mappings = keyboard;
++    if (!multiplayer_enabled && keyboard_toggle != nullptr) {
++        keyboard_toggle->set_checked(keyboard);
++    }
++    style_device_buttons();
++    update_control_mappings();
++}
++
++// (Conker) the footer's device buttons: the one whose controls are shown lit
++void ConfigPageControls::style_device_buttons() {
++    if (multiplayer_enabled) {
++        return;
++    }
++    if (cont_button != nullptr) {
++        cont_button->apply_button_style(single_player_show_keyboard_mappings ? ButtonStyle::Basic : ButtonStyle::Primary);
++    }
++    if (keyboard_button != nullptr) {
++        keyboard_button->apply_button_style(single_player_show_keyboard_mappings ? ButtonStyle::Primary : ButtonStyle::Basic);
++    }
++}
++
+ ConfigPageControls::~ConfigPageControls() {
+     controls_page = nullptr;
+ }
+@@ -476,12 +500,30 @@
+         auto footer_left = footer->get_left();
+         footer_left->clear_children();
+         if (!multiplayer_enabled) {
+-            keyboard_toggle = context.create_element<IconToggle>(footer_left, "icons/Cont.svg", "icons/Keyboard.svg", ToggleSize::Large);
+-            keyboard_toggle->set_checked(single_player_show_keyboard_mappings);
+-            keyboard_toggle->add_checked_callback([this](bool checked) {
+-                this->single_player_show_keyboard_mappings = checked;
+-                this->update_control_mappings();
+-            });
++            // (Conker) the controller's button on its own, and the keyboard's and the mouse's (the Mouse page) together in one
++            // rounded frame: the keyboard and the mouse are played together
++            keyboard_toggle = nullptr;
++            cont_button = context.create_element<IconButton>(footer_left, "icons/Cont.svg", ButtonStyle::Basic, IconButtonSize::Large);
++            cont_button->add_pressed_callback([this]() { this->show_keyboard_mappings(false); });
++            auto kb_mouse = context.create_element<Container>(footer_left, FlexDirection::Row, JustifyContent::FlexStart);
++            kb_mouse->set_align_items(AlignItems::Center);
++            kb_mouse->set_margin_left(24.0f);
++            kb_mouse->set_padding(4.0f);
++            kb_mouse->set_border_width(2.0f);
++            kb_mouse->set_border_color(theme::color::PrimaryA50);
++            kb_mouse->set_border_radius(36.0f);
++            keyboard_button = context.create_element<IconButton>(kb_mouse, "icons/Keyboard.svg", ButtonStyle::Basic, IconButtonSize::Large);
++            keyboard_button->add_pressed_callback([this]() { this->show_keyboard_mappings(true); });
++            if (mouse_button_pressed) {
++                auto mouse_button = context.create_element<IconButton>(kb_mouse, "icons/Mouse.svg", ButtonStyle::Basic, IconButtonSize::Large);
++                mouse_button->set_margin_left(4.0f);
++                mouse_button->add_pressed_callback([]() {
++                    if (ConfigPageControls::mouse_button_pressed) {
++                        ConfigPageControls::mouse_button_pressed();
++                    }
++                });
++            }
++            style_device_buttons();
+         }
+     }
+     {
+diff --git a/recompui/src/config/ui_config_tab_controls.cpp b/recompui/src/config/ui_config_tab_controls.cpp
+--- a/recompui/src/config/ui_config_tab_controls.cpp
++++ b/recompui/src/config/ui_config_tab_controls.cpp
+@@ -4,6 +4,8 @@
+ #include "elements/ui_element.h"
+ #include "ui_config_page_controls.h"
+ #include "librecomp/game.hpp"
++#include "ui_config_page_options_menu.h"
++#include "elements/ui_container.h"
+ 
+ namespace recompui {
+ 
+@@ -12,12 +14,65 @@
+         name,
+         config::controls::id,
+         [](ContextId context, Element* parent) {
+-            context.create_element<ConfigPageControls>(parent);
++            // (Conker) the Mouse page: the hidden "mouse" config's options (create_hidden_config), shown in the controls' place by the
++            // footer's Mouse button, with the controller and keyboard buttons in its own footer to go back
++            recomp::config::Config *mouse_config = nullptr;
++            try {
++                mouse_config = &config::get_config("mouse");
++            } catch (...) {
++                mouse_config = nullptr;
++            }
++            struct Pages { ConfigPageControls *controls = nullptr; ConfigPageOptionsMenu *mouse = nullptr; };
++            auto pages = std::make_shared<Pages>();
++            if (mouse_config != nullptr) {
++                ConfigPageControls::mouse_button_pressed = [pages]() {
++                    if (pages->controls != nullptr && pages->mouse != nullptr) {
++                        pages->controls->display_hide();
++                        pages->mouse->display_show();
++                    }
++                };
++            } else {
++                ConfigPageControls::mouse_button_pressed = nullptr;
++            }
++            pages->controls = context.create_element<ConfigPageControls>(parent);
++            if (mouse_config != nullptr) {
++                pages->mouse = context.create_element<ConfigPageOptionsMenu>(parent, mouse_config, false);
++                pages->mouse->display_hide();
++                auto footer = pages->mouse->add_footer();
++                footer->set_as_navigation_container(NavigationType::Horizontal);
++                auto footer_left = footer->get_left();
++                auto back_to = [pages](bool keyboard) {
++                    if (pages->controls != nullptr && pages->mouse != nullptr) {
++                        pages->mouse->display_hide();
++                        pages->controls->display_show();
++                        pages->controls->show_keyboard_mappings(keyboard);
++                    }
++                };
++                // (the controller's button on its own, the keyboard's and the mouse's together, as on the controls' page)
++                auto cont_button = context.create_element<IconButton>(footer_left, "icons/Cont.svg", ButtonStyle::Basic, IconButtonSize::Large);
++                cont_button->add_pressed_callback([back_to]() { back_to(false); });
++                auto kb_mouse = context.create_element<Container>(footer_left, FlexDirection::Row, JustifyContent::FlexStart);
++                kb_mouse->set_align_items(AlignItems::Center);
++                kb_mouse->set_margin_left(24.0f);
++                kb_mouse->set_padding(4.0f);
++                kb_mouse->set_border_width(2.0f);
++                kb_mouse->set_border_color(theme::color::PrimaryA50);
++                kb_mouse->set_border_radius(36.0f);
++                auto keyboard_button = context.create_element<IconButton>(kb_mouse, "icons/Keyboard.svg", ButtonStyle::Basic, IconButtonSize::Large);
++                keyboard_button->add_pressed_callback([back_to]() { back_to(true); });
++                auto mouse_button = context.create_element<IconButton>(kb_mouse, "icons/Mouse.svg", ButtonStyle::Primary, IconButtonSize::Large);
++                mouse_button->set_margin_left(4.0f);
++            }
+         },
+         nullptr,
+         [](TabCloseContext close_context) {
+             // Save the current control mappings when closing the controls tab.
+             recompinput::profiles::save_controls_config(recomp::get_config_path() / (config::controls::id + ".json"));
++            // (Conker) and the Mouse page's settings
++            try {
++                config::get_config("mouse").save_config();
++            } catch (...) {
++            }
+         }
+     );
+ }
+diff --git a/recompinput/src/input_events.cpp b/recompinput/src/input_events.cpp
+--- a/recompinput/src/input_events.cpp
++++ b/recompinput/src/input_events.cpp
+@@ -242,6 +242,13 @@
+ 
+         // Lock the cursor if all three conditions are true: mouse aiming is enabled, game input is not disabled, and the game has been started. 
+         bool cursor_locked = (has_mouse_sensitivity && recompui::config::general::get_mouse_sensitivity() != 0) && !recompinput::game_input_disabled() && ultramodern::is_game_started();
++        // (Conker) and only with Mouse Controls on (the Controls tab's Mouse page: 0 is On)
++        {
++            recomp::config::Config *mouse_config = recompui::config::find_option_config("mouse_enabled");
++            if (mouse_config == nullptr || std::get<uint32_t>(mouse_config->get_option_value("mouse_enabled")) != 0) {
++                cursor_locked = false;
++            }
++        }
+ 
+         // Hide the cursor based on its enable state, but override visibility to false if the cursor is locked.
+         bool cursor_visible = recompui::get_cursor_visible();

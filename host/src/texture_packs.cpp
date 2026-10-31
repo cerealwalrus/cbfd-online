@@ -75,8 +75,7 @@ namespace {
     }
 
     uint32_t selected() {
-        recomp::config::Config* config = recompui::config::find_option_config(option_id);
-        return config ? std::get<uint32_t>(config->get_option_value(option_id)) : mods_menu;
+        return mods_menu;   // (0.11.4: the Texture Pack setting hidden: the packs are as the Mods menu has them, turned on and off there)
     }
 }
 
@@ -121,6 +120,7 @@ void conker::texture_packs::add_options(recomp::config::Config& config) {
         "several can be on at once. <recomp-color primary>None</recomp-color> turns them all off. Choosing a pack turns "
         "it on and the others off.",
         options, mods_menu);
+    config.update_option_hidden(option_id, true);   // (0.11.4: the Mods menu turns the packs on and off)
     config.add_option_change_callback(option_id,
         [](recomp::config::ConfigValueVariant, recomp::config::ConfigValueVariant, recomp::config::OptionChangeContext context) {
             // Once applied: the Graphics tab keeps a choice as temporary until its Apply button
@@ -142,56 +142,70 @@ void conker::texture_packs::apply() {
 }
 
 namespace {
-    // The pack that comes with the program, its file in assets/packs and its mod id (its mod.json's), and the older copies of it
-    // (any .rtz whose name starts so) that it replaces.
-    const char* const bundled_file = "ConkerBFDReloaded-HD-Icons-v1.3.4-Mansion.rtz";
-    const char* const bundled_id = "conker_hd_icons";
-    const char* const bundled_family = "ConkerBFDReloaded-HD-Icons";
-    bool bundled_just_installed = false;
+    // The packs that come with the program: each its file in assets/packs, its mod id (its mod.json's), the older copies of it
+    // (any .rtz whose name starts with its family) that it replaces, and the line in the config folder saying it was put there.
+    struct Bundled {
+        const char* file;
+        const char* id;
+        const char* family;
+        const char* record;
+        bool just_installed;
+    };
+    Bundled bundled[] = {
+        { "ConkerBFDReloaded-HD-Icons-v1.3.4-Mansion.rtz", "conker_hd_icons", "ConkerBFDReloaded-HD-Icons", "bundled_texture_pack.txt", false },
+        // (0.11.4) the characters and maps made from meshes, their textures at their own size (tools/texture_packs/custom_hd_pack.py):
+        // in the game each is a 64 x 32 CI8 at most, the pack puts its own picture over it, matched by its Rice hash as it's loaded
+        // (v2: the new maps' see-through textures cut out, tools/cave/cutout.py: their palettes changed, so their pictures renamed)
+        { "CBFD-Custom-HD-v2.rtz", "conker_custom_hd", "CBFD-Custom-HD", "bundled_texture_pack_custom_hd.txt", false },
+    };
 }
 
 void conker::texture_packs::install_bundled() {
-    std::error_code ec;
-    const std::filesystem::path source = recompui::file::get_asset_path((std::string("packs/") + bundled_file).c_str());
-    if (!std::filesystem::exists(source, ec)) {
-        return;
-    }
-    const std::filesystem::path mods = recomp::mods::get_mods_directory();
-    const std::filesystem::path target = mods / bundled_file;
-    // the pack last put there (a line in the config folder): if it's this one and the user has since deleted it, it stays deleted
-    const std::filesystem::path record = recomp::get_config_path() / "bundled_texture_pack.txt";
-    std::string installed;
-    {
-        std::ifstream in(record);
-        std::getline(in, installed);
-    }
-    if (std::filesystem::exists(target, ec) || installed == bundled_file) {
-        return;
-    }
-    std::filesystem::create_directories(mods, ec);
-    // an older copy (the same mod id twice would clash): moved to mods/replaced, where the mod loader doesn't look
-    for (const auto& entry : std::filesystem::directory_iterator{ mods, std::filesystem::directory_options::skip_permission_denied, ec }) {
-        const std::filesystem::path& path = entry.path();
-        if (entry.is_regular_file(ec) && path.extension() == ".rtz" && path.filename().string().rfind(bundled_family, 0) == 0 &&
-                path.filename() != bundled_file) {
-            std::filesystem::create_directories(mods / "replaced", ec);
-            std::filesystem::rename(path, mods / "replaced" / path.filename(), ec);
-            std::printf("[packs] %s moved to mods/replaced (the program's own %s replaces it)\n", path.filename().string().c_str(), bundled_file);
+    for (Bundled& pack : bundled) {
+        std::error_code ec;
+        const std::filesystem::path source = recompui::file::get_asset_path((std::string("packs/") + pack.file).c_str());
+        if (!std::filesystem::exists(source, ec)) {
+            continue;
         }
+        const std::filesystem::path mods = recomp::mods::get_mods_directory();
+        const std::filesystem::path target = mods / pack.file;
+        // the pack last put there (a line in the config folder): if it's this one and the user has since deleted it, it stays deleted
+        const std::filesystem::path record = recomp::get_config_path() / pack.record;
+        std::string installed;
+        {
+            std::ifstream in(record);
+            std::getline(in, installed);
+        }
+        if (std::filesystem::exists(target, ec) || installed == pack.file) {
+            continue;
+        }
+        std::filesystem::create_directories(mods, ec);
+        // an older copy (the same mod id twice would clash): moved to mods/replaced, where the mod loader doesn't look
+        for (const auto& entry : std::filesystem::directory_iterator{ mods, std::filesystem::directory_options::skip_permission_denied, ec }) {
+            const std::filesystem::path& path = entry.path();
+            if (entry.is_regular_file(ec) && path.extension() == ".rtz" && path.filename().string().rfind(pack.family, 0) == 0 &&
+                    path.filename() != pack.file) {
+                std::filesystem::create_directories(mods / "replaced", ec);
+                std::filesystem::rename(path, mods / "replaced" / path.filename(), ec);
+                std::printf("[packs] %s moved to mods/replaced (the program's own %s replaces it)\n", path.filename().string().c_str(), pack.file);
+            }
+        }
+        std::filesystem::copy_file(source, target, std::filesystem::copy_options::overwrite_existing, ec);
+        if (ec) {
+            std::printf("[packs] couldn't put %s in the mods folder: %s\n", pack.file, ec.message().c_str());
+            continue;
+        }
+        std::ofstream(record) << pack.file << "\n";
+        pack.just_installed = true;
+        std::printf("[packs] %s put in the mods folder\n", pack.file);
     }
-    std::filesystem::copy_file(source, target, std::filesystem::copy_options::overwrite_existing, ec);
-    if (ec) {
-        std::printf("[packs] couldn't put %s in the mods folder: %s\n", bundled_file, ec.message().c_str());
-        return;
-    }
-    std::ofstream(record) << bundled_file << "\n";
-    bundled_just_installed = true;
-    std::printf("[packs] %s put in the mods folder\n", bundled_file);
 }
 
 void conker::texture_packs::enable_bundled() {
-    if (bundled_just_installed) {
-        bundled_just_installed = false;
-        recomp::mods::enable_mod(bundled_id, true);
+    for (Bundled& pack : bundled) {
+        if (pack.just_installed) {
+            pack.just_installed = false;
+            recomp::mods::enable_mod(pack.id, true);
+        }
     }
 }

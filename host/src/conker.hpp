@@ -24,6 +24,10 @@ namespace recomp::config {
 struct _SDL_GameController;
 
 namespace conker {
+    // (0.11.4) Quit while the game runs (the settings' quit button): this program is started again, fresh at the launcher's main
+    // screen (it waits for this one to close first: --wait-pid), and this one then closes as Quit always did (main.cpp).
+    void relaunch_to_launcher();
+
     // overlays.cpp
     void register_overlays();
     void register_tlb_mapped_code();
@@ -88,6 +92,16 @@ namespace conker {
 
     // frontend.cpp: RecompFrontend's launcher and menus (recompui) and input (recompinput).
     namespace frontend {
+        // (0.11.4) The dedicated controls (Controls: First-Person View, Crouch, Zoom In/Out, Aim Up/Down/Left/Right) held at a port's
+        // last read, as bits (look_aim.cpp's dedicated_bits): online the high 16 of this machine's buttons, offline turned into the
+        // game's buttons where it reads them (look_aim::dedicated_controls).
+        uint16_t dedicated_keys(int port);
+        // (0.11.4) The mouse: its movement since the last take (each input poll's, at Mouse: Sensitivity) taken as this frame's, as the
+        // game reads player 1's port (offline) or this machine's input is sampled (online); and this frame's, in pixels.
+        void sample_mouse();
+        void frame_mouse(float* x, float* y);
+        // (0.11.4, temporary: the button probe) a port's buttons as the game was last given them, held, and pressed at that read.
+        void probe_buttons(int port, uint16_t* held, uint16_t* pressed);
         // The window's size when it opens (main.cpp's --window); 1600 x 900 when 0.
         inline int window_width = 0;
         inline int window_height = 0;
@@ -158,15 +172,22 @@ namespace conker {
 
     // look_aim.cpp: gyro and mouse in the look mode (hold R), and how each input moves the view.
     namespace look_aim {
-        // Its settings: the camera's and the stick's aiming on the Camera tab, the mouse's and
-        // gyro's on the Mouse & Gyro tab.
+        // (0.11.4) Stick: Aiming Response Modern (this machine's player's): the online aim's curve and easing, and every weapon's R-Look aim as the
+        // SMG's and the M4's
+        bool modern_aim();
+        // Its settings: the camera's and the stick's aiming on the Camera tab. (0.11.4: no mouse or gyro aiming, nor their settings.)
         void add_camera_options(recomp::config::Config& config);
-        void add_mouse_gyro_options(recomp::config::Config& config);
-        // Called on every input poll: queues its mouse and gyro movement for the look mode.
-        void on_input_poll();
-        // The Mouse: Turn the Camera setting: whether the mouse turns the third-person camera
-        // (mouse_camera.cpp).
+        // (0.11.4) Mouse: Sensitivity and Mouse: Invert Aiming, on the General tab.
+        void add_mouse_options(recomp::config::Config& config);
+        // (0.11.4) Mouse: Turn the Camera, with the mouse on: outside aiming, the mouse turns the camera (mouse_camera.cpp).
         bool mouse_turns_camera();
+        // (0.11.4) Mouse Controls on (and Mouse: Sensitivity above 0): the mouse aims, turns the camera and presses its buttons.
+        bool mouse_on();
+        // (0.11.4) This frame's mouse aim of a game player, in degrees (yaw growing to the left, pitch downward, as the look mode's):
+        // online the frame's agreed input, offline this machine's (player 1). False with none.
+        bool mouse_aim(int player, float* yaw, float* pitch);
+        // (0.11.4) The mouse's movement this frame (frontend::frame_mouse) as degrees of aim, with Mouse: Invert Aiming, for the input.
+        void mouse_aim_degrees(float mouse_x, float mouse_y, float* yaw, float* pitch);
         // The Right Stick: Free Camera setting (issue #65), in single player: whether the right stick
         // turns the third-person camera (mouse_camera.cpp) instead of pressing the C-buttons.
         bool stick_free_camera();
@@ -204,15 +225,22 @@ namespace conker {
         bool sampled_swap();
         // This machine's aiming settings that change what the game does (look_aim.cpp's look_flag bits), for its input online.
         uint8_t sampled_look_flags();
+        // (0.11.4) This machine's Stick: Aiming Sensitivity in percent, for its input online.
+        uint8_t sampled_aim_sensitivity();
+        // (0.11.4) Camera: Field of View as sent in this machine's input (degrees tall, 40 to 75)
+        uint8_t sampled_field_of_view();
+        // (0.11.4, temporary) the button probe's log of a port's buttons as the game is given them, when they change.
+        void probe_pad(int port, uint16_t held, uint16_t before);
+        // The Aim keys held (frontend::dedicated_keys' bits) as a stick's tilt, -1 to 1 (right, down positive: SDL's way), for the Free Camera.
+        bool dedicated_aim_tilt(uint16_t keys, float* x, float* y);
         // Whether the player's character is aiming the shotgun (state 0x3B), where Z (the laser sight) makes
         // C-Left and C-Right turn the aim: the swapped left stick leaves them out while Z is held (frontend.cpp).
         bool z_turns_aim(int player);
+        bool shotgun_aiming_now(int player);
         // The bank's slow motion leaps (issue #85): from the game thread as a frame starts, whether
-        // player 1's Conker is leaping; whether he was, from any thread; and, from the input thread,
-        // the mouse's tilt added to player 1's stick while he is (the mouse moves the crosshair).
+        // player 1's Conker is leaping; whether he was, from any thread.
         void leap_frame(uint8_t* rdram);
         bool leaping_now();
-        void leap_stick(float& x, float& y);
         // Camera: Invert Turning, for the free camera's stick: turning (x) and tilting (y).
         void free_camera_invert(bool& x, bool& y);
         // Camera: Turning Speed, 1 at 100%.
@@ -241,6 +269,23 @@ namespace conker {
     namespace shadows {
         // From the game thread, as the game starts a frame's display list.
         void game_frame();
+    }
+
+    // (0.11.4) Show Latency (Graphics tab, fps_counter.cpp): for each press, how long until the screen shows the frame the game made
+    // from it, through RT64 (rt64.patch's latencyMark / latencyResult), in the corner and latency.log.
+    namespace latency_meter {
+        bool enabled();   // conker_config.cpp
+        // SDL's event watch (any thread): a key, mouse or controller button went down, at_ns (steady clock)
+        void pressed(int64_t at_ns);
+        // The game reading this machine's player's controller (frontend.cpp): its buttons and dedicated controls as given to it
+        void game_read(uint32_t buttons);
+        // The game thread: a frame's display list begun (widescreen.cpp) and finished, its start (possess_test.cpp)
+        void frame_begin();
+        void frame_end(uint32_t list_start);
+        // The graphics thread, just before a display list is handed to RT64 (frontend.cpp)
+        void before_send(uint32_t list);
+        // The corner's text: "" when off or nothing measured yet
+        std::string text();
     }
 
     // local_achievements.cpp: the program's own achievements, for reaching the game's scenes, kept on this computer.
@@ -322,6 +367,7 @@ namespace conker {
         // (possess95) From any thread: a line at the top middle of the screen for a few seconds, shown at once in place of the last one
         // there (online spectating's "Spectating" and the player's name).
         void show_top(const std::string& text);
+        bool boxed();   // (HUD Notifications: Boxed, or Text)
         // From the launcher's init (frontend.cpp): recompui's UI exists now, so the line's context can be made.
         void on_ui_ready();
         // On the main thread (update_gfx): shows the waiting lines, one at a time, once the game has started.
@@ -380,7 +426,8 @@ namespace conker {
             int mask = 0;            // a bit for each player slot that is in
             std::array<std::string, 5> names;   // their nicknames (empty: none chosen)
             std::string log_path;    // the log file the session writes (netplay_host.txt or netplay_join.txt), once open
-            bool can_start = false;  // host: everybody is here
+            bool can_start = false;  // host: the game can be started (0.11.4: with whoever is there, alone too)
+            bool everyone_here = false;   // host: every player the lobby is for has joined
             bool dedicated = false;  // the session is a dedicated server (slot 0 is the leader, not a host)
             bool launch = false;     // client: the host pressed Start
             std::string message;
@@ -428,13 +475,22 @@ namespace conker {
         // Online: whether that player's right stick turns their camera this frame (the frame's agreed input), and by how
         // much (yaw and pitch, radians).
         bool camera_turn(int player, float* yaw, float* pitch);
+        // (0.11.4) Online: that player's mouse aim this frame (look_aim::mouse_aim), in degrees, from the frame's agreed input.
+        bool mouse_aim(int player, float* yaw, float* pitch);
         // Online: whether that player's sticks are swapped this frame (aiming with the right stick, moving with the
         // left), from the frame's agreed input.
         bool swap_flag(int player);
         // Online: that player's aiming settings (look_aim.cpp's look_flag bits), from the frame's agreed input.
         uint8_t look_flags(int player);
+        // (0.11.4) Online: that player's Stick: Aiming Sensitivity in percent (100 without a session), from the frame's agreed input.
+        uint8_t aim_sensitivity(int player);
+        // (0.11.4) A player's Camera: Field of View this frame (degrees tall, 40 to 75; 50, the game's own, when not online)
+        uint8_t field_of_view(int player);
         // The game's read of a port (input, and Swap Sticks' no weapon walking).
         bool input_for_game(int port, bool* plugged, uint16_t* buttons, float* x, float* y);
+        // (0.11.4) Online: the high 16 of that port's 32 button bits, from the frame's agreed input: buttons of our own (dedicated
+        // controls) that only our hooks read; the game gets the low 16 (input). 0 without a session.
+        uint16_t extra_buttons(int port);
         // Every port read, before it is answered: the first of a pass waits for the frame's agreed inputs.
         void on_port_read(int port);
         // True if the session answers this port; false means ask the real device.
@@ -505,6 +561,8 @@ namespace conker {
     namespace gold_weapons {
         // a prop or pickup id of one of the gold weapons, this level
         bool is_gold_id(int id);
+        // (0.11.4) which gold weapon (0 to 2) character k holds, -1 none
+        int held_by(uint8_t* rdram, int character);
         // (possess127) the frame's list at its end (its start, its end): where the weapons' models are drawn, logged
         void frame_end(uint8_t* rdram, uint32_t start, uint32_t end);
         // (possess154) the same for the 5th player's view's commands (from extra_from to end), on his machine once that view is added
@@ -541,10 +599,15 @@ namespace conker {
         void update();
     }
 
-    // net_chat.cpp: the chat's screen during an online game (Y opens it).
+    // net_chat.cpp: the chat's screen during an online game (the Chat control opens it, Y to begin with).
+    // kill_feed.cpp: the kill feed's lines (General tab: Kill Feed), from the UI thread
+    namespace killfeed {
+        void update();
+        // (the badges) player n's icon (0 to 4: P1 to P5), 32 x 32 RGBA32 words as the game has them, kept when the game draws it
+        void note_icon(int n, const uint32_t* words);
+    }
+
     namespace netchat {
-        // The Online tab of the settings (the chat key).
-        void add_options(recomp::config::Config& config);
         void update();
         // True while the player is typing (and for a moment after): their controller is held still.
         bool typing();
@@ -562,6 +625,10 @@ namespace conker {
         void check_again();
         // This build's version (version.hpp).
         const char* current_version();
+        // (0.11.4) The launcher's patch notes: this build's release on GitHub (or the newest), fetched once on a thread of its own;
+        // release_notes gives 0 while it's fetched, 1 found (its tag, its text as Markdown, its page), 2 not reached.
+        void fetch_notes_in_background();
+        int release_notes(std::string* tag, std::string* body, std::string* page);
         // Windows: whether the newer release has a .zip that start_install can fetch.
         bool install_possible();
         // Downloads the release, then (state 4) a script is waiting for the game to close: the caller closes the game.
@@ -607,6 +674,9 @@ namespace conker {
         void attach(SDL_Window* window, bool maximized, int x, int y, int width, int height);
         // True while the launcher draws the title bar.
         bool custom();
+        // (0.11.4) Quitting (any thread): the window hidden at once, so nothing of it shows while the program closes (its last second
+        // and a half showed Windows' own white title bar over the launcher).
+        void hide_for_quit();
         // From the launcher's buttons (any thread): done on the main thread, in update.
         void minimize();
         void toggle_fill();
@@ -669,6 +739,12 @@ namespace conker {
         bool fill_screen();
         // (possess67) the launcher's own Window Mode (General tab) is Fullscreen
         bool launcher_fullscreen();
+        // (0.11.4) F11 in the launcher (on the launcher's thread): full screen to a Fill Screen window, or Fill Screen and 1600 x 900 swapped
+        void launcher_f11();
+    }
+    // (0.11.4) conker_config.cpp: the settings' short descriptions, put back where the library rewrote one (the Framerate's)
+    namespace settings_text {
+        void refresh();
     }
 
     namespace vsync {
@@ -692,6 +768,8 @@ namespace conker {
         // From updateCullScales_1510B958's return (widescreen.cpp): with the setting widening the
         // camera's view, works the cull scales out for the view it draws.
         void adjust_cull_scales(uint8_t* rdram, uint64_t camera);
+        // (0.11.4) every camera's widening starts over (after a snapshot is taken or loaded)
+        void reset();
     }
 
     // mouse_camera.cpp: the free orbit camera, turned by the mouse and the right stick.
@@ -699,6 +777,9 @@ namespace conker {
         // Whether last frame's camera update was the normal camera (where the C-buttons turn it: not
         // R-Look, aiming, cutscenes or other special cameras).
         bool normal_camera();
+        // (0.11.4) Whether last frame's update of camera i (0 to 4) was the normal camera: online every player's camera, the same on
+        // every machine; offline only the camera controller 1 plays.
+        bool camera_normal(int index);
         // Whether the right stick turned the orbit last frame's camera update could run (the setting
         // on, the normal camera, not R-Look or aiming): the controller's input then leaves the right
         // stick off the C-buttons (frontend.cpp). Safe from any thread.
@@ -717,6 +798,18 @@ namespace conker {
         void set_frequency(uint32_t frequency);
     }
 #endif
+}
+
+namespace conker::mp_characters {
+    // (0.11.4) Cave of Horror in place of this scene (assets/cave/replace.txt), and the arena's setup records moved onto it
+    bool cave_on(int scene);
+    void cave_props(uint8_t* rdram, uint32_t list, uint32_t count);
+    // (0.11.4) the chat's /bot command: "/bot 2 banjo" (a bot's number, a character's name or number): the reply line, empty if not one
+    std::string bot_command(const std::string& text);
+    // (0.11.4) Koala Kong's own place: the character k of a match picked him (made as the teddy, his model put on); whether a pick is his
+    void kong_set_picked(int character, bool picked);
+    bool kong_pick(int pick);
+    bool kong_drawn_as(int character);
 }
 
 #endif

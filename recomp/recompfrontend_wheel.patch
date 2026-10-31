@@ -1,0 +1,131 @@
+diff --git a/recompinput/include/recompinput/input_types.h b/recompinput/include/recompinput/input_types.h
+index 00a1d30..2b54100 100644
+--- a/recompinput/include/recompinput/input_types.h
++++ b/recompinput/include/recompinput/input_types.h
+@@ -78,6 +78,10 @@ namespace recompinput {
+     };
+ 
+     
++    // (Conker) The scroll wheel, bound as two mouse buttons past SDL's own numbers.
++    constexpr int mouse_wheel_up = 101;
++    constexpr int mouse_wheel_down = 102;
++
+     // A single input. Combines the source of the input (see InputType) and a specific key/button/axis.
+     struct InputField {
+         InputType input_type;
+diff --git a/recompinput/src/input_events.cpp b/recompinput/src/input_events.cpp
+index 1155881..8f79915 100644
+--- a/recompinput/src/input_events.cpp
++++ b/recompinput/src/input_events.cpp
+@@ -114,7 +114,16 @@ bool sdl_event_filter(void* userdata, SDL_Event* event) {
+     case SDL_EventType::SDL_MOUSEWHEEL:
+     {
+         SDL_MouseWheelEvent* wheel_event = &event->wheel;
+-        recompinput::add_mouse_wheel_delta(wheel_event->y * (wheel_event->direction == SDL_MOUSEWHEEL_FLIPPED ? -1 : 1));
++        const int32_t turned = wheel_event->y * (wheel_event->direction == SDL_MOUSEWHEEL_FLIPPED ? -1 : 1);
++        // (Conker) The scroll wheel is bound as the mouse's buttons are: with the keyboard, or in single player with the controller too
++        if (binding::is_binding() && turned != 0) {
++            const InputDevice device = binding::get_scanning_device();
++            if (device == InputDevice::Keyboard || (device == InputDevice::Controller && players::is_single_player_mode())) {
++                binding::set_scanned_input({ InputType::Mouse, turned > 0 ? recompinput::mouse_wheel_up : recompinput::mouse_wheel_down });
++            }
++            break;
++        }
++        recompinput::add_mouse_wheel_delta(turned);
+     }
+     queue_if_enabled(event);
+     break;
+diff --git a/recompinput/src/input_state.cpp b/recompinput/src/input_state.cpp
+index 5ba6608..78d2de5 100644
+--- a/recompinput/src/input_state.cpp
++++ b/recompinput/src/input_state.cpp
+@@ -2,6 +2,8 @@
+ #include <mutex>
+ #include <span>
+ #include <atomic>
++#include <chrono>
++#include <cstdlib>
+ 
+ #include "recompinput/recompinput.h"
+ #include "recompinput/input_state.h"
+@@ -217,8 +219,56 @@ bool recompinput::should_override_keystate(SDL_Scancode key, SDL_Keymod mod) {
+     return false;
+ }
+ 
++// (Conker) The scroll wheel as two buttons (input ids mouse_wheel_up and mouse_wheel_down, past SDL's): each notch a press of its own,
++// held 50 ms and let go for 40 ms before the next (notches that come quicker wait their turn, 4 at most), so a game reading the
++// buttons once a frame sees every notch as one press.
++namespace {
++    struct WheelPulse {
++        int pending = 0;
++        std::chrono::steady_clock::time_point until{};
++        bool active = false;
++    };
++    std::mutex wheel_mutex;
++    WheelPulse wheel_pulses[2];
++    constexpr auto wheel_press = std::chrono::milliseconds(50), wheel_gap = std::chrono::milliseconds(40);
++
++    void wheel_notch(int which) {
++        std::lock_guard lock{ wheel_mutex };
++        WheelPulse& w = wheel_pulses[which];
++        if (w.pending < 4) {
++            w.pending++;
++        }
++    }
++
++    bool wheel_held(int which) {
++        std::lock_guard lock{ wheel_mutex };
++        WheelPulse& w = wheel_pulses[which];
++        const auto now = std::chrono::steady_clock::now();
++        if (w.active) {
++            if (now < w.until) {
++                return true;
++            }
++            w.active = false;
++            w.until = w.until + wheel_gap;
++        }
++        if (now < w.until || w.pending == 0) {
++            return false;
++        }
++        w.pending--;
++        w.active = true;
++        w.until = now + wheel_press;
++        return true;
++    }
++}
++
+ // Mouse buttons are numbered as SDL numbers them (SDL_BUTTON_LEFT is 1).
+ static bool mouse_button_state(int button) {
++    if (button == recompinput::mouse_wheel_up) {
++        return wheel_held(0);
++    }
++    if (button == recompinput::mouse_wheel_down) {
++        return wheel_held(1);
++    }
+     return button >= 1 && button <= 32 && (InputState.mouse_buttons & SDL_BUTTON(button)) != 0;
+ }
+ 
+@@ -395,4 +445,8 @@ void recompinput::add_mouse_deltas(float delta_x, float delta_y) {
+ }
+ void recompinput::add_mouse_wheel_delta(int32_t delta) {
+     InputState.mouse_wheel_pos.fetch_add(delta);
++    // (Conker) each notch a press of the wheel's button (up the wheel turned away from you)
++    for (int32_t i = 0; i < std::min<int32_t>(std::abs(delta), 4); i++) {
++        wheel_notch(delta > 0 ? 0 : 1);
++    }
+ }
+diff --git a/recompinput/src/input_types.cpp b/recompinput/src/input_types.cpp
+index 7db1735..9930ee5 100644
+--- a/recompinput/src/input_types.cpp
++++ b/recompinput/src/input_types.cpp
+@@ -268,6 +268,10 @@ static std::string mouse_button_to_string(int button) {
+         return PF_MOUSE_7;
+     case 8:
+         return PF_MOUSE_8;
++    case recompinput::mouse_wheel_up:
++        return PF_MOUSE_SCROLL_UP;
++    case recompinput::mouse_wheel_down:
++        return PF_MOUSE_SCROLL_DOWN;
+     default:
+         return recompinput::unknown_device_input;
+     }

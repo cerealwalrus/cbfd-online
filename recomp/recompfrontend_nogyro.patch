@@ -1,0 +1,93 @@
+diff --git a/recompinput/src/input_events.cpp b/recompinput/src/input_events.cpp
+--- a/recompinput/src/input_events.cpp
++++ b/recompinput/src/input_events.cpp
+@@ -80,10 +80,7 @@
+             printf("  Path: %s\n", SDL_JoystickPath(SDL_GameControllerGetJoystick(controller)));
+             recompinput::add_controller_state(SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(controller)), controller);
+ 
+-            if (SDL_GameControllerHasSensor(controller, SDL_SensorType::SDL_SENSOR_GYRO) && SDL_GameControllerHasSensor(controller, SDL_SensorType::SDL_SENSOR_ACCEL)) {
+-                SDL_GameControllerSetSensorEnabled(controller, SDL_SensorType::SDL_SENSOR_GYRO, SDL_TRUE);
+-                SDL_GameControllerSetSensorEnabled(controller, SDL_SensorType::SDL_SENSOR_ACCEL, SDL_TRUE);
+-            }
++            // (Conker: no gyro aiming: the controller's gyro and accelerometer are never turned on)
+         }
+         
+         ControllerGUID guid = profiles::get_guid_from_sdl_controller(controller);
+@@ -188,34 +185,7 @@
+         }
+         break;
+     case SDL_EventType::SDL_CONTROLLERSENSORUPDATE:
+-        if (event->csensor.sensor == SDL_SensorType::SDL_SENSOR_ACCEL) {
+-            // Convert acceleration to g's.
+-            float x = event->csensor.data[0] / SDL_STANDARD_GRAVITY;
+-            float y = event->csensor.data[1] / SDL_STANDARD_GRAVITY;
+-            float z = event->csensor.data[2] / SDL_STANDARD_GRAVITY;
+-            ControllerState& state = recompinput::get_controller_state(event->csensor.which);
+-            state.latest_accelerometer[0] = x;
+-            state.latest_accelerometer[1] = y;
+-            state.latest_accelerometer[2] = z;
+-        }
+-        else if (event->csensor.sensor == SDL_SensorType::SDL_SENSOR_GYRO) {
+-            // constexpr float gyro_threshold = 0.05f;
+-            // Convert rotational velocity to degrees per second.
+-            constexpr float rad_to_deg = 180.0f / M_PI;
+-            float x = event->csensor.data[0] * rad_to_deg;
+-            float y = event->csensor.data[1] * rad_to_deg;
+-            float z = event->csensor.data[2] * rad_to_deg;
+-            ControllerState& state = recompinput::get_controller_state(event->csensor.which);
+-            uint64_t cur_timestamp = event->csensor.timestamp;
+-            uint32_t delta_ms = cur_timestamp - state.prev_gyro_timestamp;
+-            state.motion.ProcessMotion(x, y, z, state.latest_accelerometer[0], state.latest_accelerometer[1], state.latest_accelerometer[2], delta_ms * 0.001f);
+-            state.prev_gyro_timestamp = cur_timestamp;
+-
+-            float rot_x = 0.0f;
+-            float rot_y = 0.0f;
+-            state.motion.GetPlayerSpaceGyro(rot_x, rot_y);
+-            recompinput::add_rotation_deltas(event->csensor.which, rot_x, rot_y);
+-        }
++        // (Conker: no gyro aiming: the sensors are never turned on, and nothing reads them)
+         break;
+     case SDL_EventType::SDL_MOUSEMOTION:
+         if (!recompinput::game_input_disabled()) {
+diff --git a/recompinput/src/input_state.cpp b/recompinput/src/input_state.cpp
+--- a/recompinput/src/input_state.cpp
++++ b/recompinput/src/input_state.cpp
+@@ -281,34 +281,11 @@
+     return ret;
+ }
+ 
++// (Conker: no gyro aiming: never read, always still)
+ void recompinput::get_gyro_deltas(int controller_num, float* x, float* y) {
+-    float sensitivity = (float)recompui::config::general::get_gyro_sensitivity() / 100.0f;
+-    std::array<float, 2> cur_rotation_delta = { 0.0f, 0.0f };
+-
+-    if (players::is_single_player_mode()) {
+-        {
+-            std::lock_guard lock{ InputState.controllers_mutex };
+-            for (const auto &state_pair : InputState.controller_states) {
+-                const ControllerState &state = state_pair.second;
+-                cur_rotation_delta[0] += state.rotation_delta[0];
+-                cur_rotation_delta[1] += state.rotation_delta[1];
+-            }
+-        }
+-
+-    } else {
+-        auto &player = players::get_player(controller_num);
+-        if (player.controller == nullptr) {
+-            *x = 0.0f;
+-            *y = 0.0f;
+-            return;
+-        }
+-        SDL_JoystickID joystick_id = SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(player.controller));
+-        ControllerState &state = get_controller_state(joystick_id);
+-        cur_rotation_delta = state.rotation_delta;
+-    }
+-
+-    *x = cur_rotation_delta[0] * sensitivity;
+-    *y = cur_rotation_delta[1] * sensitivity;
++    (void)controller_num;
++    *x = 0.0f;
++    *y = 0.0f;
+ }
+ 
+ void recompinput::get_mouse_deltas(float* x, float* y) {

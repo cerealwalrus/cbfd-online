@@ -30,3 +30,8 @@ __pycache__/
 host/CBFD-Online-*.zip
 # package_release.cmd output
 /release/
+
+# Berri rebuilt from your own ROM (tools/berri/berri_rig.py): never committed
+tools/berri/*.rzip
+tools/berri/*.npy
+tools/berri/__pycache__/

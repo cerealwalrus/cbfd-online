@@ -47,6 +47,7 @@
 #include <filesystem>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 #if defined(_WIN32)
 #include <share.h>
@@ -2790,7 +2791,25 @@ namespace {
         draw_layer4(0, false);
         // (possess82) not while the renderer reads a list: the frame before's, waiting to be drawn, points at view 5's record (the full
         // view's) for its viewports, and drawn while it was view 1's it came out in view 1's quarter of the screen
-        std::lock_guard<std::mutex> render_lock(conker::netview::render_mutex());
+        // (0.11.3) waited for a moment only: the other game threads are stopped here (OthersStopped) and the audio microcode held off
+        // (RspHold), and the renderer, holding this lock as it draws, can be waiting for something one of them holds. Waited for
+        // outright, the 5th player's game stopped for good there (the game thread in fifth_hud, every other machine left waiting for his
+        // inputs). Not had in time, the layer is left out of his HUD for this frame.
+        std::unique_lock<std::mutex> render_lock(conker::netview::render_mutex(), std::defer_lock);
+        const auto give_up = std::chrono::steady_clock::now() + std::chrono::milliseconds(25);
+        while (!render_lock.try_lock()) {
+            if (std::chrono::steady_clock::now() >= give_up) {
+                break;
+            }
+            std::this_thread::yield();
+        }
+        if (!render_lock.owns_lock()) {
+            static uint32_t told = 0;
+            if (told++ < 10 || told % 300 == 0) {
+                log("f=%u the 5th player's HUD layer 4 left out this frame: the renderer kept its lock (%u times so far)", (unsigned)frames, (unsigned)told);
+            }
+            return list;
+        }
         uint8_t kept_record[0x180];
         const bool records_ok = (view_records_now >> 24) == 0x80 && (view_records_now & 0x7FFFFFu) + 5u * 0x180u < 0x800000u;
         if (records_ok) {
@@ -3180,6 +3199,10 @@ namespace {
 #endif
 
 extern "C" void conker_possess_view_local(uint8_t* rdram, recomp_context* ctx) {
+#if defined(CONKER_RT64)
+    // (0.11.4) Show Latency: the frame's list finished, its start (the graphics task's list)
+    conker::latency_meter::frame_end(mem_word(rdram, list_start + 4 * (MEM_BU(0, (gpr)(int32_t)matrix_buffer) & 1u)));
+#endif
     // (possess127) the gold weapons' look at the frame's list, before the extra view adds to it
     if (in_rdram((uint32_t)ctx->r17)) {
         conker::gold_weapons::frame_end(rdram, mem_word(rdram, list_start + 4 * (MEM_BU(0, (gpr)(int32_t)matrix_buffer) & 1u)),
@@ -5022,6 +5045,31 @@ extern "C" void conker_possess_icon(uint8_t* rdram, recomp_context* ctx, int whe
 }
 
 extern "C" void conker_possess_icon_texture(uint8_t* rdram, recomp_context* ctx) {
+    // (0.11.4, the kill feed's badges) the game's P1 to P4 icons (sprites 0x894 to 0x897) as they're drawn (the character select), kept
+    // for the kill feed (unswizzled, 32 x 32 RGBA32), and the P5 made from the P4's; nothing of the game's is kept in the project
+    {
+        static bool kept[4] = {};
+        const uint32_t sprite = (uint32_t)ctx->r20;
+        const uint32_t tex = (uint32_t)ctx->r9;
+        const uint32_t at = tex < 0x00800000u ? tex | 0x80000000u : tex;
+        if (sprite >= 0x894 && sprite <= 0x897 && !kept[sprite - 0x894] && (at >> 24) == 0x80 && (at & 0x7FFFFFu) <= 0x800000u - 0x1000u) {
+            constexpr int n = conker::p5icon::size;
+            static uint32_t icon[n * n];
+            for (int y = 0; y < n; y++) {
+                for (int x = 0; x < n; x++) {
+                    const int sx = x ^ ((y & 1) ? 2 : 0);
+                    icon[y * n + x] = (uint32_t)MEM_W(4 * (y * n + sx), (gpr)(int32_t)at);
+                }
+            }
+            kept[sprite - 0x894] = true;
+            conker::killfeed::note_icon((int)(sprite - 0x894), icon);
+            if (sprite == 0x897) {
+                static uint32_t five[n * n];
+                conker::p5icon::make(icon, five);
+                conker::killfeed::note_icon(4, five);
+            }
+        }
+    }
     if (!p5_drawing) {
         return;
     }

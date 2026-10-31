@@ -1,0 +1,16 @@
+diff --git a/recompui/src/elements/ui_modal.cpp b/recompui/src/elements/ui_modal.cpp
+--- a/recompui/src/elements/ui_modal.cpp
++++ b/recompui/src/elements/ui_modal.cpp
+@@ -290,8 +290,12 @@
+         action_wrapper->set_color(theme::color::TextA80);
+ 
+         auto action_label = context.create_element<Label>(action_wrapper, action_info.description + ":", theme::Typography::LabelSM);
++        action_label->set_font_size(60.0f);
++        action_label->set_line_height(60.0f);
+         for (const auto &bound_input : bound_inputs) {
+             auto binding_label = context.create_element<Label>(action_wrapper, bound_input.to_string(), theme::Typography::LabelSM);
++            binding_label->set_font_size(60.0f);
++            binding_label->set_line_height(60.0f);
+             binding_label->set_font_family("promptfont");
+             binding_label->set_font_style(FontStyle::Normal);;
+             binding_label->set_font_weight(400);;

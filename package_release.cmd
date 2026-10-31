@@ -49,7 +49,7 @@ mkdir "%STAGE%" || goto fail
 for %%F in (ConkerOnline.exe SDL2.dll dxcompiler.dll dxil.dll) do (
     copy /y "%BUILD%\%%F" "%STAGE%\" >nul || goto fail
 )
-robocopy "%BUILD%\assets" "%STAGE%\assets" /E /XF *.z64 *.n64 *.v64 *.rom *.eep *.bin /NFL /NDL /NJH /NJS /NP >nul
+robocopy "%BUILD%\assets" "%STAGE%\assets" /E /XF *.z64 *.n64 *.v64 *.rom *.eep *.sav *.state *.off /NFL /NDL /NJH /NJS /NP >nul
 if errorlevel 8 goto fail
 copy /y ".github\release\README.txt" "%STAGE%\" >nul || goto fail
 copy /y "LICENSE" "%STAGE%\" >nul || goto fail

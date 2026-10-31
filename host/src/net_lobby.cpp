@@ -159,28 +159,37 @@ namespace {
     std::string version_text_shown;
     recompui::Label* player_labels[5] = {};
     std::string last_signature;
+    // (0.11.4) the Online screen's text bigger than it was (20 dp: 28 here, the large buttons' own size), in its first shape (2.5 times
+    // the size was too big for its buttons and boxes)
+    constexpr float text_dp = 28.0f;
 
     const char* input_name() {
-        return input_choice == 1 ? "Controller: keyboard only" : input_choice == 2 ? "Controller: gamepad only" : "Controller: keyboard and gamepad";
+        return input_choice == 1 ? "Keyboard" : input_choice == 2 ? "Gamepad" : "Keyboard + Gamepad";
     }
 
     void refresh_settings_buttons() {
         players_button->set_text("Players: " + std::to_string(players));
-        delay_button->set_text(delay_frames <= 0 ? std::string("Input delay: Auto") : "Input delay: " + std::to_string(delay_frames) + (delay_frames == 1 ? " frame" : " frames"));
+        delay_button->set_text(delay_frames <= 0 ? std::string("Delay: Auto") : "Delay: " + std::to_string(delay_frames));
         input_button->set_text(input_name());
     }
 
-    recompui::Label* make_label(recompui::Element* parent, const std::string& text, recompui::LabelStyle style, float margin_bottom = 0.0f) {
+    recompui::Label* make_label(recompui::Element* parent, const std::string& text, recompui::LabelStyle style, float margin_bottom = 0.0f,
+        float size = text_dp) {
         recompui::Label* label = context.create_element<recompui::Label>(parent, text, style);
         label->set_margin_bottom(margin_bottom);
+        label->set_font_size(size);
+        label->set_line_height(size * 1.2f);
         return label;
     }
 
     recompui::Button* make_button(recompui::Element* parent, const std::string& text, recompui::ButtonStyle style, Action action) {
-        recompui::Button* button = context.create_element<recompui::Button>(parent, text, style, recompui::ButtonSize::Medium);
+        // (0.11.4) Large: its text 28 dp (Medium's is 20), with Medium's padding so the buttons keep their shape
+        recompui::Button* button = context.create_element<recompui::Button>(parent, text, style, recompui::ButtonSize::Large);
+        button->set_padding(12.0f);
         button->add_pressed_callback([action]() { queue(action); });
         return button;
     }
+
 
     recompui::Container* make_row(recompui::Element* parent) {
         recompui::Container* row = context.create_element<recompui::Container>(parent, recompui::FlexDirection::Row, recompui::JustifyContent::FlexStart, 0);
@@ -189,6 +198,20 @@ namespace {
         row->set_width(100.0f, recompui::Unit::Percent);
         row->set_height_auto();
         return row;
+    }
+
+    // a label and its text box under it (the screen's first shape)
+    recompui::TextInput* make_field(recompui::Element* parent, const std::string& name, float box_width_dp) {
+        make_label(parent, name, recompui::LabelStyle::Small);
+        recompui::TextInput* box = context.create_element<recompui::TextInput>(parent);
+        if (box_width_dp > 0.0f) {
+            box->set_width(box_width_dp, recompui::Unit::Dp);
+        }
+        else {
+            box->set_width(100.0f, recompui::Unit::Percent);
+            box->set_max_width(100.0f, recompui::Unit::Percent);
+        }
+        return box;
     }
 
     // Runs f with the lobby's context open (the launcher's is open while its update runs: it's put back after).
@@ -243,7 +266,7 @@ namespace {
         panel->set_background_color(recompui::theme::color::ModalOverlay);
 
         title_label = context.create_element<recompui::Label>(panel, "Online", recompui::theme::Typography::Header3);
-        version_label = make_label(panel, std::string("Version ") + conker::updates::current_version(), recompui::LabelStyle::Small);
+        version_label = make_label(panel, std::string("Version ") + conker::updates::current_version(), recompui::LabelStyle::Small, 0.0f, 22.0f);
         update_button = make_button(panel, "Update now", recompui::ButtonStyle::Success, Action::Update);
         update_button->set_display(recompui::Display::None);
 
@@ -255,26 +278,18 @@ namespace {
         setup_page->set_height_auto();
         setup_page->set_gap(12.0f);
 
-        make_label(setup_page, "To host: choose the settings and press Host. To join: type the host's address and press Join.", recompui::LabelStyle::Small);
-
-        make_label(setup_page, "Your nickname (shown in chat and in game; empty: Player 1, 2...)", recompui::LabelStyle::Small);
+        // (0.11.4) simplified: a label and its box on each row, no explanations
         load_nickname();
         load_address();
-        recompui::TextInput* nickname = context.create_element<recompui::TextInput>(setup_page);
-        nickname->set_width(300.0f, recompui::Unit::Dp);
+        recompui::TextInput* nickname = make_field(setup_page, "Nickname", 300.0f);
         nickname->set_text(nickname_text);
         nickname->add_text_changed_callback([](const std::string& text) { nickname_text = text.substr(0, 16); });
 
-        make_label(setup_page, "Host's address (to join)", recompui::LabelStyle::Small);
-        recompui::TextInput* address = context.create_element<recompui::TextInput>(setup_page);
-        address->set_width(100.0f, recompui::Unit::Percent);
-        address->set_max_width(100.0f, recompui::Unit::Percent);
+        recompui::TextInput* address = make_field(setup_page, "Host address", 0.0f);
         address->set_text(address_text);
         address->add_text_changed_callback([](const std::string& text) { address_text = text; });
 
-        make_label(setup_page, "Port (the same for everybody)", recompui::LabelStyle::Small);
-        recompui::TextInput* port = context.create_element<recompui::TextInput>(setup_page);
-        port->set_width(200.0f, recompui::Unit::Dp);
+        recompui::TextInput* port = make_field(setup_page, "Port", 200.0f);
         port->set_text(port_text);
         port->add_text_changed_callback([](const std::string& text) { port_text = text; });
 
@@ -283,13 +298,11 @@ namespace {
         delay_button = make_button(settings_row, "", recompui::ButtonStyle::Secondary, Action::Delay);
         input_button = make_button(settings_row, "", recompui::ButtonStyle::Secondary, Action::Input);
         refresh_settings_buttons();
-        make_label(setup_page, "Players and input delay are the host's choice. Controller is for this computer. With 5 players, the 5th joins the "
-            "character select as P5.", recompui::LabelStyle::Annotation);
 
         recompui::Container* setup_buttons = make_row(setup_page);
         recompui::Button* host_button = make_button(setup_buttons, "Host", recompui::ButtonStyle::Primary, Action::Host);
         make_button(setup_buttons, "Join", recompui::ButtonStyle::Primary, Action::Join);
-        make_button(setup_buttons, "Back", recompui::ButtonStyle::Tertiary, Action::Back);
+        make_button(setup_buttons, "Back", recompui::ButtonStyle::Primary, Action::Back);   // (0.11.4: Primary as Host and Join, its gold edge)
         context.set_autofocus_element(host_button);
 
 
@@ -302,13 +315,13 @@ namespace {
         lobby_page->set_gap(10.0f);
 
         message_label = make_label(lobby_page, "", recompui::LabelStyle::Normal);
-        info_label = make_label(lobby_page, "", recompui::LabelStyle::Small);
+        info_label = make_label(lobby_page, "", recompui::LabelStyle::Small, 0.0f, 22.0f);
         for (int i = 0; i < 5; i++) {
-            player_labels[i] = make_label(lobby_page, "", recompui::LabelStyle::Large);
+            player_labels[i] = make_label(lobby_page, "", recompui::LabelStyle::Large, 0.0f, 36.0f);
         }
         recompui::Container* lobby_buttons = make_row(lobby_page);
         start_button = make_button(lobby_buttons, "Start game", recompui::ButtonStyle::Success, Action::Start);
-        make_button(lobby_buttons, "Leave", recompui::ButtonStyle::Tertiary, Action::Leave);
+        make_button(lobby_buttons, "Leave", recompui::ButtonStyle::Primary, Action::Leave);   // (0.11.4: with the gold edge, as Back)
 
         context.close();
         created = true;
@@ -334,7 +347,7 @@ namespace {
     // The lobby page, from the session's state.
     void refresh_lobby(const conker::netsession::LobbyStatus& st) {
         std::string signature = std::to_string(st.phase) + "|" + std::to_string(st.mask) + "|" + std::to_string(st.expected) + "|" +
-            std::to_string(st.delay) + "|" + std::to_string(st.auto_delay) + "|" + std::to_string(st.slot) + "|" + std::to_string(st.can_start) + "|" + std::to_string(st.dedicated) + "|" + st.message + "|" + st.names[0] + "|" + st.names[1] + "|" + st.names[2] + "|" + st.names[3] + "|" + st.names[4] + "|" + st.log_path;
+            std::to_string(st.delay) + "|" + std::to_string(st.auto_delay) + "|" + std::to_string(st.slot) + "|" + std::to_string(st.can_start) + "|" + std::to_string(st.everyone_here) + "|" + std::to_string(st.dedicated) + "|" + st.message + "|" + st.names[0] + "|" + st.names[1] + "|" + st.names[2] + "|" + st.names[3] + "|" + st.names[4] + "|" + st.log_path;
         for (float p : st.ping_ms) {
             signature += "|" + std::to_string(p < 0 ? -1 : (int)(p + 0.5f));
         }
@@ -351,7 +364,7 @@ namespace {
         }
         else if (st.host) {
             message = "Hosting on port " + port_text + ". Tell the others your IP address and this port";
-            message += st.can_start ? ". Everybody is here: press Start game." : " (your router has to forward it, UDP).";
+            message += st.everyone_here ? ". Everybody is here: press Start game." : " (your router has to forward it, UDP). Start game starts with whoever is here, alone too.";
         }
         else {
             message = "Joined. Waiting for the host to start the game.";

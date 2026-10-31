@@ -55,15 +55,27 @@ namespace RT64 {
     void setVsyncWanted(bool enabled);
 }
 
-void conker_mouse_camera_init();
 
 namespace {
     std::vector<char> thumbnail;
 
-    // Each poll also tells the look mode that the next mouse and gyro movement is in.
+    // (0.11.4) The mouse (no gyro): each poll's movement (recompinput keeps only the latest poll's, at Mouse: Sensitivity) added up
+    // until a frame takes it (sample_mouse), so none is lost or doubled when two polls land in one frame or none.
+    std::mutex mouse_mutex;
+    float mouse_pending_x = 0.0f, mouse_pending_y = 0.0f;
+    float mouse_frame_x = 0.0f, mouse_frame_y = 0.0f;
     void poll_inputs() {
         recompinput::poll_inputs();
-        conker::look_aim::on_input_poll();
+        float mx = 0.0f, my = 0.0f;
+        if (conker::look_aim::mouse_on()) {   // (Mouse Controls off: nothing from the mouse)
+            recompinput::get_mouse_deltas(&mx, &my);
+        }
+        if (mx != 0.0f || my != 0.0f) {
+            std::lock_guard lock{ mouse_mutex };
+            // (kept to a few frames' worth: outside the game, a menu say, nothing takes it)
+            mouse_pending_x = std::clamp(mouse_pending_x + mx, -2000.0f, 2000.0f);
+            mouse_pending_y = std::clamp(mouse_pending_y + my, -2000.0f, 2000.0f);
+        }
     }
 
     // The launcher's Version and Add ROM options, and the window title that names the
@@ -209,9 +221,27 @@ namespace {
         }).detach();
     }
 
+    // (0.11.4) F11 (and Alt + Enter) in the launcher: kept from RecompFrontend's input (it changed the game's Window Mode, which the
+    // launcher's own then put back, so the window jumped between the two) and done from the launcher's update instead
+    // (windowed_size::launcher_f11). Once the game has started they're RecompFrontend's again.
+    std::atomic<bool> launcher_f11_pressed{ false };
+    recompui::GameOptionsMenu* launcher_options = nullptr;
+
     int SDLCALL quit_at_once(void*, SDL_Event* event) {
+        if (event->type == SDL_KEYDOWN && !ultramodern::is_game_started()) {
+            const SDL_Scancode key = event->key.keysym.scancode;
+            const bool alt_enter = key == SDL_SCANCODE_RETURN && (event->key.keysym.mod & KMOD_ALT) != 0;
+            if (key == SDL_SCANCODE_F11 || alt_enter) {
+                if (!event->key.repeat) {
+                    launcher_f11_pressed = true;
+                }
+                return 0;
+            }
+        }
         if (event->type == SDL_QUIT) {
             start_quit_watchdog();
+            // (0.11.4) hidden at once: while the program closed, Windows' own white title bar showed over the launcher
+            conker::window_chrome::hide_for_quit();
             if (ultramodern::is_game_started()) {
                 ultramodern::quit();
                 return 0;   // (not on to recompinput, which would ask first)
@@ -219,6 +249,18 @@ namespace {
         }
         return 1;
     }
+    // (0.11.4) Show Latency: a key (not a repeat), a mouse button or a controller button down, when SDL saw it (its event's
+    // timestamp, in SDL's milliseconds, taken back from now)
+    int SDLCALL watch_latency_presses(void*, SDL_Event* event) {
+        const bool down = (event->type == SDL_KEYDOWN && event->key.repeat == 0) || event->type == SDL_MOUSEBUTTONDOWN || event->type == SDL_CONTROLLERBUTTONDOWN;
+        if (down) {
+            const int64_t ago_ms = std::max<int64_t>(0, (int64_t)SDL_GetTicks() - (int64_t)event->common.timestamp);
+            const int64_t now = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+            conker::latency_meter::pressed(now - ago_ms * 1'000'000LL);
+        }
+        return 0;
+    }
+
 
     int SDLCALL watch_controllers(void*, SDL_Event* event) {
         switch (event->type) {
@@ -279,6 +321,7 @@ namespace {
             std::printf("[frontend] controller mappings: %d added\n", controller_mappings);
         }
         SDL_AddEventWatch(watch_controllers, nullptr);
+        SDL_AddEventWatch(watch_latency_presses, nullptr);   // (0.11.4: Show Latency)
         SDL_SetEventFilter(quit_at_once, nullptr);
         // The controllers connected at start were announced before the watch.
         for (int index = 0; index < SDL_NumJoysticks(); index++) {
@@ -290,8 +333,6 @@ namespace {
         // application object if it doesn't exist yet and makes it an accessory app, and SDL
         // then leaves it that way (no Dock icon, and the window opens behind the terminal).
         NFD_Init();
-        // The mouse camera's scroll wheel zoom (mouse_camera.cpp).
-        conker_mouse_camera_init();
         // Save states' keys, and the runtime's idle moment they're taken at (save_states.cpp).
         conker::save_states::init();
         return nullptr;
@@ -347,7 +388,10 @@ namespace {
             x = area.x + ((tile - 1) % 2) * open_width;
             y = area.y + ((tile - 1) / 2) * open_height;
         }
-        else if (open_maximized) {
+        else if (open_maximized && !own_chrome) {
+            // (0.11.4) not with the launcher's own title bar: attach maximizes it once its frame is taken over. Made maximized and then
+            // given its 1600 x 900 place, Windows kept it maximized but 1600 x 900, with the full screen's picture squeezed into it
+            // (the launcher's buttons lit above the cursor until F11 was pressed twice)
             flags |= SDL_WINDOW_MAXIMIZED;
         }
         window = SDL_CreateWindow(conker::window_title, x, y, open_width, open_height, flags);
@@ -403,6 +447,11 @@ namespace {
 
     void update_gfx(void*) {
         recompinput::handle_events();
+        // (0.11.4) F11 in the launcher, done here: the launcher's own update stops while a settings window is up over it, and F11 waited
+        // until that was closed (RecompFrontend's own F11 was done from here too, from the events above)
+        if (launcher_f11_pressed.exchange(false) && !ultramodern::is_game_started()) {
+            conker::windowed_size::launcher_f11();
+        }
         apply_window_mode();
         conker::window_chrome::update(ultramodern::is_game_started(),
             ultramodern::renderer::get_graphics_config().wm_option == ultramodern::renderer::WindowMode::Fullscreen);
@@ -410,6 +459,7 @@ namespace {
         conker::fps_counter::update();
         conker::notices::update();
         conker::netchat::update();
+        conker::killfeed::update();
         std::string title;
         {
             std::lock_guard lock(title_mutex);
@@ -618,6 +668,7 @@ namespace {
         conker::roms::init(recomp::get_config_path() / game.stored_filename());
         recompui::GameOptionsMenu* options = menu->init_game_options_menu(
             game.game_id, game.mod_game_id, game.display_name, game.thumbnail_bytes);
+        launcher_options = options;
         // Lower than recompui's 25% from the bottom: with Version and Add ROM, seven options
         // would reach up into the title (Online makes eight).
         options->set_bottom(5.0f, recompui::Unit::Percent);
@@ -644,6 +695,27 @@ namespace {
         // are added, so with them after Online the d-pad went from Online to Add ROM; now Exit is followed by them)
         version_option = options->add_option("Version", on_version_selected);
         add_rom_option = options->add_option("Add ROM", on_add_rom_selected);
+        // (0.11.4) the menu inputs (hidden on the Controls tab) their defaults, for the keyboard and the controller, each start
+        {
+            using recompinput::GameInput;
+            const int keyboard_profile = recompinput::profiles::get_sp_keyboard_profile_index();
+            const int controller_profile = recompinput::profiles::get_sp_controller_profile_index();
+            for (GameInput input : { GameInput::TOGGLE_MENU, GameInput::ACCEPT_MENU, GameInput::BACK_MENU, GameInput::APPLY_MENU,
+                                     GameInput::TAB_LEFT_MENU, GameInput::TAB_RIGHT_MENU }) {
+                if (keyboard_profile >= 0) {
+                    recompinput::profiles::reset_input_binding(keyboard_profile, recompinput::InputDevice::Keyboard, input);
+                }
+                if (controller_profile >= 0) {
+                    recompinput::profiles::reset_input_binding(controller_profile, recompinput::InputDevice::Controller, input);
+                }
+            }
+        }
+        // (0.11.4) the main menu's buttons keep Lilita One (CBFD Comic is the launcher's font everywhere else)
+        for (recompui::GameOption* option : options->get_options()) {
+            if (recompui::Label* label = option->get_label()) {
+                label->set_font_family("Lilita One");
+            }
+        }
         if (conker_theme_on()) {
             int index = 0;
             for (recompui::GameOption* option : options->get_options()) {
@@ -658,6 +730,15 @@ namespace {
         if (conker::roms::update()) {
             show_version();
         }
+        // (0.11.4) the launcher always opens on its main menu: a settings window up in its first moments is closed
+        static int launcher_frames = 0;
+        if (launcher_frames < 30) {
+            launcher_frames++;
+            if (recompui::is_context_shown(recompui::config::get_config_context_id())) {
+                recompui::hide_context(recompui::config::get_config_context_id());
+                std::printf("[launcher] a settings window was up as the launcher opened: closed\n");
+            }
+        }
         // (0.11.3) the first time the launcher is up with no ROM: say so, with Add ROM at hand
         if (!welcome_checked) {
             welcome_checked = true;
@@ -665,6 +746,7 @@ namespace {
                 queue_notice("Welcome", no_rom_text, true);
             }
         }
+        conker::settings_text::refresh();
         if (add_rom_wanted.exchange(false)) {
             on_add_rom_selected();
         }
@@ -722,6 +804,7 @@ namespace {
             }
             std::lock_guard<std::mutex> render_lock(conker::netview::render_mutex());
             conker::netview::render_begin(rdram, (uint32_t)task->t.data_ptr);
+            conker::latency_meter::before_send((uint32_t)task->t.data_ptr);   // (0.11.4: Show Latency)
             real->send_dl(task);
             conker::netview::render_done(rdram, (uint32_t)task->t.data_ptr);
         }
@@ -873,12 +956,11 @@ namespace {
         return controller_field_analog(controller, field, swap) > 0.0f;
     }
 
-    // The keyboard and the mouse are player 1's: their bindings count on port 1 only. Mouse buttons
-    // can be bound with the keyboard's controls or, in single player, the controller's.
-    // (possess58) the mouse taken out for now: its buttons press nothing, bound or not (look_aim.cpp: its settings gone too)
-    constexpr bool mouse_buttons_on = false;
+    // The keyboard and the mouse are player 1's: their bindings count on port 1 only. Mouse buttons can be bound with the keyboard's
+    // controls or, in single player, the controller's. (0.11.4: the mouse back; its buttons go in the buttons sent online like any other.)
     bool is_keyboard_or_mouse(const recompinput::InputField& field) {
-        return field.input_type == recompinput::InputType::Keyboard || (mouse_buttons_on && field.input_type == recompinput::InputType::Mouse);
+        return field.input_type == recompinput::InputType::Keyboard ||
+            (field.input_type == recompinput::InputType::Mouse && conker::look_aim::mouse_on());   // (Mouse Controls off: its buttons press nothing)
     }
 
     // A binding to the right stick (either axis, either way).
@@ -894,6 +976,63 @@ namespace {
     // With free_stick (Right Stick: Free Camera, while the stick turns the camera), the controller's
     // right stick presses no button: it turns the camera instead (mouse_camera.cpp). With swap_sticks
     // (Aiming: Swap Sticks, while aiming), the controller's two sticks are read the other way round.
+    // (0.11.4) The dedicated controls (recompfrontend_controls.patch), bound to nothing to begin with: each held one a bit, in
+    // look_aim.cpp's dedicated_bits order. Read as the other buttons are (the controller's and the keyboard's bindings), at the same read.
+    std::array<std::atomic<uint16_t>, max_ports> dedicated_held{};
+    uint8_t* game_rdram = nullptr;   // (the game's memory, start_online)
+
+    // (0.11.4, temporary: the button probe, look_aim.cpp) each port's buttons as the game was given them, and pressed at that read
+    std::array<std::atomic<uint16_t>, max_ports> probe_held{}, probe_pressed{};
+    void note_probe_buttons(int port, uint16_t buttons) {
+        if (port < 0 || port >= max_ports) {
+            return;
+        }
+        // (0.11.4) Show Latency: this machine's player's buttons and dedicated controls as the game is given them
+        {
+            const bool online = conker::netsession::active();
+            const int mine = online ? conker::netsession::port_of_player(conker::netsession::local_player()) : 0;
+            if (port == mine) {
+                const uint16_t extra = online ? conker::netsession::extra_buttons(port) : dedicated_held[port].load();
+                conker::latency_meter::game_read((uint32_t)buttons | ((uint32_t)extra << 16));
+            }
+        }
+        const uint16_t before = probe_held[port].load();
+        probe_pressed[port] = (uint16_t)(buttons & ~before);
+        probe_held[port] = buttons;
+        conker::look_aim::probe_pad(port, buttons, before);
+    }
+    uint16_t read_dedicated(SDL_GameController* controller, bool keyboard) {
+        using recompinput::GameInput;
+        static constexpr GameInput inputs[] = {
+            GameInput::FIRST_PERSON, GameInput::CROUCH, GameInput::ZOOM_IN, GameInput::ZOOM_OUT,
+            GameInput::AIM_UP, GameInput::AIM_DOWN, GameInput::AIM_LEFT, GameInput::AIM_RIGHT, GameInput::FIRE,
+            GameInput::MOVE_FORWARD, GameInput::MOVE_BACK, GameInput::MOVE_LEFT, GameInput::MOVE_RIGHT,
+            GameInput::WEAPON_SWAP, GameInput::RELOAD,
+        };
+        const int cont_profile = recompinput::profiles::get_sp_controller_profile_index();
+        const int kb_profile = recompinput::profiles::get_sp_keyboard_profile_index();
+        uint16_t bits = 0;
+        for (size_t k = 0; k < std::size(inputs); k++) {
+            bool pressed = false;
+            for (size_t i = 0; i < recompinput::num_bindings_per_input && !pressed; i++) {
+                if (controller != nullptr && cont_profile >= 0) {
+                    const recompinput::InputField& field = recompinput::profiles::get_input_binding(cont_profile, inputs[k], i);
+                    if (field.input_type == recompinput::InputType::ControllerDigital || field.input_type == recompinput::InputType::ControllerAnalog) {
+                        pressed |= controller_field_digital(controller, field);
+                    }
+                }
+                if (keyboard && kb_profile >= 0) {
+                    const recompinput::InputField& field = recompinput::profiles::get_input_binding(kb_profile, inputs[k], i);
+                    if (is_keyboard_or_mouse(field)) {
+                        pressed |= recompinput::get_input_digital(0, field);
+                    }
+                }
+            }
+            bits |= pressed ? (uint16_t)(1u << k) : 0;
+        }
+        return bits;
+    }
+
     void read_port(SDL_GameController* controller, bool keyboard, bool free_stick, bool swap_sticks, bool z_turns_aim, uint16_t* buttons, float* x, float* y) {
         using recompinput::GameInput;
         static constexpr uint16_t button_values[] = {
@@ -914,9 +1053,10 @@ namespace {
             for (size_t i = 0; i < recompinput::num_bindings_per_input; i++) {
                 const recompinput::InputField& field = binding(cont_profile, input, i);
                 if (field.input_type == recompinput::InputType::Mouse) {
-                    v += keyboard && mouse_buttons_on ? recompinput::get_input_analog(0, field) : 0.0f;
+                    v += keyboard && conker::look_aim::mouse_on() ? recompinput::get_input_analog(0, field) : 0.0f;
+                    continue;
                 }
-                else if (controller != nullptr) {
+                if (controller != nullptr) {
                     v += controller_field_analog(controller, field, swap_sticks);
                 }
             }
@@ -947,7 +1087,7 @@ namespace {
                 if (cont_profile >= 0) {
                     const recompinput::InputField& field = binding(cont_profile, input, i);
                     if (field.input_type == recompinput::InputType::Mouse) {
-                        pressed |= keyboard && mouse_buttons_on && recompinput::get_input_digital(0, field);
+                        pressed |= keyboard && conker::look_aim::mouse_on() && recompinput::get_input_digital(0, field);
                     }
                     else if (controller != nullptr && !(free_stick && is_right_stick(field))) {
                         const bool down = controller_field_digital(controller, field, swap_sticks);
@@ -992,18 +1132,28 @@ namespace {
         if (keyboard && kb_profile >= 0) {
             const float kb_x = kb_analog(GameInput::X_AXIS_POS) - kb_analog(GameInput::X_AXIS_NEG);
             const float kb_y = kb_analog(GameInput::Y_AXIS_POS) - kb_analog(GameInput::Y_AXIS_NEG);
-            if (swap_sticks) {
+            // (0.11.4) and with R held whatever Swap Sticks is: the keys bound to the stick are for walking only. Holding R the game
+            // aims with the stick, so W, A, S and D turned the aim instead (the mouse and the Aim keys aim there); as the C-buttons
+            // they walk and strafe, as they do aiming on a Nintendo 64.
+            if (swap_sticks || (cur_buttons & 0x0010)) {
                 // Aiming: Swap Sticks with the keyboard: the mouse aims, so the keys bound to the stick (W, A, S, D
                 // by default) press the C-buttons and move Conker, as the left stick does, instead of aiming
                 // (issue #84: they only turned the aim). Not C-Left or C-Right while Z is held, the same as the stick.
                 constexpr uint16_t c_up = 0x0008, c_down = 0x0004;
+                // (0.11.4) Online the keys are the D-pad's directions instead: the game's strafe alone reads those (look_aim.cpp's
+                // conker_dpad_strafe), so they walk and strafe and do nothing else. As the C-buttons, Up and Down zoomed the sniper's
+                // scope in and out (and C-Down could start a grenade). Scoped, the game's strafe takes Left and Right only: Up and Down
+                // do nothing there.
+                const bool as_dpad = conker::netsession::active();
+                const uint16_t k_left = as_dpad ? 0x0200 : c_left, k_right = as_dpad ? 0x0100 : c_right;
+                const uint16_t k_up = as_dpad ? 0x0800 : c_up, k_down = as_dpad ? 0x0400 : c_down;
                 uint16_t keys = 0;
-                if (kb_x <= -recompinput::axis_digital_threshold) keys |= c_left;
-                if (kb_x >= recompinput::axis_digital_threshold) keys |= c_right;
-                if (kb_y >= recompinput::axis_digital_threshold) keys |= c_up;
-                if (kb_y <= -recompinput::axis_digital_threshold) keys |= c_down;
+                if (kb_x <= -recompinput::axis_digital_threshold) keys |= k_left;
+                if (kb_x >= recompinput::axis_digital_threshold) keys |= k_right;
+                if (kb_y >= recompinput::axis_digital_threshold) keys |= k_up;
+                if (kb_y <= -recompinput::axis_digital_threshold) keys |= k_down;
                 if ((cur_buttons & z_button) && z_turns_aim) {
-                    keys &= (uint16_t)~(c_left | c_right);
+                    keys &= (uint16_t)~(k_left | k_right);
                 }
                 cur_buttons |= keys;
             }
@@ -1012,9 +1162,17 @@ namespace {
                 cur_y += kb_y;
             }
         }
-        // In the bank's slow motion leaps the mouse moves the crosshair, as the stick (issue #85): port 1's.
-        if (keyboard) {
-            conker::look_aim::leap_stick(cur_x, cur_y);
+        // (0.11.4) Move Forward, Back, Left and Right (the dedicated controls' bits 0x200 to 0x1000): walking alone. Not aiming they're the
+        // stick held all the way that way, which walks; aiming (R held) the stick aims, so they're left to the game's strafe alone
+        // (look_aim.cpp's conker_dpad_strafe, from the dedicated bits): never a C-button, so never the scope's zoom or a grenade.
+        // (30 Oct, second look) Never turned into a Nintendo 64 button, online or offline, as the Grenade button isn't (the D-pad, which the
+        // keys bound to the stick become online, is read by the scope's code too: it zoomed). Not aiming: the stick held that way. Aiming
+        // (R held): nothing here; the game's strafe takes them from the dedicated bits (look_aim.cpp's conker_dpad_strafe), on every
+        // machine from the frame's agreed input.
+        if ((cur_buttons & 0x0010) == 0) {
+            const uint16_t moves = read_dedicated(controller, keyboard);
+            cur_x += ((moves & 0x1000) ? 1.0f : 0.0f) - ((moves & 0x0800) ? 1.0f : 0.0f);
+            cur_y += ((moves & 0x0200) ? 1.0f : 0.0f) - ((moves & 0x0400) ? 1.0f : 0.0f);
         }
         *buttons = cur_buttons;
         // 0.10.2: online, each change of R on this machine's controller, with how far down its right trigger is (to see R let go in a hit)
@@ -1129,13 +1287,19 @@ namespace {
         conker::netplay::on_port_read(port);
         bool plugged = false;
         if (conker::netsession::input_for_game(port, &plugged, buttons, x, y)) {
+            note_probe_buttons(port, *buttons);
             return plugged;
         }
         if (conker::netplay::replay_input(port, &plugged, buttons, x, y)) {
+            note_probe_buttons(port, *buttons);
             return plugged;
+        }
+        if (port == 0) {
+            conker::frontend::sample_mouse();   // (0.11.4: offline, this frame's mouse for the aiming hooks, look_aim.cpp's mouse_aim)
         }
         const bool answered = get_port_input_live(port, buttons, x, y);
         conker::netplay::record_input(port, answered, *buttons, *x, *y);
+        note_probe_buttons(port, answered ? *buttons : (uint16_t)0);
         return answered;
     }
 
@@ -1143,6 +1307,9 @@ namespace {
         // recompinput's own multiplayer mode (players assigned in its menus) gives each
         // player their controller and profiles already.
         if (!recompinput::players::is_single_player_mode()) {
+            if (port >= 0 && port < max_ports) {
+                dedicated_held[port] = 0;
+            }
             return recompinput::profiles::get_n64_input(port, buttons, x, y);
         }
         *buttons = 0;
@@ -1151,6 +1318,7 @@ namespace {
         if (port < 0 || port >= max_ports) {
             return false;
         }
+        dedicated_held[port] = 0;
         std::array<SDL_GameController*, max_ports> controllers{};
         int connected = 0;
         int count = get_port_controllers(controllers, &connected);
@@ -1213,6 +1381,7 @@ namespace {
             if (port == 0) {
                 local_pad_used = pad;
             }
+            dedicated_held[port] = read_dedicated(pad, keys);
             // The right stick turns the camera (Right Stick: Free Camera): it presses no C-button. That's about the controller,
             // not the keyboard (an online window on one PC that has only the gamepad has no `keys`, and its stick still has to).
             const bool free_stick = port == 0 && (conker::netsession::active() ? conker::look_aim::stick_free_camera() : conker::mouse_camera::stick_turns_camera());
@@ -1255,6 +1424,17 @@ namespace {
                 swapped = true;
                 read_port(pad, keys, false, true, conker::look_aim::z_turns_aim(aim_player), buttons, x, y);
             }
+            // (0.11.4) Aiming the shotgun (its red laser sight) with R held: D-Pad Up walks forward and D-Pad Down walks back, as
+            // C-Up and C-Down do there (the D-pad does nothing else in a match). Online it goes out as those buttons in this player's
+            // input, so every machine moves them the same.
+            {
+                constexpr uint16_t r_button = 0x0010, d_up = 0x0800, d_down = 0x0400, c_up_b = 0x0008, c_down_b = 0x0004;
+                if ((*buttons & r_button) && (*buttons & (d_up | d_down)) && conker::look_aim::shotgun_aiming_now(aim_player)) {
+                    if (*buttons & d_up) *buttons |= c_up_b;
+                    if (*buttons & d_down) *buttons |= c_down_b;
+                    *buttons &= (uint16_t)~(d_up | d_down);
+                }
+            }
             if (online_game && port == 0) {
                 online_last_r = (*buttons & 0x0010) != 0;
             }
@@ -1275,11 +1455,17 @@ namespace {
             }
             // (the aim stick's curve and easing, above: while aiming, swapped or not, and not held still for the look's start)
             if (online_game && port == 0) {
-                shape_online_aim(pad != nullptr && !entry_hold && (swapped || (!online_swap && conker::look_aim::aiming_recently(aim_player))), x, y);
+                // (0.11.4: only with Stick: Aiming Response Modern; Original is the stick as it is)
+                shape_online_aim(conker::look_aim::modern_aim() && pad != nullptr && !entry_hold &&
+                    (swapped || (!online_swap && conker::look_aim::aiming_recently(aim_player))), x, y);
             }
             // (0.9.99 held both sticks still here with R held and the look off; 0.10.0 does it where the game reads its input, net_session.cpp)
             if (port == 0) {
-                conker::look_aim::set_sampled_swap(online_game && swapped);
+                // (0.11.4) and the keyboard walking with R held (its keys the C-buttons, frontend's read_port) with the mouse aiming or no
+                // controller: as Swap Sticks is, for the look (look_aim.cpp's swap_state): otherwise strafing with the keys swung the look's
+                // yaw off the aim and its spring yanked it back (Kong's M4, mouse and keyboard)
+                const bool keys_walk = keys && (*buttons & 0x0010) != 0 && (pad == nullptr || conker::look_aim::mouse_on());
+                conker::look_aim::set_sampled_swap((online_game && swapped) || keys_walk);
                 conker::look_aim::set_entry_hold(entry_hold);
             }
         }
@@ -1288,9 +1474,33 @@ namespace {
 }
 
 void conker::frontend::start_online(uint8_t* rdram) {
+    game_rdram = rdram;
     if (conker::netsession::init(rdram, online_local_sampler)) {
         conker::netplay::enter_online(rdram);
     }
+}
+
+void conker::frontend::probe_buttons(int port, uint16_t* held, uint16_t* pressed) {
+    const bool ok = port >= 0 && port < max_ports;
+    *held = ok ? probe_held[port].load() : 0;
+    *pressed = ok ? probe_pressed[port].load() : 0;
+}
+
+void conker::frontend::sample_mouse() {
+    std::lock_guard lock{ mouse_mutex };
+    mouse_frame_x = mouse_pending_x;
+    mouse_frame_y = mouse_pending_y;
+    mouse_pending_x = mouse_pending_y = 0.0f;
+}
+
+void conker::frontend::frame_mouse(float* x, float* y) {
+    std::lock_guard lock{ mouse_mutex };
+    *x = mouse_frame_x;
+    *y = mouse_frame_y;
+}
+
+uint16_t conker::frontend::dedicated_keys(int port) {
+    return (port >= 0 && port < max_ports) ? dedicated_held[port].load() : 0;
 }
 
 SDL_GameController* conker::frontend::local_pad() {
@@ -1352,6 +1562,11 @@ std::u8string conker::program_id() {
 }
 
 void conker::frontend::init(recomp::GameEntry& game) {
+    // (0.11.4) the quit button while the game runs: back to the launcher (recompfrontend_quit.patch), not out of the program
+    recompui::set_quit_to_launcher([]() {
+        conker::relaunch_to_launcher();
+        ultramodern::quit();
+    });
     recompui::programconfig::set_program_name(program_name);
     recompui::programconfig::set_program_id(program_id());
 
@@ -1371,7 +1586,10 @@ void conker::frontend::init(recomp::GameEntry& game) {
         recompui::register_primary_font("InterVariable.ttf", "Inter Variable");
     }
     else {
-        recompui::register_primary_font("LilitaOne-Regular.ttf", "Lilita One");
+        // (0.11.4) CBFD Comic (assets/CBFDComic.ttf, the game's lettering as the HD Icons pack draws it, traced): every font of the launcher's
+        // but its main menu's buttons, which keep Lilita One (init_launcher)
+        recompui::register_primary_font("CBFDComic.ttf", "CBFD Comic");
+        recompui::register_extra_font("LilitaOne-Regular.ttf");
     }
     // (0.10.44) Share Tech Mono (SIL Open Font License, see assets/ShareTechMono-OFL.txt): the launcher's title and status bars
     recompui::register_extra_font("ShareTechMono-Regular.ttf");

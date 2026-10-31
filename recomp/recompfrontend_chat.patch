@@ -1,0 +1,52 @@
+diff --git a/recompinput/include/recompinput/input_types.h b/recompinput/include/recompinput/input_types.h
+--- a/recompinput/include/recompinput/input_types.h
++++ b/recompinput/include/recompinput/input_types.h
+@@ -36,7 +36,8 @@
+         DEFINE_INPUT(BACK_MENU, 0, "Back (Menu)") \
+         DEFINE_INPUT(APPLY_MENU, 0, "Apply (Menu)") \
+         DEFINE_INPUT(TAB_LEFT_MENU, 0, "Tab Left (Menu)") \
+-        DEFINE_INPUT(TAB_RIGHT_MENU, 0, "Tab Right (Menu)")
++        DEFINE_INPUT(TAB_RIGHT_MENU, 0, "Tab Right (Menu)") \
++        DEFINE_INPUT(CHAT, 0, "Chat")
+ 
+     #define DEFINE_ALL_INPUTS() \
+         DEFINE_N64_AXIS_INPUTS() \
+diff --git a/recompinput/src/input_mapping.cpp b/recompinput/src/input_mapping.cpp
+--- a/recompinput/src/input_mapping.cpp
++++ b/recompinput/src/input_mapping.cpp
+@@ -32,7 +32,8 @@
+         { GameInput::BACK_MENU,      { InputField::keyboard(SDL_SCANCODE_F15) } },
+         { GameInput::APPLY_MENU,     { InputField::keyboard(SDL_SCANCODE_F) } },
+         { GameInput::TAB_LEFT_MENU,  { InputField::keyboard(SDL_SCANCODE_F16) } },
+-        { GameInput::TAB_RIGHT_MENU, { InputField::keyboard(SDL_SCANCODE_F17) } }
++        { GameInput::TAB_RIGHT_MENU, { InputField::keyboard(SDL_SCANCODE_F17) } },
++        { GameInput::CHAT,           { InputField::keyboard(SDL_SCANCODE_Y) } }
+     };
+ 
+     default_game_input_device_mapping default_n64_mappings_controller = {
+diff --git a/recompui/src/config/ui_config_page_controls.cpp b/recompui/src/config/ui_config_page_controls.cpp
+--- a/recompui/src/config/ui_config_page_controls.cpp
++++ b/recompui/src/config/ui_config_page_controls.cpp
+@@ -627,6 +627,10 @@
+         game_input_rows[i]->update_bindings(
+             game_input_bindings.at(game_input_rows[i]->get_input_id())
+         );
++        // Chat is the keyboard's only: not listed with a controller's bindings
++        if (game_input_rows[i]->get_input_id() == recompinput::GameInput::CHAT) {
++            show_or_hide_if_exists(game_input_rows[i], get_player_input_device() != recompinput::InputDevice::Controller);
++        }
+     }
+ }
+ 
+diff --git a/recompui/src/elements/ui_modal.cpp b/recompui/src/elements/ui_modal.cpp
+--- a/recompui/src/elements/ui_modal.cpp
++++ b/recompui/src/elements/ui_modal.cpp
+@@ -107,7 +107,7 @@
+ 
+     set_menu_action_callback(MenuAction::Toggle, [this]() {
+         this->close();
+-    }, "Close");
++    }, "");
+ }
+ 
+ Modal::~Modal() {

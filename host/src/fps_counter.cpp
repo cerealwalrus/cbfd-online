@@ -16,6 +16,9 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <deque>
+#include <mutex>
+#include <string>
 
 #include "ultramodern/ultramodern.hpp"
 #include "recompui/recompui.h"
@@ -25,6 +28,8 @@
 
 namespace RT64 {
     uint64_t presentedFrameCount();
+    void latencyMark();
+    bool latencyResult(uint64_t *serial, int64_t *firstNs, int64_t *fullNs);
 }
 
 namespace {
@@ -72,7 +77,7 @@ void conker::fps_counter::on_ui_ready() {
 }
 
 void conker::fps_counter::update() {
-    const bool wanted = ui_ready && conker::fps_counter::enabled() && ultramodern::is_game_started();
+    const bool wanted = ui_ready && (conker::fps_counter::enabled() || conker::latency_meter::enabled()) && ultramodern::is_game_started();
     if (!wanted) {
         if (created && recompui::is_context_shown(context)) {
             recompui::hide_context(context);
@@ -103,11 +108,163 @@ void conker::fps_counter::update() {
     char text[64];
     std::snprintf(text, sizeof(text), "%.0f FPS  |  Game %.0f", (presented - last_presented) / seconds,
         (game - last_game) / seconds);
+    std::string shown = conker::fps_counter::enabled() ? std::string(text) : std::string();
+    const std::string latency = conker::latency_meter::text();
+    if (!latency.empty()) {
+        shown += shown.empty() ? latency : "\n" + latency;
+    }
     last_time = now;
     last_presented = presented;
     last_game = game;
 
     context.open();
-    label->set_text(text);
+    label->set_text(shown);
     context.close();
+}
+
+// ---- (0.11.4) Show Latency ----
+// One press at a time, followed through: the press (SDL's event, its own timestamp), the game reading it (this machine's player's
+// controller as given to the game showing a new button or dedicated control down: offline the controller read live, online the
+// frame's agreed input, after the input delay), the display list the game makes next (begun, finished: its start address), that list
+// handed to RT64 (rt64.patch's latencyMark just before: RT64 marks the workload made from it), and the screen: the first frame drawn
+// that shows any of it (with interpolation, the first in-between frame toward it) and the one that shows all of it. Each measurement
+// in latency.log, and the last 20's average in the corner. Not counted: the mouse's or controller's own delay and the monitor's.
+namespace {
+    using ns_clock = std::chrono::steady_clock;
+    int64_t now_ns() {
+        return std::chrono::duration_cast<std::chrono::nanoseconds>(ns_clock::now().time_since_epoch()).count();
+    }
+    enum class Stage { Idle, Pressed, Read, Begun, Ended, Sent };
+    std::mutex lat_mutex;
+    Stage stage = Stage::Idle;
+    int64_t t_press = 0, t_read = 0, t_begin = 0, t_end = 0, t_sent = 0;
+    uint32_t marked_list = 0;
+    uint32_t sends_since_end = 0;   // lists handed over since the frame's ended (its start not matched: the next one taken after 2)
+    uint32_t last_buttons = 0;
+    uint64_t last_serial = 0;
+    struct Sample { double read, made, first, full; };
+    std::deque<Sample> samples;
+    std::string corner;
+    std::FILE* lat_file = nullptr;
+    uint32_t lat_count = 0;
+    std::atomic<bool> lat_on_cached = false;
+
+    void lat_reset_if_stale(int64_t now) {
+        // (a press the game never reads, a key bound to nothing say, dropped after 250 ms: the first try read the next press instead,
+        // and counted 600 ms)
+        if ((stage == Stage::Pressed && now - t_press > 250'000'000LL) || (stage != Stage::Idle && now - t_press > 2'000'000'000LL)) {
+            stage = Stage::Idle;
+        }
+    }
+}
+
+void conker::latency_meter::pressed(int64_t at_ns) {
+    if (!lat_on_cached.load(std::memory_order_relaxed)) {
+        return;
+    }
+    std::lock_guard lock{ lat_mutex };
+    lat_reset_if_stale(now_ns());
+    if (stage == Stage::Idle) {
+        stage = Stage::Pressed;
+        t_press = at_ns;
+    }
+}
+
+void conker::latency_meter::game_read(uint32_t buttons) {
+    if (!lat_on_cached.load(std::memory_order_relaxed)) {
+        return;
+    }
+    std::lock_guard lock{ lat_mutex };
+    lat_reset_if_stale(now_ns());
+    const bool new_down = (buttons & ~last_buttons) != 0;
+    last_buttons = buttons;
+    if (stage == Stage::Pressed && new_down) {
+        stage = Stage::Read;
+        t_read = now_ns();
+    }
+}
+
+void conker::latency_meter::frame_begin() {
+    if (!lat_on_cached.load(std::memory_order_relaxed)) {
+        return;
+    }
+    std::lock_guard lock{ lat_mutex };
+    if (stage == Stage::Read) {
+        stage = Stage::Begun;
+        t_begin = now_ns();
+    }
+}
+
+void conker::latency_meter::frame_end(uint32_t list_start) {
+    if (!lat_on_cached.load(std::memory_order_relaxed)) {
+        return;
+    }
+    std::lock_guard lock{ lat_mutex };
+    if (stage == Stage::Begun) {
+        stage = Stage::Ended;
+        t_end = now_ns();
+        marked_list = list_start & 0x1FFFFFFFu;
+        sends_since_end = 0;
+    }
+}
+
+void conker::latency_meter::before_send(uint32_t list) {
+    if (!lat_on_cached.load(std::memory_order_relaxed)) {
+        return;
+    }
+    std::lock_guard lock{ lat_mutex };
+    if (stage == Stage::Ended && ((list & 0x1FFFFFFFu) == marked_list || ++sends_since_end > 2)) {
+        stage = Stage::Sent;
+        t_sent = now_ns();
+        RT64::latencyMark();
+    }
+}
+
+std::string conker::latency_meter::text() {
+    const bool on = conker::latency_meter::enabled();
+    lat_on_cached.store(on, std::memory_order_relaxed);
+    if (!on) {
+        return std::string();
+    }
+    uint64_t serial = 0;
+    int64_t first = 0, full = 0;
+    std::lock_guard lock{ lat_mutex };
+    if (RT64::latencyResult(&serial, &first, &full) && serial != last_serial) {
+        last_serial = serial;
+        if (stage == Stage::Sent && first >= t_sent && full >= first) {
+            const Sample s{ (t_read - t_press) / 1e6, (t_sent - t_read) / 1e6, (first - t_press) / 1e6, (full - t_press) / 1e6 };
+            samples.push_back(s);
+            if (samples.size() > 20) {
+                samples.pop_front();
+            }
+            if (lat_file == nullptr) {
+                lat_file = std::fopen("latency.log", "w");
+                if (lat_file != nullptr) {
+                    std::fprintf(lat_file, "Show Latency: each press, in ms from the press (SDL's event): the game reads it, its frame handed to "
+                        "the renderer, the screen first shows any of that frame (interpolated), the screen shows all of it\n");
+                }
+            }
+            if (lat_file != nullptr && lat_count < 5000) {
+                lat_count++;
+                std::fprintf(lat_file, "#%u  read %.1f  handed over %.1f  first shown %.1f  fully shown %.1f  (online %s)\n", (unsigned)lat_count,
+                    s.read, s.read + s.made, s.first, s.full, conker::netsession::active() ? "yes" : "no");
+                std::fflush(lat_file);
+            }
+        }
+        stage = Stage::Idle;
+    }
+    lat_reset_if_stale(now_ns());
+    if (samples.empty()) {
+        return "Latency: press a button";
+    }
+    double first_sum = 0.0, full_sum = 0.0, read_sum = 0.0;
+    for (const Sample& s : samples) {
+        first_sum += s.first;
+        full_sum += s.full;
+        read_sum += s.read;
+    }
+    const double n = (double)samples.size();
+    char text[128];
+    std::snprintf(text, sizeof(text), "Latency %.0f ms  (full %.0f, game read %.0f)", first_sum / n, full_sum / n, read_sum / n);
+    return std::string(text);
 }

@@ -70,7 +70,38 @@ echo ==^> Patching the tools
 call :apply_patch tools/N64Recomp recomp/n64recomp.patch || exit /b 1
 call :apply_patch tools/N64ModernRuntime recomp/n64modernruntime.patch || exit /b 1
 call :apply_patch tools/rt64 recomp/rt64.patch || exit /b 1
+rem (0.11.4) the menu library's patches as one set: when any of them has changed since they were last applied
+rem (recomp\build\frontend_patches.stamp), the library is reset first and all of them applied again in order. One reset
+rem in the middle of them, for a changed patch, lost the patches before it.
+if not exist "%ROOT%\recomp\build" mkdir "%ROOT%\recomp\build"
+copy /b /y "%ROOT%\recomp\recompfrontend.patch"+"%ROOT%\recomp\recompfrontend_text.patch"+"%ROOT%\recomp\recompfrontend_hints.patch"+"%ROOT%\recomp\recompfrontend_chat.patch"+"%ROOT%\recomp\recompfrontend_chatkey.patch"+"%ROOT%\recomp\recompfrontend_version.patch"+"%ROOT%\recomp\recompfrontend_controls.patch"+"%ROOT%\recomp\recompfrontend_nogyro.patch"+"%ROOT%\recomp\recompfrontend_mousepage.patch"+"%ROOT%\recomp\recompfrontend_quit.patch"+"%ROOT%\recomp\recompfrontend_wheel.patch" "%ROOT%\recomp\build\frontend_patches.now" >nul
+fc /b "%ROOT%\recomp\build\frontend_patches.now" "%ROOT%\recomp\build\frontend_patches.stamp" >nul 2>&1 || (
+    echo   the menu library's patches have changed: resetting it to apply them all again.
+    git -C tools/RecompFrontend reset --hard -q
+    git -C tools/RecompFrontend clean -fdq
+)
 call :apply_patch tools/RecompFrontend recomp/recompfrontend.patch || exit /b 1
+rem (0.11.4) the settings' descriptions in bigger text (28 dp, was 20), as a patch of its own on top
+call :apply_patch tools/RecompFrontend recomp/recompfrontend_text.patch || exit /b 1
+rem (0.11.4) the menus' button hints (Close: Esc...) 3 times the size, a patch of its own
+call :apply_patch tools/RecompFrontend recomp/recompfrontend_hints.patch || exit /b 1
+rem (0.11.4) the Chat control (the keyboard's, Y to begin with) and no Close hint at the menus' bottom, a patch of its own
+call :apply_patch tools/RecompFrontend recomp/recompfrontend_chat.patch || exit /b 1
+rem (0.11.4) Chat: Key on the General tab a key you bind (its button waits for the next key), a patch of its own
+call :apply_patch tools/RecompFrontend recomp/recompfrontend_chatkey.patch || exit /b 1
+rem (0.11.4) the launcher's corner version (the menu library's own, v0.1.6) not shown, a patch of its own
+call :apply_patch tools/RecompFrontend recomp/recompfrontend_version.patch || exit /b 1
+rem (0.11.4) dedicated controls (First-Person View, Crouch, Zoom In/Out, Aim Up/Down/Left/Right), unbound to begin with, a patch of its own
+call :apply_patch tools/RecompFrontend recomp/recompfrontend_controls.patch || exit /b 1
+rem (0.11.4) no gyro aiming in the menu library (its sensors never turned on), a patch of its own
+call :apply_patch tools/RecompFrontend recomp/recompfrontend_nogyro.patch || exit /b 1
+rem (0.11.4) the Controls tab's Mouse page (its footer's third button): the mouse's settings, Mouse Controls on or off, a patch of its own
+call :apply_patch tools/RecompFrontend recomp/recompfrontend_mousepage.patch || exit /b 1
+rem (0.11.4) the quit button while the game runs goes back to the launcher (the game says how), a patch of its own
+call :apply_patch tools/RecompFrontend recomp/recompfrontend_quit.patch || exit /b 1
+rem (0.11.4) the scroll wheel bindable as two mouse buttons (Wheel Up, Wheel Down), each notch a press of its own
+call :apply_patch tools/RecompFrontend recomp/recompfrontend_wheel.patch || exit /b 1
+copy /y "%ROOT%\recomp\build\frontend_patches.now" "%ROOT%\recomp\build\frontend_patches.stamp" >nul
 rem RmlUi's fix for GCC 15 and later (see build.sh). MSVC doesn't need it, but the patched
 rem file is the same on every system.
 call :apply_patch tools/RecompFrontend/recompui/lib/RmlUi recomp/rmlui.patch || exit /b 1

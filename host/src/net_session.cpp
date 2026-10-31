@@ -85,7 +85,7 @@ namespace {
 
     constexpr int max_players = 5;   // (possess-test: the 5th plays a bot's character, see five_players; the game has 4 controllers)
     constexpr uint32_t magic = 0x544E4243;  // "CBNT"
-    constexpr uint32_t protocol_version = 14;   // (13: 5 player slots, and the slot a joiner asks for in its Hello; 14: InputMore, FrameMore)
+    constexpr uint32_t protocol_version = 17;   // (17: the Weapon Swap and Reload keys in each input's high bits; 13: 5 player slots, and the slot a joiner asks for in its Hello; 14: InputMore, FrameMore; 15: each input's aiming sensitivity, and its buttons in 32 bits; 16: each input's field of view)
     constexpr uint32_t check_every = 30;
     constexpr uint32_t history = 1200;       // frames of inputs kept (for resyncs)
     constexpr uint32_t max_message = 64u << 20;
@@ -107,7 +107,9 @@ namespace {
 
     struct PlayerInput {
         uint8_t plugged = 0;
-        uint16_t buttons = 0;
+        // (0.11.4) 32 bits: the low 16 are the Nintendo 64's buttons (and the Grenade button's 0x0040), what the game reads; the high 16
+        // are room for buttons of our own that only our hooks read (extra_buttons), never given to the game.
+        uint32_t buttons = 0;
         float x = 0.0f;
         float y = 0.0f;
         // The right stick turns this player's camera (Right Stick: Free Camera): how far this frame, yaw and pitch in
@@ -118,6 +120,14 @@ namespace {
         // The player's aiming settings that change what the game does with its sticks (look_aim.cpp's look_flag bits: the stick's
         // inverting, its response, the lock-on): every machine plays that player's aiming with that player's own settings.
         uint8_t look = 0;
+        // (0.11.4) The player's Stick: Aiming Sensitivity, in percent (look_aim.cpp's aim_sensitivity).
+        uint8_t sens = 100;
+        // (0.11.4, protocol 16) The player's Camera: Field of View, in degrees tall (field_of_view.cpp; clamped to 40-75 where it's used).
+        uint8_t fov = 50;
+        // (0.11.4) The player's mouse aim this frame (look_aim.cpp's mouse_aim), in 1/1000 of a degree: yaw (growing to the left) and pitch
+        // (growing downward), with their own Mouse: Sensitivity and Invert already applied; none (0, 0) without a mouse moved.
+        int16_t mouse_yaw = 0;
+        int16_t mouse_pitch = 0;
         int16_t cam_yaw = 0;
         int16_t cam_pitch = 0;
         // Only the host's input has any: for each of the game's 16 sound slots, the handle of a sound that has finished
@@ -167,6 +177,12 @@ namespace {
         Writer& put_input(const PlayerInput& in) {
             put(in.plugged).put(in.buttons).put(in.x).put(in.y);
             put((uint8_t)((in.cam_on ? 1 : 0) | (in.swap ? 2 : 0) | ((in.look & 0x3Fu) << 2)));
+            put(in.sens);
+            put(in.fov);
+            put((uint8_t)((in.mouse_yaw != 0 || in.mouse_pitch != 0) ? 1 : 0));
+            if (in.mouse_yaw != 0 || in.mouse_pitch != 0) {
+                put(in.mouse_yaw).put(in.mouse_pitch);
+            }
             if (in.cam_on) {
                 put(in.cam_yaw).put(in.cam_pitch);
             }
@@ -218,13 +234,19 @@ namespace {
         PlayerInput get_input() {
             PlayerInput in;
             in.plugged = get<uint8_t>();
-            in.buttons = get<uint16_t>();
+            in.buttons = get<uint32_t>();
             in.x = get<float>();
             in.y = get<float>();
             const uint8_t flags = get<uint8_t>();
             in.cam_on = flags & 1;
             in.swap = (flags & 2) ? 1 : 0;
             in.look = (uint8_t)(flags >> 2);
+            in.sens = get<uint8_t>();
+            in.fov = get<uint8_t>();
+            if (get<uint8_t>() != 0) {
+                in.mouse_yaw = get<int16_t>();
+                in.mouse_pitch = get<int16_t>();
+            }
             if (in.cam_on) {
                 in.cam_yaw = get<int16_t>();
                 in.cam_pitch = get<int16_t>();
@@ -547,7 +569,7 @@ namespace {
     }
 
     // (CONKER_NET_FEWER=1 on the host, a test) the lobby's Start works with 2 or more of its players there
-    bool fewer_allowed() {
+    [[maybe_unused]] bool fewer_allowed() {   // (0.11.4: no longer needed: the host starts with whoever is there)
         static const bool on = [] {
             const std::string v = get_env("CONKER_NET_FEWER");
             return !v.empty() && v != "0";
@@ -1233,7 +1255,12 @@ namespace {
         lobby_locked = true;
         if (auto_delay) {
             const int want = wanted_delay_locked();
-            delay = (uint32_t)(want > 0 ? want : 4);
+            // (0.11.4) alone (the host with nobody joined), no network to hide: 1 frame (it was 4, none known: 133 ms on every press)
+            bool anyone = false;
+            for (auto& peer : peers) {
+                anyone = anyone || (peer->alive && !peer->retired && peer->slot >= 0);
+            }
+            delay = (uint32_t)(want > 0 ? want : (anyone ? 4 : 1));
             log_line("[net] input delay: %u frames (worked out from the round trips%s; kept for the game)", delay, want > 0 ? "" : ", none known yet");
         }
         have_target = true;
@@ -1258,7 +1285,7 @@ namespace {
             }
         }
         try_broadcast();
-        log_line("[net] all %d players are here, starting", players_expected);
+        log_line("[net] starting with %d of the %d players", [&] { int n = 0; for (int k = 0; k < max_players; k++) { n += connected[k] ? 1 : 0; } return n; }(), players_expected);
         cv.notify_all();
     }
 
@@ -2369,7 +2396,9 @@ conker::netsession::LobbyStatus conker::netsession::lobby_status() {
     for (int k = 0; k < max_players; k++) {
         here += (mask >> k) & 1;
     }
-    st.can_start = is_host && lobby_phase == 2 && !started && (here >= players_expected || (fewer_allowed() && here >= 2));
+    // (0.11.4) the host can start with whoever is there, alone too: the players who never came are empty slots, as a player who left is
+    st.can_start = is_host && lobby_phase == 2 && !started && here >= 1;
+    st.everyone_here = here >= players_expected;
     st.launch = !is_host && game_launch;
     st.dedicated = dedicated;
     st.ping_ms.fill(-1.0f);
@@ -2393,7 +2422,7 @@ bool conker::netsession::lobby_start() {
     for (int k = 0; k < max_players; k++) {
         here += connected[k] ? 1 : 0;
     }
-    if (here < players_expected && !(fewer_allowed() && here >= 2)) {
+    if (here < 1) {   // (0.11.4: whoever is there, alone too; was everyone, or 2 with CONKER_NET_FEWER)
         return false;
     }
     host_begin_game();
@@ -2667,10 +2696,40 @@ uint8_t conker::netsession::look_flags(int player) {
     return (enabled && !failed && player >= 0 && player < max_players) ? current.p[player].look : 0;
 }
 
+uint8_t conker::netsession::aim_sensitivity(int player) {
+    player = port_of_player(player);
+    std::lock_guard lock{ mtx };
+    return (enabled && !failed && player >= 0 && player < max_players) ? current.p[player].sens : 100;
+}
+
+uint8_t conker::netsession::field_of_view(int player) {
+    player = port_of_player(player);
+    std::lock_guard lock{ mtx };
+    const uint8_t fov = (enabled && !failed && player >= 0 && player < max_players) ? current.p[player].fov : 50;
+    return (uint8_t)std::clamp<int>(fov, 40, 75);   // (whatever a player sends: every machine clamps it alike)
+}
+
 bool conker::netsession::swap_flag(int player) {
     player = port_of_player(player);   // (0.10.92)
     std::lock_guard lock{ mtx };
     return enabled && !failed && player >= 0 && player < max_players && current.p[player].swap != 0;
+}
+
+bool conker::netsession::mouse_aim(int player, float* yaw, float* pitch) {
+    *yaw = 0.0f;
+    *pitch = 0.0f;
+    player = port_of_player(player);
+    std::lock_guard lock{ mtx };
+    if (!enabled || failed || player < 0 || player >= max_players) {
+        return false;
+    }
+    const PlayerInput& in = current.p[player];
+    if (in.mouse_yaw == 0 && in.mouse_pitch == 0) {
+        return false;
+    }
+    *yaw = (float)in.mouse_yaw / 1000.0f;
+    *pitch = (float)in.mouse_pitch / 1000.0f;
+    return true;
 }
 
 bool conker::netsession::camera_turn(int player, float* yaw, float* pitch) {
@@ -3249,8 +3308,18 @@ void conker::netsession::on_port_read(int port) {
     uint16_t buttons = 0;
     float x = 0.0f, y = 0.0f;
     bool plugged = true;
+    // (0.11.4) the dedicated controls held at the same read (frontend.cpp), the high 16 of the buttons that travel
+    uint16_t dedicated = 0;
+    // (0.11.4) the mouse's movement since the last frame, taken as this frame's, before the camera's turn is asked for (mouse_camera.cpp
+    // adds it to the Free Camera's), and sent as this player's mouse aim
+    float mouse_yaw = 0.0f, mouse_pitch = 0.0f;
     if (sampler != nullptr) {
         plugged = sampler(&buttons, &x, &y);
+        dedicated = conker::frontend::dedicated_keys(0);
+        conker::frontend::sample_mouse();
+        float mx = 0.0f, my = 0.0f;
+        conker::frontend::frame_mouse(&mx, &my);
+        conker::look_aim::mouse_aim_degrees(mx, my, &mouse_yaw, &mouse_pitch);
     }
     // The right stick turning this player's camera: asked right after the controller was read, as it goes with it.
     float cam_yaw = 0.0f, cam_pitch = 0.0f;
@@ -3263,6 +3332,8 @@ void conker::netsession::on_port_read(int port) {
     if (conker::netchat::typing()) {
         // typing in the chat: this player's game gets a still controller (only what this machine sends changes)
         buttons = 0;
+        dedicated = 0;
+        mouse_yaw = mouse_pitch = 0.0f;
         x = 0.0f;
         y = 0.0f;
         cam_yaw = cam_pitch = 0.0f;
@@ -3504,6 +3575,8 @@ void conker::netsession::on_port_read(int port) {
         // A button that was pressed for the menu isn't passed on to the game until it is let go.
         if (open || (hold_off && (start || a || b))) {
             buttons = 0;
+            dedicated = 0;
+            mouse_yaw = mouse_pitch = 0.0f;
             x = 0.0f;
             y = 0.0f;
             cam_yaw = cam_pitch = 0.0f;
@@ -3611,12 +3684,16 @@ void conker::netsession::on_port_read(int port) {
     }
     PlayerInput mine;
     mine.plugged = plugged ? 1 : 0;
-    mine.buttons = buttons;
+    mine.buttons = (uint32_t)buttons | ((uint32_t)dedicated << 16);
     mine.x = x;
     mine.y = y;
     mine.cam_on = cam_on ? 1 : 0;
     mine.swap = swapped ? 1 : 0;
     mine.look = sampler != nullptr ? conker::look_aim::sampled_look_flags() : 0;
+    mine.sens = sampler != nullptr ? conker::look_aim::sampled_aim_sensitivity() : 100;
+    mine.fov = sampler != nullptr ? conker::look_aim::sampled_field_of_view() : 50;
+    mine.mouse_yaw = (int16_t)std::lround(std::clamp(mouse_yaw, -30.0f, 30.0f) * 1000.0f);
+    mine.mouse_pitch = (int16_t)std::lround(std::clamp(mouse_pitch, -30.0f, 30.0f) * 1000.0f);
     mine.cam_yaw = (int16_t)std::lround(std::clamp(cam_yaw, -3.0f, 3.0f) * 10000.0f);
     mine.cam_pitch = (int16_t)std::lround(std::clamp(cam_pitch, -3.0f, 3.0f) * 10000.0f);
     sound_sync = true;
@@ -3877,6 +3954,7 @@ void conker::netsession::on_port_read(int port) {
         hook_generation_count++;
         conker::look_aim::reset_online_state();
         conker::mouse_camera::reset();
+        conker::field_of_view::reset();
         log_line("[net] f=%u the hooks' own state starts over (the resync's frame), on every machine", f);
     }
     if (ram != nullptr) {
@@ -3962,7 +4040,7 @@ void conker::netsession::on_port_read(int port) {
         std::memcpy(&t[9], &current.p[0].y, 4);
         std::memcpy(&t[10], &current.p[1].x, 4);
         std::memcpy(&t[11], &current.p[1].y, 4);
-        uint32_t b = ((uint32_t)current.p[0].buttons << 16) | current.p[1].buttons;
+        uint32_t b = ((current.p[0].buttons & 0xFFFFu) << 16) | (current.p[1].buttons & 0xFFFFu);
         if (std::memcmp(t, last_change, sizeof(t)) != 0 || b != last_change_buttons) {
             std::memcpy(last_change, t, sizeof(t));
             last_change_buttons = b;
@@ -3994,7 +4072,7 @@ bool conker::netsession::input(int port, bool* plugged, uint16_t* buttons, float
     }
     const PlayerInput& in = current.p[port];
     *plugged = dedicated || in.plugged != 0;   // a dedicated server's game always has all its controllers; an empty slot's is still
-    *buttons = in.buttons;
+    *buttons = (uint16_t)(in.buttons & 0xFFFFu);   // (the game's 16; the high ones are extra_buttons')
     // The game stops everything while it's paused, and every machine has to go on together, so online the Start
     // button doesn't pause during a match (the multiplayer arenas, D_800BE616 set; D_800BEAC0 is the game's pause).
     // CONKER_NET_ALLOWPAUSE=1 gives it back.
@@ -4020,6 +4098,17 @@ bool conker::netsession::diag_on() {
 bool conker::netsession::five_players() {
     std::lock_guard lock{ mtx };
     return enabled && !failed && players_expected >= 5;
+}
+
+uint16_t conker::netsession::extra_buttons(int port) {
+    std::lock_guard lock{ mtx };
+    if (!enabled || failed || port < 0 || port >= max_players) {
+        return 0;
+    }
+    if (ram != nullptr && conker::netmenu::boot_screen_held(ram)) {
+        return 0;
+    }
+    return (uint16_t)(current.p[port].buttons >> 16);
 }
 
 bool conker::netsession::fifth_input(uint16_t* buttons, float* x, float* y) {
@@ -4165,7 +4254,8 @@ namespace {
             std::vector<std::vector<uint8_t>> catch_up;   // the frames from the snapshot's on, for whoever is joining
             uint32_t joiners = 0;
             if (ok) {
-                conker::mouse_camera::reset();   // (at the safe point; the machine that loads it does the same)
+                conker::mouse_camera::reset();
+        conker::field_of_view::reset();   // (at the safe point; the machine that loads it does the same)
             }
             {
                 std::lock_guard lock{ mtx };
@@ -4481,6 +4571,7 @@ namespace {
                 return;
             }
             conker::mouse_camera::reset();
+        conker::field_of_view::reset();
             conker::look_aim::reset_online_state();
             hook_generation_count++;
             if (late_join) {

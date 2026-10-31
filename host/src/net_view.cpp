@@ -394,6 +394,252 @@ namespace {
         }
     }
 
+    // (0.11.4) One player online (alone in an arena, or the co-op campaign alone): the game draws its one-screen HUD, which nothing above
+    // moves, so with HUD Placement: Expand its corner pieces (the ammo's bricks, the radar, the weapon) stayed in the 4:3 frame's corners
+    // while with two players or more they're at the window's edges. Here, with Expand, each HUD rectangle in a corner of the frame (its
+    // middle in the outer 30% across and the top or bottom 35%) is drawn as RT64's extended rectangle with an origin at that side, as the
+    // players' HUD's are (rewrite_frame): the same places as everyone else's. The middle pieces (the score, the timer, the aim) stay.
+    // The lists the HUD calls are copied first (they're the game's static lists), as rewrite_frame does.
+    void solo_hud_edges(uint8_t* rdram, const std::vector<Pass>& frame, uint32_t end, uint32_t base, bool log_it) {
+        if (ultramodern::renderer::get_graphics_config().hr_option != ultramodern::renderer::HUDRatioMode::Full || conker::netmenu::open_for_view()) {
+            return;
+        }
+        const float f_l = get_float(rdram, base, field_left), f_r = get_float(rdram, base, field_right);
+        const float f_t = get_float(rdram, base, field_top), f_b = get_float(rdram, base, field_bottom);
+        if (!(f_r - f_l > 100.0f && f_b - f_t > 100.0f)) {
+            return;
+        }
+        int32_t frame_width = (int32_t)MEM_W(0, (gpr)(int32_t)0x800BE620);
+        if (frame_width < 200 || frame_width > 640) {
+            frame_width = 292;
+        }
+        struct Range { uint32_t from, to; };
+        std::vector<Range> ranges;
+        // (the HUD's passes, any camera's, and what's drawn for no camera after the 3D passes, camera 255: the health bar's bricks are
+        // there, as rewrite_frame's bar_segments; the 30 Oct test found nothing in camera 0's HUD pass alone)
+        for (size_t i = 0; i < frame.size(); i++) {
+            const bool hud = frame[i].kind == 2;
+            const bool bar = frame[i].kind == 0 && frame[i].camera == 255;
+            if (!hud && !bar) {
+                continue;
+            }
+            size_t next = i + 1;
+            if (hud) {
+                while (next < frame.size() && frame[next].kind == 0 && frame[next].camera != 255) {
+                    next++;
+                }
+            }
+            ranges.push_back({ frame[i].gfx, next < frame.size() ? frame[next].gfx : end });
+        }
+        if (ranges.empty()) {
+            return;
+        }
+        // the lists the HUD's passes call, copied (one level down, as many as 24), the call pointed at the copy
+        {
+            int copies = 0;
+            for (size_t r = 0; r < ranges.size() && r < 64; r++) {
+                for (uint32_t a = ranges[r].from; a < ranges[r].to; a += 8) {
+                    const uint32_t c0 = (uint32_t)MEM_W(0, (gpr)(int32_t)a), c1 = (uint32_t)MEM_W(4, (gpr)(int32_t)a);
+                    if ((c0 >> 24) != 0xDE || ((c0 >> 16) & 0xFFu) != 0 || (c1 >> 24) != 0x80 || (c1 & 7u) != 0 || (c1 & 0x7FFFFFu) >= 0x7FF000u || copies >= 24) {
+                        continue;
+                    }
+                    uint32_t last = c1;
+                    while (last - c1 < list_slot - 8u && ((uint32_t)MEM_W(0, (gpr)(int32_t)last) >> 24) != 0xDF) {
+                        last += 8;
+                    }
+                    if (((uint32_t)MEM_W(0, (gpr)(int32_t)last) >> 24) != 0xDF) {
+                        continue;
+                    }
+                    const uint32_t copy = 0x80000000u | (list_start + (list_next % list_slots) * list_slot);
+                    list_next++;
+                    copies++;
+                    for (uint32_t off = 0; off <= last - c1; off += 4) {
+                        MEM_W(off, (gpr)(int32_t)copy) = MEM_W(off, (gpr)(int32_t)c1);
+                    }
+                    MEM_W(4, (gpr)(int32_t)a) = (int32_t)copy;
+                    ranges.push_back({ copy, copy + (last - c1) + 8 });
+                }
+            }
+        }
+        int moved = 0;
+        for (const Range& range : ranges) {
+            bool extended_on = false;
+            for (uint32_t address = range.from; address < range.to; address += 8) {
+                const uint32_t w0 = (uint32_t)MEM_W(0, (gpr)(int32_t)address), w1 = (uint32_t)MEM_W(4, (gpr)(int32_t)address);
+                const uint32_t op = w0 >> 24;
+                if (op != 0xE4 && op != 0xE5 && op != 0xF6) {
+                    continue;
+                }
+                const int32_t xl = (int32_t)((w0 >> 12) & 0xFFFu), yl = (int32_t)(w0 & 0xFFFu);
+                const int32_t xh = (int32_t)((w1 >> 12) & 0xFFFu), yh = (int32_t)(w1 & 0xFFFu);
+                const float cx = (float)(xl + xh) * 0.125f, cy = (float)(yl + yh) * 0.125f;
+                const float width = (float)std::abs(xl - xh) * 0.25f, height = (float)std::abs(yl - yh) * 0.25f;
+                {
+                    static int seen_logged = 0;
+                    if (log_it && seen_logged < 120) {
+                        seen_logged++;
+                        char line[200];
+                        std::snprintf(line, sizeof(line), "[net view] one player: rect %08X op %02X at %.1f,%.1f size %.1fx%.1f (view %.0f..%.0f x %.0f..%.0f, frame %d)",
+                            address, (unsigned)op, cx, cy, width, height, f_l, f_r, f_t, f_b, frame_width);
+                        conker::netsession::log(line);
+                    }
+                }
+                if (width > 120.0f || height > 100.0f) {
+                    continue;
+                }
+                const float w = f_r - f_l, h = f_b - f_t;
+                const bool corner_row = cy < f_t + 0.35f * h || cy > f_b - 0.35f * h;
+                const int edge = !corner_row ? 0 : cx < f_l + 0.3f * w ? 1 : cx > f_r - 0.3f * w ? 2 : 0;
+                if (edge == 0) {
+                    continue;
+                }
+                const bool texrect = (op == 0xE4 || op == 0xE5) && address + 16 < range.to &&
+                    ((uint32_t)MEM_W(8, (gpr)(int32_t)address) >> 24) == 0xE1 && ((uint32_t)MEM_W(16, (gpr)(int32_t)address) >> 24) == 0xF1;
+                if (!texrect && op != 0xF6) {
+                    continue;
+                }
+                // RT64's extended GBI on, at a sync before it in this list
+                if (!extended_on) {
+                    for (uint32_t back = address; back > range.from && address - back < 64u * 8u;) {
+                        back -= 8;
+                        const uint32_t b0w = (uint32_t)MEM_W(0, (gpr)(int32_t)back), b1w = (uint32_t)MEM_W(4, (gpr)(int32_t)back);
+                        if ((b0w == 0xE7000000u || b0w == 0xE6000000u || b0w == 0xE8000000u) && b1w == 0) {
+                            MEM_W(0, (gpr)(int32_t)back) = (int32_t)(0xE0000000u | 0x525464u);
+                            MEM_W(4, (gpr)(int32_t)back) = (int32_t)((0x1u << 28) | 0x64u);
+                            extended_on = true;
+                            break;
+                        }
+                    }
+                    if (!extended_on) {
+                        continue;
+                    }
+                }
+                const uint32_t origin = edge == 2 ? 0x400u : 0x000u;   // G_EX_ORIGIN_RIGHT / _LEFT
+                const int32_t off = edge == 2 ? frame_width * 4 : 0;
+                const int32_t ulx = xh - off, uly = yh, lrx = xl - off, lry = yl;
+                if (texrect) {
+                    const uint32_t st = (uint32_t)MEM_W(12, (gpr)(int32_t)address), steps = (uint32_t)MEM_W(20, (gpr)(int32_t)address);
+                    const uint32_t tile = (w1 >> 24) & 0x7u;
+                    MEM_W(0, (gpr)(int32_t)address) = (int32_t)((0x64u << 24) | 0x000002u);
+                    MEM_W(4, (gpr)(int32_t)address) = (int32_t)(tile | (origin << 3) | (origin << 15) | (op == 0xE5 ? 0x80u : 0u));
+                    MEM_W(8, (gpr)(int32_t)address) = (int32_t)(((uint32_t)ulx << 16) | ((uint32_t)uly & 0xFFFFu));
+                    MEM_W(12, (gpr)(int32_t)address) = (int32_t)(((uint32_t)lrx << 16) | ((uint32_t)lry & 0xFFFFu));
+                    MEM_W(16, (gpr)(int32_t)address) = (int32_t)st;
+                    MEM_W(20, (gpr)(int32_t)address) = (int32_t)steps;
+                    address += 16;
+                } else {
+                    const uint32_t fill = 0x80000000u | (edge_fill_start + (edge_fill_next++ % edge_fill_slots) * edge_fill_slot);
+                    MEM_W(0, (gpr)(int32_t)fill) = (int32_t)((0x64u << 24) | 0x000003u);
+                    MEM_W(4, (gpr)(int32_t)fill) = (int32_t)(origin | (origin << 12));
+                    MEM_W(8, (gpr)(int32_t)fill) = (int32_t)(((uint32_t)ulx << 16) | ((uint32_t)uly & 0xFFFFu));
+                    MEM_W(12, (gpr)(int32_t)fill) = (int32_t)(((uint32_t)lrx << 16) | ((uint32_t)lry & 0xFFFFu));
+                    MEM_W(16, (gpr)(int32_t)fill) = (int32_t)0xDF000000u;
+                    MEM_W(20, (gpr)(int32_t)fill) = 0;
+                    MEM_W(0, (gpr)(int32_t)address) = (int32_t)0xDE000000u;
+                    MEM_W(4, (gpr)(int32_t)address) = (int32_t)(fill & 0x00FFFFFFu);
+                }
+                moved++;
+            }
+        }
+        static int told = 0;
+        if (log_it && told < 6) {
+            told++;
+            char line[160];
+            std::snprintf(line, sizeof(line), "[net view] f=%u one player: %d HUD corner pieces to the window's edges (%zu ranges)", (unsigned)conker::netsession::frame(),
+                moved, ranges.size());
+            conker::netsession::log(line);
+        }
+    }
+
+    // (0.11.4) One player online with the rocket launcher's look (kind 0x16 of the player's look record): its green overlay, a rectangle the
+    // camera's size drawn in a pass of its own before the HUD's setup, covered the 4:3 frame only, a black band beside it on a wide screen.
+    // Hidden as rewrite_frame hides it with more players (that pass's scissors emptied), and any rectangle half the view's size or more in
+    // the HUD's passes collapsed to a point.
+    void solo_rocket_overlay(uint8_t* rdram, const std::vector<Pass>& frame, uint32_t end, uint32_t base) {
+        const uint32_t looks = (uint32_t)MEM_W(0, (gpr)(int32_t)0x800DBFF0);
+        if ((looks >> 24) != 0x80 || (looks & 0x7FFFFFu) > 0x7F0000u) {
+            return;
+        }
+        bool rocket = false;
+        for (int k = 0; k < 4; k++) {
+            const gpr record = (gpr)(int32_t)(looks + (uint32_t)k * 0x9A0u);
+            if (MEM_BU(0x23D, record) == 0 && MEM_BU(0x23E, record) == 0x16) {
+                rocket = true;
+            }
+        }
+        if (!rocket) {
+            return;
+        }
+        const auto hide_pass = [&](uint32_t from, uint32_t to) {
+            if ((from >> 24) != 0x80 || to <= from || to - from > 0x4000u) {
+                return;
+            }
+            for (uint32_t address = from; address < from + 40 && address < to; address += 8) {
+                const uint32_t op = (uint32_t)MEM_W(0, (gpr)(int32_t)address) >> 24;
+                if (op == 0xE7 || op == 0xE6 || op == 0xE8 || op == 0xE9) {
+                    MEM_W(0, (gpr)(int32_t)address) = (int32_t)0xED000000u;
+                    MEM_W(4, (gpr)(int32_t)address) = 0;
+                    break;
+                }
+            }
+            for (uint32_t address = from; address < to; address += 8) {
+                if (((uint32_t)MEM_W(0, (gpr)(int32_t)address) >> 24) == 0xED && address > from + 40) {
+                    MEM_W(0, (gpr)(int32_t)address) = (int32_t)0xED000000u;
+                    MEM_W(4, (gpr)(int32_t)address) = 0;
+                }
+            }
+        };
+        int hud_pass = -1;
+        for (size_t i = 0; i < frame.size(); i++) {
+            if (frame[i].kind == 2 && frame[i].camera == 0) {
+                hud_pass = (int)i;
+            }
+        }
+        std::vector<int> setups;
+        for (int i = hud_pass - 1; i >= 0 && frame[i].kind == 0 && frame[i].camera == 0; i--) {
+            setups.push_back(i);
+        }
+        if (hud_pass >= 0 && setups.size() >= 2) {
+            for (size_t k = 1; k < setups.size(); k++) {
+                hide_pass(frame[setups[k]].gfx, frame[setups[k] + 1].gfx);
+            }
+        }
+        // (and the overlay's own big rectangles, wherever in the HUD's passes)
+        const float w = get_float(rdram, base, field_right) - get_float(rdram, base, field_left);
+        const float h = get_float(rdram, base, field_bottom) - get_float(rdram, base, field_top);
+        int collapsed = 0;
+        for (size_t i = 0; i < frame.size() && w > 50.0f && h > 50.0f; i++) {
+            if (frame[i].camera != 0 || frame[i].kind == 1) {
+                continue;
+            }
+            const uint32_t from = frame[i].gfx, to = i + 1 < frame.size() ? frame[i + 1].gfx : end;
+            if ((from >> 24) != 0x80 || to <= from || to - from > 0x8000u) {
+                continue;
+            }
+            for (uint32_t address = from; address < to; address += 8) {
+                const uint32_t w0 = (uint32_t)MEM_W(0, (gpr)(int32_t)address), w1 = (uint32_t)MEM_W(4, (gpr)(int32_t)address);
+                const uint32_t op = w0 >> 24;
+                if (op != 0xE4 && op != 0xE5) {
+                    continue;
+                }
+                const int32_t yl = (int32_t)(w0 & 0xFFFu), yh = (int32_t)(w1 & 0xFFFu);
+                const int32_t xl = (int32_t)((w0 >> 12) & 0xFFFu), xh = (int32_t)((w1 >> 12) & 0xFFFu);
+                if ((float)std::abs(xl - xh) * 0.25f >= 0.5f * w && (float)std::abs(yl - yh) * 0.25f >= 0.5f * h) {
+                    MEM_W(0, (gpr)(int32_t)address) = (int32_t)((w0 & ~0xFFFFFFu) | ((uint32_t)xh << 12) | (uint32_t)yh);
+                    collapsed++;
+                }
+            }
+        }
+        static int told = 0;
+        if (told < 6) {
+            told++;
+            char line[160];
+            std::snprintf(line, sizeof(line), "[net view] one player, the rocket launcher's look: HUD pass %d, %zu setup passes before it (%s), %d big rectangles collapsed",
+                hud_pass, setups.size(), setups.size() >= 2 ? "the extra ones hidden" : "none hidden", collapsed);
+            conker::netsession::log(line);
+        }
+    }
+
     void rewrite_frame(uint8_t* rdram, const std::vector<Pass>& frame, uint32_t end, uint32_t base, int players, int local, bool log_it) {
         uint32_t start = 0xFFFFFFFFu;
         for (const Pass& pass : frame) {
@@ -1947,7 +2193,9 @@ void conker::netview::frame_end(uint8_t* rdram, uint32_t list_end) {
             local = 0;
         }
     }
-    if (players <= 1 || players > max_cameras || local < 0 || local >= players) {
+    // (0.11.4) one player: the HUD's corner pieces at the window's edges with Expand, as everyone's are with more (solo_hud_edges)
+    const bool solo = players == 1 && local == 0 && (MEM_BU(0, (gpr)(int32_t)0x800BE616) != 0 || conker::netmenu::coop_running(rdram));
+    if (!solo && (players <= 1 || players > max_cameras || local < 0 || local >= players)) {
         char note[120];
         std::snprintf(note, sizeof(note), "f=%u list end %08X: %d players, local %d, not rewritten", (unsigned)conker::netsession::frame(), list_end, players, local);
         note_event(note);
@@ -1960,7 +2208,7 @@ void conker::netview::frame_end(uint8_t* rdram, uint32_t list_end) {
         note_event(note);
         return;
     }
-    if (dumps_done == 0) {
+    if (dumps_done == 0 && !solo) {
         dumps_done = 1;
         dump_cameras(rdram, base, players);
     }
@@ -1977,7 +2225,10 @@ void conker::netview::frame_end(uint8_t* rdram, uint32_t list_end) {
     if (can_journal) {
         before.assign(rdram + (start & 0x7FFFFFu), rdram + (list_end & 0x7FFFFFu));
     }
-    if (conker::netmenu::coop_running(rdram)) {
+    if (solo) {
+        solo_rocket_overlay(rdram, frame, list_end, base);
+        solo_hud_edges(rdram, frame, list_end, base, log_it);
+    } else if (conker::netmenu::coop_running(rdram)) {
         // (0.10.65, measuring) a frame without every player's HUD range: its HUDs aren't hidden (logged a few times)
         {
             static int missing_logs = 0;
@@ -1995,7 +2246,9 @@ void conker::netview::frame_end(uint8_t* rdram, uint32_t list_end) {
         }
         coop_hud_prepare(rdram, base, players, local);
     }
-    rewrite_frame(rdram, frame, list_end, base, players, local, log_it);
+    if (!solo) {
+        rewrite_frame(rdram, frame, list_end, base, players, local, log_it);
+    }
     if (can_journal) {
         Journal journal;
         journal.start = start;

@@ -15,6 +15,7 @@
 #include <mutex>
 #include <string>
 
+#include "recompui/config.h"
 #include "recompui/recompui.h"
 #include "elements/ui_label.h"
 #include "ultramodern/ultramodern.hpp"
@@ -45,6 +46,18 @@ namespace {
     bool created = false;
     recompui::ContextId context = recompui::ContextId::null();
     recompui::Label* label = nullptr;
+    recompui::Element* notice_box = nullptr;
+    recompui::Element* top_box = nullptr;
+    // (HUD Notifications: Boxed, a dark box behind each; Text, the words alone)
+    void style_box(recompui::Element* box) {
+        if (box != nullptr) {
+            if (conker::notices::boxed()) {
+                box->set_background_color(recompui::theme::color::BGOverlay);
+            } else {
+                box->set_background_color(recompui::Color{ 0, 0, 0, 0 });
+            }
+        }
+    }
     std::string shown_text;
     clock::time_point shown_until;
 
@@ -62,7 +75,8 @@ namespace {
         box->set_padding_top(4.0f);
         box->set_padding_bottom(4.0f);
         box->set_border_radius(6.0f);
-        box->set_background_color(recompui::theme::color::BGOverlay);
+        notice_box = box;
+        style_box(box);
         label = context.create_element<recompui::Label>(box, "", recompui::LabelStyle::Normal);
         context.close();
         created = true;
@@ -87,7 +101,8 @@ namespace {
         box->set_padding_top(4.0f);
         box->set_padding_bottom(4.0f);
         box->set_border_radius(6.0f);
-        box->set_background_color(recompui::theme::color::BGOverlay);
+        top_box = box;
+        style_box(box);
         top_label = top_context.create_element<recompui::Label>(box, "", recompui::LabelStyle::Normal);
         top_context.close();
         top_created = true;
@@ -107,6 +122,7 @@ namespace {
                 create_top();
             }
             top_context.open();
+            style_box(top_box);
             top_label->set_text(next);
             top_context.close();
             if (!recompui::is_context_shown(top_context)) {
@@ -120,6 +136,13 @@ namespace {
             top_shown = false;
         }
     }
+}
+
+bool conker::notices::boxed() {
+    if (recomp::config::Config* config = recompui::config::find_option_config("hud_notices")) {
+        return std::get<uint32_t>(config->get_option_value("hud_notices")) != 0;
+    }
+    return true;
 }
 
 void conker::notices::show(const std::string& text, bool replace) {
@@ -184,6 +207,7 @@ void conker::notices::update() {
     shown_text = next;
     shown_until = now + notice_time;
     context.open();
+    style_box(notice_box);
     label->set_text(shown_text);
     context.close();
     if (!recompui::is_context_shown(context)) {

@@ -1,5 +1,5 @@
-// Gyro and mouse aiming in the look mode (hold R, look around with the stick), and a choice of
-// smooth or direct response for each of the stick, the mouse and gyro.
+// The stick's aiming in the look mode (hold R, look around with the stick) and the second aiming mode, and the online fix-ups of both.
+// (0.11.4: mouse and gyro aiming removed for good: nothing here reads either.)
 //
 // func_15120158 runs the look mode once a frame. The stick moves a target yaw and pitch, in
 // degrees ($t0 + 0x34 and + 0x38; yaw grows to the left and isn't wrapped), then the pitch target
@@ -12,16 +12,12 @@
 //   conker_look_stick_yaw_a/_b and conker_look_stick_pitch, where the stick's turn is stored into
 //     the targets (0x15120A14, 0x15120A44, 0x15120A98): each can turn its axis around. The game's
 //     stick has X normal and Y inverted (up looks down).
-//   conker_look_targets, before the clamp: the mouse and gyro turn the targets, so the game's own
-//     limits apply to them just as they do to the stick.
-//   conker_look_currents, after the springs (L_15120E8C, where both of their branches meet): for
-//     an input set to Direct, the current angles take its movement in the same frame instead of
-//     being eased toward it.
+//   conker_look_targets, before the clamp, and conker_look_currents, after the springs (L_15120E8C, where both of their branches
+//     meet): Aiming: Swap Sticks and the online fix-ups.
 //   conker_look_yaw_from_facing(_scaled), where some states work the yaw target out each frame from
-//     Conker's facing less an aiming angle the stick turns: the mouse and gyro turn that angle too.
+//     Conker's facing less an aiming angle the stick turns.
 //   conker_aim_stick, in the second aiming mode (func_15126378: the sniper scope, the magnum,
-//     throwables): the stick's invert, and the mouse and gyro, scaled by the zoom.
-// The mouse and gyro are player 1's only: in multiplayer both modes run for each player's camera.
+//     throwables): the stick's invert and sensitivity.
 
 #include <algorithm>
 #include <atomic>
@@ -33,6 +29,7 @@
 #include <cstring>
 #include <deque>
 #include <string>
+#include <vector>
 #include <mutex>
 #include <stdexcept>
 #include <type_traits>
@@ -58,13 +55,6 @@ namespace {
     constexpr int32_t current_yaw = 0x37C;                         // $s0
     constexpr int32_t current_pitch = 0x3C;                        // $t0
 
-    // Degrees per pixel of mouse movement at 100% mouse sensitivity.
-    constexpr float mouse_degrees_per_pixel = 0.1f;
-    // recompinput's gyro delta isn't an angle: it adds up the controller's angular velocity
-    // (degrees per second) once per sensor event, without the time between events, so a frame's
-    // worth depends on the controller's report rate. Tuned by feel, not derived.
-    constexpr float gyro_scale = 1.0f / 60.0f;
-
     float read_float(uint8_t* rdram, gpr base, int32_t offset) {
         uint32_t word = (uint32_t)MEM_W(offset, base);
         float value;
@@ -78,33 +68,10 @@ namespace {
         MEM_W(offset, base) = (int32_t)word;
     }
 
-    // Each input poll's mouse and gyro movement, queued so the look mode takes one poll's worth a
-    // frame. Measured in the look mode: 30 polls and 30 look updates a second, but on different
-    // threads (the game's controller thread polls), so two polls sometimes land between two
-    // updates and none before the next. recompinput keeps only the latest poll's movement, and
-    // taking that once per update left some frames still and lost others: the view hitched.
-    // Queued, nothing is lost, and a second poll waits a frame instead of doubling one. Outside
-    // the look mode nothing takes from the queue, so the oldest is dropped past two, rather than
-    // saved up and turned into a jump when R is pressed.
-    struct Movement {
-        float mouse_x, mouse_y, gyro_x, gyro_y;
-    };
-    std::mutex queue_mutex;
-    std::deque<Movement> queue;
-
-    // What conker_look_targets did this frame, for conker_look_currents.
-    struct Frame {
-        bool targets_moved = false;
-        float pitch_target_set = 0.0f;  // the pitch target as conker_look_targets left it
-        float direct_yaw = 0.0f;        // the part of the turn from inputs set to Direct
-        float direct_pitch = 0.0f;
-    } frame;
-
     // Set by conker_look_yaw_from_facing(_scaled) when this frame's look works its yaw out from the
     // way Conker faces less the aiming angle, for conker_look_targets: how many of the aiming angle's
-    // 16-bit units turn the view a degree (0 when it doesn't). And the part of a unit not yet taken.
+    // 16-bit units turn the view a degree (0 when it doesn't).
     float aim_units_per_degree = 0.0f;
-    float aim_remainder = 0.0f;
 
     // Aiming: Swap Sticks (issue #84): when each player's camera (by its player, +0x23D) last ran either aiming
     // mode, from the game thread (steady clock ticks), for the input thread (swap_sticks_now). It counts as
@@ -129,6 +96,11 @@ namespace {
     float look_settle[aim_players] = {};
     // Whether the first stage's target has been followed from the aim since the stage began (conker_look_stage_one).
     bool stage_one_followed[aim_players] = {};
+    // (0.11.4) The first stage's view as we last put it, per player: the game turns the view back a little after our hook each frame while the
+    // aim is turning (its own stage-one turn, the other way: the [look] lines of the 30 Oct test, the view going 291 -> 289 while the aim
+    // went 302 -> 305), and read back from the game that added up to 15 to 22 degrees behind by the stage's end, which the second stage
+    // put right in one frame: the snap. Our own value carried from frame to frame instead, so nothing adds up.
+    float stage_one_view[aim_players] = {};
     // Swap Sticks' view yaw as each player's view was last built, the frame, and its turn from the frame before (conker_look_view).
     struct ViewTurn {
         float yaw = 0.0f, step = 0.0f;
@@ -194,7 +166,8 @@ namespace {
         if (conker::netsession::active()) {
             return conker::netsession::swap_flag(player);
         }
-        return conker::look_aim::swap_sticks_now(player);
+        // (0.11.4: or player 1 walking with the keyboard while aiming, see frontend.cpp's keys_walk)
+        return conker::look_aim::swap_sticks_now(player) || (player == 0 && conker::look_aim::sampled_swap());
     }
     // Whether each player's character is in the shotgun's aiming state (0x3B, +0x4 of the camera's +0x3D0), where Z
     // (the laser sight) makes C-Left and C-Right turn the aim, for the input thread (z_turns_aim).
@@ -225,28 +198,34 @@ namespace {
         if (!conker::netsession::active()) {
             return false;
         }
+        // (0.11.4) every weapon's R-Look, for a player with Stick: Aiming Response Modern (was the SMG's and the M4's looks, 0x39 and
+        // 0x09, for every player): that player's own choice, from the frame's agreed input (look_flag's bit 4), the same on every machine
+        const int player = (int)MEM_BU(0x23D, camera);
+        const uint8_t flags = conker::netsession::look_flags(player);
+        if ((flags & 4) != 0) {
+            return true;
+        }
+        // (0.11.4) the old Direct (look_snap, 16), as 0.11.3 had it: the SMG's and the M4's looks only (0x39, 0x09)
         const uint8_t kind = MEM_BU(0x23E, camera);
-        return kind == 0x39 || kind == 0x09;
+        return (flags & 16) != 0 && (kind == 0x39 || kind == 0x09);
     }
 
 #if defined(CONKER_RT64)
     namespace options {
         const std::string stick_response = "look_stick_response";
         const std::string stick_invert = "look_stick_invert";
-        const std::string mouse_response = "look_mouse_response";
-        const std::string gyro_response = "look_gyro_response";
-        const std::string mouse_invert = "look_mouse_invert";
-        const std::string gyro_invert = "look_gyro_invert";
+        const std::string mouse_invert = "look_mouse_invert";   // (0.11.4: back, with the mouse)
+        const std::string mouse_camera = "mouse_turns_camera";  // (0.11.4: back, the old id: saved choices carry over)
+        const std::string mouse_enabled = "mouse_enabled";     // (0.11.4: Mouse Controls, on or off)
         const std::string camera_turn_invert = "camera_invert_turning";
         const std::string camera_turn_speed = "camera_turn_speed";
-        const std::string mouse_camera = "mouse_turns_camera";
         const std::string stick_camera = "stick_free_camera";
         const std::string camera_fov = "camera_field_of_view_degrees";
         const std::string aim_swap_sticks = "aim_swap_sticks";
         const std::string aim_lock_on = "aim_lock_on";
     }
 
-    enum class Response : uint32_t { Smooth, Direct };
+    enum class Response : uint32_t { Smooth, Direct, Snap };   // (0.11.4: Direct is Modern; Snap the old Direct, back for testing)
     enum class Toggle : uint32_t { On, Off };
     enum class Invert : uint32_t { None, X, Y, Both };
 
@@ -276,11 +255,6 @@ namespace {
         recomp::config::Config* config = option_config(id);
         return config ? std::get<double>(config->get_option_value(id)) : fallback;
     }
-
-    void apply_invert(Invert invert, float& x, float& y) {
-        if (invert == Invert::X || invert == Invert::Both) x = -x;
-        if (invert == Invert::Y || invert == Invert::Both) y = -y;
-    }
 #endif
 }
 
@@ -292,8 +266,9 @@ namespace {
 namespace {
     using EnumOptions = const std::vector<recomp::config::ConfigOptionEnumOption>;
     EnumOptions response = {
-        {Response::Smooth, "Smooth", "Smooth"},
-        {Response::Direct, "Direct", "Direct"},
+        {Response::Smooth, "Smooth", "Original"},   // (0.11.4: shown as Original; saved as Smooth, so players' choices carry over)
+        {Response::Direct, "Direct", "Modern"},   // (0.11.4: Direct's place, saved as Direct: Modern, the SMG and M4's aim for every weapon)
+        {Response::Snap, "Snap", "Direct"},   // (0.11.4: the old Direct (0.11.3's), back for testing: the view put on the aim at once, look_snap)
     };
     EnumOptions invert = {
         {Invert::None, "None", "None"},
@@ -317,8 +292,7 @@ void conker::look_aim::add_camera_options(recomp::config::Config& config) {
     config.add_enum_option(options::aim_swap_sticks, "Aiming: Swap Sticks",
         "Controls aiming like a third-person shooter: while you aim, the right stick aims and the left stick moves, as "
         "the C-buttons do (e.g. the shotgun, the slingshot, the sniper scope, R-Look), in single player, and online with a gamepad (the SMG, the M4...). "
-        "Conker keeps facing where you aim and walks the way you push, sideways and back too. With the mouse, the keys "
-        "bound to the stick (W, A, S, D) move. With the "
+        "Conker keeps facing where you aim and walks the way you push, sideways and back too. With the "
         "shotgun, holding R alone shows the laser sight, so you can move and strafe with it; holding Z as well, the left "
         "stick only moves forward and back, as Z makes C-Left and C-Right turn the aim. "
         "Back to normal once you stop aiming. <recomp-color primary>Off</recomp-color> matches the original game, where "
@@ -330,104 +304,64 @@ void conker::look_aim::add_camera_options(recomp::config::Config& config) {
         "Y inverts tilting up and down, with the right stick when Right Stick: Free Camera is on.",
         invert, Invert::None);
     config.add_number_option(options::camera_turn_speed, "Camera: Turning Speed",
-        "Sets how fast the camera turns left and right in single player, with the right stick or C-Left and C-Right. "
-        "Strafing in multiplayer isn't affected.",
+        "How fast your camera turns. In single player: the right stick, or C-Left and C-Right. Online: only with "
+        "<recomp-color primary>Right Stick: Free Camera</recomp-color> on, where it sets how fast the right stick swings and tilts the "
+        "camera around your character (at 100%, about 150 degrees a second across and 90 up and down at full tilt); with it off, online "
+        "uses the original game's speed. It never changes R-Look or golden weapon aiming, or strafing in multiplayer, and only affects "
+        "your own camera."
+        "<br/>Recommended: <recomp-color primary>100%</recomp-color> (the default, the original game's speed).",
         50.0, 300.0, 5.0, 0, true, 100.0);
-    config.add_enum_option(options::stick_camera, "Right Stick: Free Camera",
+    config.add_enum_option(options::stick_camera, "Right Stick: Free Camera",   // (0.11.4: listed right under Aiming: Swap Sticks, recompfrontend.patch)
         "A modern third-person camera: the right stick turns the camera around Conker and tilts it up "
         "and down, instead of pressing the C-buttons, and the left stick moves Conker. The C-buttons' other controls "
-        "stay: by default C-Up (first person) on the right stick's click and C-Down on RB. <recomp-color primary>Off</recomp-color> matches the "
+        "stay: by default C-Up (walk forward with a weapon out, zoom in when scoped) on the right stick's click and C-Down on RB. <recomp-color primary>Off</recomp-color> matches the "
         "original game. Only the normal camera: in R-Look, aiming and cutscenes, the right stick is the C-buttons as usual.",
         toggle, Toggle::Off);
-    // (possess58) Camera: Field of View taken out: every player sees the game's own field of view (field_of_view.cpp does nothing)
+    // (possess58) Camera: Field of View taken out; (0.11.4) back, online too: each player's own travels in their input (field_of_view.cpp)
+    config.add_number_option(options::camera_fov, "Camera: Field of View",
+        "How much your camera shows online, in degrees tall. Only your own view; single player keeps the original.",
+        40.0, 75.0, 1.0, 0, false, 50.0);
 
     config.add_enum_option(options::stick_response, "Stick: Aiming Response",
-        "How the view follows the stick in R-Look (hold R and look around)." + about +
-        " This also applies to the mouse and gyro, as the view catches up with the stick at once.",
+        "How the view follows the stick in R-Look (hold R and look around)." + about,
         response, Response::Smooth);
     config.add_enum_option(options::stick_invert, "Stick: Invert Aiming",
-        "Inverts the stick in R-Look (hold R and look around) and in the second aiming mode (e.g. the sniper scope, the magnum, throwables), separately from the mouse and gyro. <recomp-color primary>Invert Y</recomp-color> is the default and matches the original game: pushing the stick up looks down.",
+        "Inverts the stick in R-Look (hold R and look around) and in the second aiming mode (e.g. the sniper scope, the magnum, throwables). <recomp-color primary>Invert Y</recomp-color> is the default and matches the original game: pushing the stick up looks down.",
         invert, Invert::Y);
     // (possess64, possess124, possess139) Aiming: Lock-On taken out of the launcher: the lock-on is off for everyone, online or not, every weapon (conker_aim_lock_on)
 }
 
-// The Mouse & Gyro tab. The sensitivities are RecompFrontend's options (same ids, so saved values carry
-// over), added here instead of by its General tab to sit with their group; RecompFrontend reads them from
-// here (find_option_config). Each input's other settings are hidden while its sensitivity is zero, which
-// turns that input off.
-void conker::look_aim::add_mouse_gyro_options(recomp::config::Config& config) {
-    // (possess58) the mouse taken out for now: none of its settings, so its sensitivity reads as zero (RecompFrontend: no mouse
-    // movement, the cursor left free) and its others as their defaults (the mouse turns no camera). Gyro stays.
-    constexpr bool mouse_settings = false;
-    if (mouse_settings) {
-    config.add_percent_number_option(recompui::config::general::options::mouse_sensitivity, "Mouse: Sensitivity",
-        "How fast the mouse turns the camera and aims, in R-Look (hold R and look around) and the second aiming mode "
-        "(e.g. the sniper scope). <b>Zero turns mouse control off</b> and leaves the cursor free. "
-        "Mouse buttons can be bound to controls with the keyboard's controls.",
-        recompui::is_steam_deck() ? 50.0 : 0.0);
-    config.add_enum_option(options::mouse_camera, "Mouse: Turn the Camera",
-        "Whether the mouse turns the camera around Conker, outside R-Look and aiming. Needs Mouse: Sensitivity above zero. "
-        "<recomp-color primary>Off</recomp-color> leaves that camera to the stick and C-buttons; the mouse still aims in "
-        "R-Look and the second aiming mode (e.g. the sniper scope). Gyro that Steam Input or a controller's own software "
-        "sends as mouse movement counts as the mouse.",
-        toggle, Toggle::On);
-    config.add_enum_option(options::mouse_response, "Mouse: Aiming Response",
-        "How the view follows the mouse in R-Look (hold R and look around). Needs Mouse: Sensitivity above zero." + about,
-        response, Response::Smooth);
-    config.add_enum_option(options::mouse_invert, "Mouse: Invert Aiming",
-        "Inverts the mouse in R-Look (hold R and look around) and the second aiming mode (e.g. the sniper scope), separately from the stick and gyro. With <recomp-color primary>None</recomp-color>, moving the mouse up looks up; <recomp-color primary>Invert Y</recomp-color> matches the game's stick, where up looks down.",
-        invert, Invert::None);
-    }
-
-    config.add_percent_number_option(recompui::config::general::options::gyro_sensitivity, "Gyro: Sensitivity",
-        "How strongly gyro aims in R-Look (hold R and look around) and the second aiming mode (e.g. the sniper scope), "
-        "on controllers that have it. <b>Zero turns gyro off.</b>"
-        "<br /><br /><b>To recalibrate gyro, set the controller down on a still, flat surface for 5 seconds.</b>",
-        25.0);
-    config.add_enum_option(options::gyro_response, "Gyro: Aiming Response",
-        "How the view follows gyro in R-Look (hold R and look around). Needs Gyro: Sensitivity above zero." + about,
-        response, Response::Smooth);
-    config.add_enum_option(options::gyro_invert, "Gyro: Invert Aiming",
-        "Inverts gyro in R-Look (hold R and look around) and the second aiming mode (e.g. the sniper scope), separately from the stick and the mouse. With <recomp-color primary>None</recomp-color>, the view turns the way the controller is turned.",
-        invert, Invert::None);
-
-    static std::vector<recomp::config::ConfigValueVariant> off = { 0.0 };
-    for (const std::string& id : { options::mouse_camera, options::mouse_response, options::mouse_invert }) {
-        if (mouse_settings) {
-            config.add_option_hidden_dependency(id, recompui::config::general::options::mouse_sensitivity, off);
-        }
-    }
-    for (const std::string& id : { options::gyro_response, options::gyro_invert }) {
-        config.add_option_hidden_dependency(id, recompui::config::general::options::gyro_sensitivity, off);
-    }
-}
-#endif
-
-void conker::look_aim::on_input_poll() {
-#if defined(CONKER_RT64)
-    Movement m;
-    recompinput::get_mouse_deltas(&m.mouse_x, &m.mouse_y);
-    // (possess66) gyro taken out of the game: its movement is never read
-    m.gyro_x = 0.0f;
-    m.gyro_y = 0.0f;
-    if (conker::netsession::active()) {
-        // Online the game's state is the same on every machine, made from the controllers' buttons and sticks that
-        // travel: this machine's mouse and gyro turn nothing in it.
-        m = Movement{};
-    }
-    std::lock_guard lock{queue_mutex};
-    queue.push_back(m);
-    while (queue.size() > 2) {
-        queue.pop_front();
-    }
-#endif
+// (0.11.4) The mouse, back (gyro stays out): its sensitivity is the menu library's own option (the same id: with it above 0 the cursor
+// is held in the window while playing, recompinput), here on the General tab.
+void conker::look_aim::add_mouse_options(recomp::config::Config& config) {
+    config.add_enum_option(options::mouse_enabled, "Mouse Controls", "", toggle, Toggle::Off);
+    config.add_percent_number_option(recompui::config::general::options::mouse_sensitivity, "Mouse: Sensitivity", "", 100.0);
+    config.add_enum_option(options::mouse_invert, "Mouse: Invert Aiming", "", invert, Invert::None);
+    config.add_enum_option(options::mouse_camera, "Mouse: Turn the Camera", "", toggle, Toggle::On);
 }
 
-#if defined(CONKER_RT64)
+// (0.11.4) Mouse: Turn the Camera on, and the mouse on (Mouse: Sensitivity above 0): outside aiming the mouse turns the camera around
+// Conker (mouse_camera.cpp's orbit), Right Stick: Free Camera or not. This machine's player's: online the turn goes in its input.
 bool conker::look_aim::mouse_turns_camera() {
-    return option<Toggle>(options::mouse_camera) == Toggle::On;
+    return mouse_on() && option<Toggle>(options::mouse_camera) == Toggle::On;
 }
 
+// (0.11.4) Mouse Controls on (off to begin with) and Mouse: Sensitivity above 0: the mouse does anything in the game at all.
+bool conker::look_aim::mouse_on() {
+    return option<Toggle>(options::mouse_enabled) == Toggle::On && recompui::config::general::get_mouse_sensitivity() > 0.0;
+}
+#endif
+#if !defined(CONKER_RT64)
+bool conker::look_aim::mouse_turns_camera() {
+    return false;
+}
+
+bool conker::look_aim::mouse_on() {
+    return false;
+}
+#endif
+
+#if defined(CONKER_RT64)
 // Aiming: Lock-On (issue #84). func_15063A38 turns the aim (+0x12 of $a0's +0x31C, an s16) by the stick's X
 // each frame, and past +-9000 Conker himself. While +0x84 of that struct is set (an enemy to lock on to: the
 // shotgun's zombies), it calls func_150639BC instead, which turns the aim straight toward the target found by
@@ -449,18 +383,53 @@ extern "C" void conker_aim_lock_on(uint8_t* rdram, recomp_context* ctx) {
 // stick's X times 200, times D_800CC264, over 2000 to the aim (+0x12 of +0x31C) each frame, $t5 at 0x15063AE0. 0.9.54 sped up the
 // look's own targets only, which the guns' looks don't turn across (their yaw is worked out from the aim). Whole numbers, the same on
 // every machine for every player, from the frame's agreed stick.
+//
+// (0.11.4) And Stick: Aiming Sensitivity here too, online and offline: the guns' looks (the M4's, the SMG's...) turn across only by this
+// aim, so the sensitivity on the look's targets (conker_look_stick_yaw_a/_b) changed their up and down alone (the 0.11.4 test: the M4 at
+// 200%, across as at 100%). The character's player's own (the first 5 characters are the players', $a0 the character), from the frame's
+// agreed input online; whole numbers, the same on every machine.
+// The guns' looks (+0x23E of the camera, as conker_look_stage_one has them): their view's yaw worked out from the facing less the aim angle.
+static bool gun_look_kind(uint8_t kind) {
+    return kind == 0x09 || kind == 0x38 || kind == 0x39 || kind == 0x37 || kind == 0x3B || kind == 0x15 || kind == 0x26 || kind == 0x3A;
+}
+
 extern "C" void conker_gun_aim_turn(uint8_t* rdram, recomp_context* ctx) {
     (void)rdram;
-    if (!conker::netsession::active()) {
-        return;
+    const bool online = conker::netsession::active();
+    int32_t percent = 100;
+    {
+        constexpr uint32_t characters = 0x800CC2D0, character_size = 0x32C;
+        const uint32_t c = (uint32_t)ctx->r4;
+        if (c >= characters && (c - characters) % character_size == 0 && (c - characters) / character_size < 5) {
+            const int k = (int)((c - characters) / character_size);
+            percent = online ? (int32_t)conker::netsession::aim_sensitivity(k) : (int32_t)conker::look_aim::sampled_aim_sensitivity();
+        }
     }
-    // (possess122) not the shotgun's aim (Conker's state, +0x4, 0x3B: the co-op mansion's): its turn as on a Nintendo 64, the
+    // (possess122) not the shotgun's speed-up (Conker's state, +0x4, 0x3B: the co-op mansion's): its turn as on a Nintendo 64, the
     // lock-on's with it ($a0 the character)
-    if (((uint32_t)ctx->r4 & 0xFF000000u) == 0x80000000u && MEM_BU(0x4, ctx->r4) == 0x3B) {
-        return;
+    const bool shotgun = ((uint32_t)ctx->r4 & 0xFF000000u) == 0x80000000u && MEM_BU(0x4, ctx->r4) == 0x3B;
+    // (0.11.4) the online 1.5x gone for everyone (Original, Modern, Direct): the game's own speed across, so Original online is the
+    // Nintendo 64's and Modern 1:1 with its up and down; Stick: Aiming Sensitivity speeds it up instead
+    (void)shotgun;
+    const int64_t speed_up = 2;   // (over 2: 1, the game's own)
+    const int64_t turn = (int32_t)ctx->r13;
+    int64_t turned = turn * speed_up * percent / 200;
+    // (0.11.4) The mouse, in the guns' looks: their view's left and right is worked out from Conker's facing less this aim angle, from the
+    // look's first stage on (its target follows the aim each frame there, conker_look_stage_one), so the mouse's turn across goes into the
+    // aim here, as the stick's does: R-Look's first moments turned with the stick and not the mouse (the 0.11.4 test's video: the mouse
+    // did nothing for about a second after R, until the look's second stage, where conker_look_targets turned the angle). The game's own
+    // limit (+-9000, then Conker turns) applies as to the stick. 65536 units a turn; the mouse right turns right, as the stick right.
+    {
+        const uint32_t c = (uint32_t)ctx->r4;
+        const gpr camera = (c & 0xFF000000u) == 0x80000000u ? (gpr)(int32_t)MEM_W(0x318, ctx->r4) : 0;
+        if (((uint32_t)camera & 0xFF000000u) == 0x80000000u && MEM_H(0x73C, camera) != 0 && gun_look_kind(MEM_BU(0x23E, camera))) {
+            float yaw = 0.0f, pitch = 0.0f;
+            if (conker::look_aim::mouse_aim((int)MEM_BU(0x23D, camera), &yaw, &pitch) && yaw != 0.0f) {
+                turned += (int64_t)std::lround(-yaw * (65536.0f / 360.0f));
+            }
+        }
     }
-    const int32_t turn = (int32_t)ctx->r13;
-    ctx->r13 = (gpr)(int32_t)(turn * 3 / 2);
+    ctx->r13 = (gpr)(int32_t)turned;
 }
 
 // 0.10.8: hit in R-Look, R held, walking with Swap Sticks. The game knocks Conker back: the frame he's hit it sets his moving angle
@@ -724,6 +693,26 @@ namespace {
     }
 }
 
+// (0.11.4) The mouse's up and down in the guns' looks' first stage: the game's first stage never reads it (its targets' pitch is only
+// turned in the second, conker_look_targets), so the view's pitch stayed level for its 30 frames while the mouse moved, then swung
+// after it (the [look] lines of the mousefix test: pitch 0 all through stage 1, then -4, -8, -12... in stage 2). Here the mouse's pitch
+// turns the target and the view's own pitch together, within the game's own limits for the guns (func_15120158's, 0x15120C68 and
+// 0x15120D04: -45 to 80, and -20 at the bottom outside the arenas).
+#if defined(CONKER_RT64)
+static void stage_one_mouse_pitch(uint8_t* rdram, gpr camera, int player) {
+    float yaw = 0.0f, pitch = 0.0f;
+    if (!conker::look_aim::mouse_aim(player, &yaw, &pitch) || pitch == 0.0f) {
+        return;
+    }
+    const gpr targets = (gpr)(int32_t)((uint32_t)camera + 0x740u);
+    const float low = MEM_BU(0, (gpr)(int32_t)0x800BE616) == 0 ? -20.0f : -45.0f;
+    const float was = read_float(rdram, targets, target_pitch);
+    const float now = std::clamp(was + pitch, low, 80.0f);
+    write_float(rdram, targets, target_pitch, now);
+    write_float(rdram, targets, current_pitch, std::clamp(read_float(rdram, targets, current_pitch) + (now - was), low, 80.0f));
+}
+#endif
+
 // Online, the look mode's first stage (+0x73C of the camera is 1: the camera moves in for 30 frames, a timer of +0x84A) at the
 // start of func_15120158 ($a0 the camera). The camera's yaw there eases toward a target worked out once, when the mode starts
 // (func_1511FC60), while Conker turns with the stick: the head turned and the view lagged behind (view_log: the camera still at
@@ -736,6 +725,41 @@ extern "C" void conker_look_stage_one(uint8_t* rdram, recomp_context* ctx) {
     // Online, for every player on every machine, from the game's memory (see below).
     constexpr bool snappy = false;
     if (!conker::netsession::active()) {
+        // (0.11.4) Single player with Mouse Controls on: the first stage's view follows the aim too (as online, below), so the mouse aims
+        // from the moment R is pressed. The mouse turns his aim angle from the first frame (conker_gun_aim_turn) and his head turned with
+        // it, but the game's first stage keeps its view's target where it was when R was pressed: the crosshair stayed put for its 30
+        // frames, then caught up (mousefix.mp4). The controller's aiming offline stays the original game's.
+        if (!conker::look_aim::mouse_on()) {
+            return;
+        }
+        const gpr cam = (gpr)(int32_t)ctx->r4;
+        const int player = camera_player(rdram, cam);
+        if (player != 0) {
+            return;
+        }
+        if (MEM_H(0x73C, cam) != 1) {
+            stage_one_followed[player] = false;
+            return;
+        }
+        const gpr him = (gpr)(int32_t)MEM_W(0x3D0, cam);
+        const gpr his_aim = (gpr)(int32_t)MEM_W(0x3D4, cam);
+        if (((uint32_t)him & 0xFF000000u) != 0x80000000u || ((uint32_t)his_aim & 0xFF000000u) != 0x80000000u || !gun_look_kind(MEM_BU(0x23E, cam))) {
+            return;
+        }
+        const int32_t units = (int32_t)MEM_HU(0x7A, him) - (int32_t)MEM_H(0x12, his_aim) + 0xC000;
+        const float target = (float)units * 0.005493164f;
+        float view = read_float(rdram, cam, current_yaw);
+        if (stage_one_followed[player]) {
+            const float turn = angle_difference(target, read_float(rdram, cam, 0x740 + target_yaw));
+            view = stage_one_view[player] + turn;
+        }
+        stage_one_followed[player] = true;
+        write_float(rdram, cam, 0x740 + target_yaw, target);
+        // (pulled onto it as online, below: no snap as the second stage starts)
+        view += angle_difference(target, view) * 0.15f;
+        stage_one_view[player] = view;
+        write_float(rdram, cam, current_yaw, view);
+        stage_one_mouse_pitch(rdram, cam, player);
         return;
     }
     const gpr camera = (gpr)(int32_t)ctx->r4;
@@ -783,14 +807,27 @@ extern "C" void conker_look_stage_one(uint8_t* rdram, recomp_context* ctx) {
             const int32_t units = (int32_t)MEM_HU(0x7A, conker) - (int32_t)MEM_H(0x12, aim) + 0xC000;
             const float target = (float)units * 0.005493164f;
             const int player = camera_player(rdram, camera);
+            float view = read_float(rdram, camera, current_yaw);
             if (player >= 0 && stage_one_followed[player]) {
                 const float turn = angle_difference(target, read_float(rdram, camera, 0x740 + target_yaw));
-                write_float(rdram, camera, current_yaw, read_float(rdram, camera, current_yaw) + turn);
+                view = stage_one_view[player] + turn;
             }
             if (player >= 0) {
                 stage_one_followed[player] = true;
             }
             write_float(rdram, camera, 0x740 + target_yaw, target);
+            // (0.11.4) and pulled onto it: the game's spring took longer than the stage's 30 frames to swing the view round from where the
+            // camera faced when R was pressed (Kong's [look] lines: 25 degrees to 343, still 3 to 4 off at the stage's end), and the second
+            // stage put the view on the aim at once, the crosshair snapping that far. 15% of what's left each frame as well: about 0.4 of
+            // 42 degrees is left after 29 frames, gone smoothly. From the game's memory, the same on every machine.
+            view += angle_difference(target, view) * 0.15f;
+            if (player >= 0) {
+                stage_one_view[player] = view;
+            }
+            write_float(rdram, camera, current_yaw, view);
+            if (player >= 0) {
+                stage_one_mouse_pitch(rdram, camera, player);
+            }
         }
         return;
     }
@@ -1037,11 +1074,56 @@ extern "C" void conker_look_view(uint8_t* rdram, recomp_context* ctx) {
         const uint32_t frame_now = conker::netsession::frame();
         const bool continuing = track.have && frame_now == track.frame + 1;
         bool changed = false;
-        if (continuing && previous_stage == 1 && stage == 2 && swap_state(player)) {
+        // (0.11.4) and without Swap Sticks (a controller's aim, the stick turning it) whenever the eye stood still that frame while it
+        // was moving the frame before: the 30 Oct [look] lines had the view stop for the handover's frame and then jump 13 to 33 degrees
+        // with the stick held, for anyone turning as the zoom ended
+        bool frozen = false;
+        if (continuing && previous_stage == 1 && stage == 2) {
+            float moved = 0.0f, step = 0.0f;
+            for (int k = 0; k < 3; k++) {
+                moved += (eye[k] - track.eye[k]) * (eye[k] - track.eye[k]);
+                step += track.step[k] * track.step[k];
+            }
+            frozen = step > 0.25f && moved < step * 0.04f;
+            if (player == conker::netsession::local_player()) {
+                char line[140];
+                std::snprintf(line, sizeof(line), "[look] f=%u the handover: the eye moved %.2f (the frame before %.2f)%s", conker::netsession::frame(),
+                    std::sqrt(moved), std::sqrt(step), (frozen || swap_state(player)) ? ", carried on" : "");
+                conker::netsession::log(line);
+            }
+        }
+        if (continuing && previous_stage == 1 && stage == 2 && (swap_state(player) || frozen)) {
             for (int k = 0; k < 3; k++) {
                 eye[k] = track.eye[k] + track.step[k];
             }
             changed = true;
+        }
+        // (0.11.4) the second stage's first frames eased in: there the aim angle the first stage had built up goes into his facing, and
+        // when it doesn't all go (the 30 Oct [look] lines: an aim of 11 degrees dropped to 0 in a frame with his facing unchanged) the
+        // view jumped that far. For 8 frames after the handover each frame's eye goes 40% of the way from where its movement so far
+        // would carry it to where the game puts it: a steady turn passes through, a jump is spread over a few frames. The view only (the
+        // eye is put back for the game the next frame, as the lift's is).
+        static int ease_frames[aim_players] = {};
+        if (player < aim_players) {
+            if (continuing && previous_stage == 1 && stage == 2) {
+                ease_frames[player] = 8;
+            } else if (stage != 2 || !continuing) {
+                ease_frames[player] = 0;
+            } else if (ease_frames[player] > 0) {
+                ease_frames[player]--;
+                float off = 0.0f;
+                for (int k = 0; k < 3; k++) {
+                    const float carried = track.eye[k] + track.step[k];
+                    off += (eye[k] - carried) * (eye[k] - carried);
+                    eye[k] = carried + (eye[k] - carried) * 0.4f;
+                }
+                changed = true;
+                if (player == conker::netsession::local_player() && off > 4.0f) {
+                    char line[120];
+                    std::snprintf(line, sizeof(line), "[look] f=%u the second stage's eye eased: %.1f off its way", conker::netsession::frame(), std::sqrt(off));
+                    conker::netsession::log(line);
+                }
+            }
         }
         LiftState& lift = lift_state[player];
         if (stage != 2) {
@@ -1263,7 +1345,13 @@ extern "C" void conker_look_view(uint8_t* rdram, recomp_context* ctx) {
             sv.last_x = cx;
             sv.last_z = cz;
         }
-        const float look_pitch = read_float(rdram, camera + 0x740, current_pitch);
+        float look_pitch = read_float(rdram, camera + 0x740, current_pitch);
+        // (0.11.4) the game keeps this angle from 0 to 360 (gun_aim_online writes it so too): looking below level it's 359, 340...,
+        // and its tangent below went to -2.6 at 359.4 and past -infinity at 333 (0.81 of it 270): the eye fell through the floor and
+        // came back from above (the 0.11.4 test's video, [look] f=6438 to 6449). From -180 to 180, as the target's -45 to 80.
+        if (look_pitch > 180.0f) {
+            look_pitch -= 360.0f;
+        }
         const float ly = sv.height + look_over;
         const float ex = cx - fx * sv.distance, ez = cz - fz * sv.distance;
         const float ey = ly + sv.distance * conker::det::tan(0.81f * look_pitch * degrees);
@@ -1594,7 +1682,10 @@ extern "C" void conker_steady_probe(uint8_t* rdram, recomp_context* ctx) {
     constexpr float degrees = 3.14159265358979f / 180.0f;
     const float yaw = (270.0f - aim) * degrees;
     const float fx = conker::det::cos(yaw), fz = conker::det::sin(yaw);
-    const float pitch = read_float(rdram, camera + 0x740, current_pitch);
+    float pitch = read_float(rdram, camera + 0x740, current_pitch);
+    if (pitch > 180.0f) {
+        pitch -= 360.0f;   // (0.11.4: from -180 to 180, as conker_look_view's: the game keeps it from 0 to 360)
+    }
     const float rise = conker::det::tan(0.81f * pitch * degrees);
     // his height as the view will have it this frame (conker_look_view's, from his last 3), and the look-at point over it as last frame
     const bool going = sv.have && std::fabs(cy - sv.height) <= 80.0f;
@@ -1676,6 +1767,11 @@ bool conker::look_aim::swap_sticks_now(int player) {
     }
     const int64_t since = std::chrono::steady_clock::now().time_since_epoch().count() - last_aim_ticks[player].load();
     return since >= 0 && std::chrono::steady_clock::duration(since) < aim_linger;
+}
+
+// (0.11.4) Whether this player is aiming the shotgun now, offline or online (D-Pad Up and Down walk then, frontend.cpp).
+bool conker::look_aim::shotgun_aiming_now(int player) {
+    return (player >= 0) && (player < signal_players) && shotgun_aiming[player].load() && conker::look_aim::aiming_recently(player);
 }
 
 bool conker::look_aim::z_turns_aim(int player) {
@@ -1951,22 +2047,14 @@ bool conker::look_aim::stick_free_camera() {
 // barely moves (logged: the camera's yaw 5 degrees in a second of the stick, as it eased back behind him anyway).
 // The C-buttons turn the camera, as they do when walking: the original game's (logged: 22 degrees in a second of
 // C-Right), so with Right Stick: Free Camera off the right stick turns it too.
-//
-// The mouse turned the camera instead (the orbit, mouse_camera.cpp, runs where the C-buttons turn it) and never moved
-// the crosshair. Now, in a leap, the mouse is the stick: its movement moves a tilt, which stays where the mouse leaves
-// it (so the crosshair does), added to the stick's own for player 1 (frontend.cpp, leap_stick), and the orbit doesn't
-// run (mouse_camera.cpp). The tilt goes back to the middle when the leap ends.
+// (0.11.4: the mouse's crosshair in a leap removed with the mouse; the Free Camera's orbit still doesn't run in one, mouse_camera.cpp)
 namespace {
     constexpr uint32_t conker_object = 0x800CC2D0;  // gObjects[0]
     constexpr uint8_t bank_state = 0x96;
     constexpr uint16_t leap_animation = 0x20F, leap_animation_other_way = 0x20E;
-    // Mouse movement (with Mouse: Sensitivity) for the stick's full tilt: at 100%, 300 pixels of mouse.
-    constexpr float leap_full_tilt = 300.0f;
 
     // From the game thread (leap_frame), for the input thread.
     std::atomic<bool> leaping = false;
-    // The mouse's tilt, x and y (-1 to 1, up positive), from the input thread only.
-    float leap_x = 0.0f, leap_y = 0.0f;
 }
 
 void conker::look_aim::leap_frame(uint8_t* rdram) {
@@ -1981,33 +2069,9 @@ bool conker::look_aim::leaping_now() {
     return leaping;
 }
 
-void conker::look_aim::leap_stick(float& x, float& y) {
-    if (!leaping) {
-        leap_x = leap_y = 0.0f;
-        return;
-    }
-    float mouse_x = 0.0f, mouse_y = 0.0f;
-    recompinput::get_mouse_deltas(&mouse_x, &mouse_y);
-    if (conker::netsession::active()) {
-        mouse_x = mouse_y = 0.0f;
-    }
-    // The mouse's y grows downward and the stick's upward: without inverting, the mouse up is the stick up.
-    apply_invert(option<Invert>(options::mouse_invert), mouse_x, mouse_y);
-    leap_x += mouse_x / leap_full_tilt;
-    leap_y -= mouse_y / leap_full_tilt;
-    // Kept within the stick's circle, so moving the mouse back brings the crosshair back at once.
-    const float length = std::sqrt(leap_x * leap_x + leap_y * leap_y);
-    if (length > 1.0f) {
-        leap_x /= length;
-        leap_y /= length;
-    }
-    x += leap_x;
-    y += leap_y;
-}
-
 float conker::look_aim::camera_field_of_view() {
-    // None without the settings: the game's own field of view (field_of_view.cpp).
-    return 0.0f;   // (possess58: the setting taken out, the game's own field of view for everyone)
+    // (0.11.4) Camera: Field of View, degrees tall (40 to 75; 50 the game's own, also without the settings)
+    return (float)std::clamp(number_option(options::camera_fov, 50.0), 40.0, 75.0);
 }
 
 void conker::look_aim::free_camera_invert(bool& x, bool& y) {
@@ -2034,7 +2098,7 @@ namespace {
     // look_flag): online they were this machine's for every player, so a player whose settings differed from the other
     // machine's (Stick: Aiming Response Direct here, Smooth there) aimed differently on each machine: aiming the tommy gun
     // (whose look the SMG's and the M4's fix-ups don't cover) the games drifted apart every second (0.9.46 test).
-    constexpr uint8_t look_turn_x = 1, look_turn_y = 2, look_direct = 4, look_steady = 8;   // (look_steady: possess101, Aiming: Steady Camera)
+    constexpr uint8_t look_turn_x = 1, look_turn_y = 2, look_direct = 4, look_steady = 8, look_snap = 16;   // (0.11.4: look_direct is Modern's bit)   // (look_steady: possess101, Aiming: Steady Camera)
 
     // Whether the look mode's camera's player has the bit: online from the frame's agreed input (that player's own settings),
     // offline this machine's.
@@ -2049,20 +2113,480 @@ namespace {
         if (bit == look_turn_y) {
             return own_turn_stick_y();
         }
+        if (bit == look_snap) {
+            return option<Response>(options::stick_response) == Response::Snap;
+        }
         return option<Response>(options::stick_response) == Response::Direct;
     }
 }
 #endif
 
+// (0.11.4) Stick: Aiming Response Modern (this machine's player's): the aim stick's curve and easing online (frontend.cpp's
+// shape_online_aim), with every weapon's R-Look aim as the SMG's and the M4's (gun_aim_online)
+bool conker::look_aim::modern_aim() {
+#if defined(CONKER_RT64)
+    // (the old Direct, back for testing, had the curve and easing too, as every player did online until 0.11.4)
+    return option<Response>(options::stick_response) == Response::Direct || option<Response>(options::stick_response) == Response::Snap;
+#else
+    return false;
+#endif
+}
+
 uint8_t conker::look_aim::sampled_look_flags() {
 #if defined(CONKER_RT64)
     return (uint8_t)((own_turn_stick_x() ? look_turn_x : 0) | (own_turn_stick_y() ? look_turn_y : 0) |
         (option<Response>(options::stick_response) == Response::Direct ? look_direct : 0) |
+        (option<Response>(options::stick_response) == Response::Snap ? look_snap : 0) |
         look_steady);   // (possess112: always, Aiming: Steady Camera being always on; nothing goes by it now)
 #else
     return 0;
 #endif
 }
+
+// ---- (0.11.4) The dedicated controls ----
+// Controls: First-Person View, Crouch, Zoom In, Zoom Out, Aim Up, Aim Down, Aim Left, Aim Right, Fire (recompfrontend_controls.patch), bound to
+// nothing to begin with, each a bit (frontend.cpp's read_dedicated: this order). Online they travel as the high 16 of the player's buttons
+// (net_session.cpp, extra_buttons); the game never reads those. Each one acts only where the game does that one thing, as the Grenade
+// button does (conker_grenade_start): never turned into a Nintendo 64 button or stick the rest of the game would see.
+//   Aim Up/Down/Left/Right: the aim's own reads of the stick and nothing else (conker_aim_key_stick): R-Look's (func_15120158), the
+//   second aiming mode's (func_15126378: the sniper scope, the magnum, throwables) and the guns' aim turn (func_15063A38), as the stick
+//   held all the way; Aim Up always looks up, whatever Stick: Invert Aiming says, as the key is named. Not aiming, the Free Camera's turn
+//   (mouse_camera.cpp, dedicated_aim_tilt).
+//   Move Forward/Back/Left/Right: not aiming the stick held that way (frontend.cpp); aiming the game's strafe alone (conker_dpad_strafe).
+//   Crouch: Z with no gun out; Fire: Z with a gun out (conker_crouch_begin). Zoom In, Zoom Out: the scope's C-Up and C-Down alone
+//   (conker_scope_zoom_keys). Weapon Swap: B for the weapon alone (out or away); Reload: A for the SMG, M4 or revolver alone
+//   (conker_weapon_keys). First-Person View: hidden (conker_config.cpp): the arenas have no first-person view on C-Up to copy; its bit
+//   stays reserved.
+namespace {
+    constexpr uint16_t ded_first_person = 1, ded_crouch = 2, ded_zoom_in = 4, ded_zoom_out = 8, ded_aim_up = 0x10, ded_aim_down = 0x20,
+        ded_aim_left = 0x40, ded_aim_right = 0x80, ded_fire = 0x100, ded_move_forward = 0x200, ded_move_back = 0x400, ded_move_left = 0x800,
+        ded_move_right = 0x1000, ded_weapon_swap = 0x2000, ded_reload = 0x4000;
+
+    // A game player's dedicated controls held this frame: online the frame's agreed input, offline this machine's.
+    uint16_t player_keys(int player) {
+        if (player < 0 || player >= 5) {
+            return 0;
+        }
+        if (conker::netsession::active()) {
+            const int port = conker::netsession::port_of_player(player);
+            return port < 0 ? 0 : conker::netsession::extra_buttons(port);
+        }
+        return conker::frontend::dedicated_keys(player);
+    }
+    uint32_t aim_key_told = 0;
+}
+
+// The aim's read of the stick (kind 0: R-Look's, owner the camera; 1: the second aiming mode's, owner the camera; 2: the guns' aim turn,
+// owner the character), axis 0 x and 1 y, the value just loaded (a signed byte). With an Aim key held for that axis, the stick held all
+// the way that way instead (82, the Nintendo 64 range's edge; 69 on a diagonal), turned around beforehand where our invert hooks
+// will turn it (R-Look and the second mode, by the player's Stick: Invert Aiming) so the key always aims the way it's named.
+extern "C" void conker_aim_key_stick(uint8_t* rdram, gpr* value, gpr owner, int kind, int axis) {
+#if defined(CONKER_RT64)
+    if (((uint32_t)owner & 0xFF000000u) != 0x80000000u) {
+        return;
+    }
+    int player = -1;
+    if (kind == 2) {
+        constexpr uint32_t characters = 0x800CC2D0, character_size = 0x32C;
+        const uint32_t c = (uint32_t)owner;
+        if (c >= characters && (c - characters) % character_size == 0 && (c - characters) / character_size < 5) {
+            player = (int)((c - characters) / character_size);
+        }
+    } else {
+        player = (int)MEM_BU(0x23D, owner);
+    }
+    const uint16_t keys = player_keys(player);
+    const int ax = ((keys & ded_aim_right) ? 1 : 0) - ((keys & ded_aim_left) ? 1 : 0);
+    const int ay = ((keys & ded_aim_up) ? 1 : 0) - ((keys & ded_aim_down) ? 1 : 0);
+    const int dir = axis == 0 ? ax : ay;
+    if (dir == 0) {
+        return;
+    }
+    const int full = (ax != 0 && ay != 0) ? 69 : 82;
+    bool flip_x = false, flip_y = false;
+    if (kind != 2) {
+        if (conker::netsession::active()) {
+            const uint8_t flags = conker::netsession::look_flags(player);
+            flip_x = (flags & look_turn_x) != 0;
+            flip_y = (flags & look_turn_y) != 0;
+        } else {
+            flip_x = own_turn_stick_x();
+            flip_y = own_turn_stick_y();
+        }
+    }
+    int raw;
+    if (axis == 0) {
+        raw = (flip_x ? -dir : dir) * full;              // (the game's: the stick right turns right)
+    } else {
+        raw = (flip_y ? dir : -dir) * full;              // (the game's: the stick up looks down)
+    }
+    *value = (gpr)(int32_t)raw;
+    if (aim_key_told < 20) {
+        aim_key_told++;
+        char line[160];
+        std::snprintf(line, sizeof(line), "[aim keys] f=%u player %d: the aim's stick read (kind %d, %s) given %d", (unsigned)conker::netsession::frame(),
+            player, kind, axis == 0 ? "x" : "y", raw);
+        conker::netsession::log(line);
+    }
+#else
+    (void)rdram; (void)value; (void)owner; (void)kind; (void)axis;
+#endif
+}
+
+// ---- (0.11.4) Crouch and Fire: Z split in two ----
+// In the arenas Z is crouching with no gun out and firing with one (the M4, the sniper rifle, the magnum, hip or scoped): which one the
+// game does is decided by what's in his hands, all through his update (button_probe.log: with no gun his movement's crouch reads,
+// 0x1504C320/0x1504EE48/0x15051034; with one, scoped, the movement's 0x1504D5B4, the weapons' code's and +0x31C's +0x8A's copy,
+// func_15033838, and none of the crouch's). So Crouch is Z only while he has no gun out, and Fire is Z only while he has one: each does
+// its one thing and never the other's. (0.11.4 first tries: Crouch as Z all the time fired the M4 and the sniper rifle; Fire as Z for
+// the weapons' code alone didn't fire scoped, the scoped shot being outside it.)
+// "A gun out" is what the D-pad's strafe goes by (conker_dpad_strafe): his +0x31C's +0x78 (the weapon in his hands) or +0x197 not 0.
+// The characters' update (func_1504A730, once a frame: character i, 0x800CC2D0 + i*0x32C, i in $s1 and D_800C3E78) points D_800CC284 at
+// the character's controller (players 0-3 the controller's own, from D_800BE728's table; the others a copy on its stack); the key's Z
+// goes into its buttons (+0) and, on the key's press, the buttons pressed this frame (D_800BE710's table, by i) as that character's
+// update starts (L_1504A970), and comes out again as it moves on (L_1504AC78): his update alone sees it, never the camera, the menus,
+// the HUD or the other characters. Z is only ever taken out where we put it, so Z itself is untouched, and anything the game clears
+// itself (Z once used, 0x1504DBD4) stays cleared.
+namespace {
+    constexpr uint32_t z_bit = 0x2000u;
+
+    uint16_t z_half(uint8_t* rdram, uint32_t a) { return (uint16_t)MEM_H(0, (gpr)(int32_t)a); }
+    void z_half_set(uint8_t* rdram, uint32_t a, bool on) {
+        const uint16_t v = z_half(rdram, a);
+        MEM_H(0, (gpr)(int32_t)a) = (int16_t)(on ? (v | z_bit) : (v & ~z_bit));
+    }
+
+    struct ZAdded {
+        uint32_t pad = 0;             // the controller the key's Z went into (0: none)
+        uint32_t pressed = 0;         // the pressed table's entry it went into (0: none)
+    };
+    ZAdded z_added;
+    uint16_t keys_before[5] = {};
+    uint16_t weapon_taps[5] = {};   // (Weapon Swap and Reload pressed this frame, for the weapons' code in this character's update)
+    uint32_t z_keys_told = 0;
+
+    void z_take_back(uint8_t* rdram) {
+        if (z_added.pad != 0) {
+            z_half_set(rdram, z_added.pad, false);
+        }
+        if (z_added.pressed != 0) {
+            z_half_set(rdram, z_added.pressed, false);
+        }
+        z_added = {};
+    }
+}
+
+// func_1504A730 at 0x1504A970 ($s0 the character, $s1 its number; D_800CC284 its controller)
+extern "C" void conker_crouch_begin(uint8_t* rdram, recomp_context* ctx) {
+    z_take_back(rdram);
+    const int i = (int)(int32_t)ctx->r17;
+    if (i < 0 || i >= 5) {
+        return;
+    }
+    const uint16_t keys = player_keys(i);
+    const uint16_t before = keys_before[i];
+    keys_before[i] = keys;
+    weapon_taps[i] = (uint16_t)(keys & ~before & (ded_weapon_swap | ded_reload));
+    if ((keys & (ded_crouch | ded_fire)) == 0) {
+        return;
+    }
+    const uint32_t aim = (uint32_t)MEM_W(0x31C, ctx->r16);
+    const bool aim_ok = (aim >> 24) == 0x80 && (aim & 0x00FFFFFFu) < 0x007F0000u;
+    const uint8_t in_hands = aim_ok ? MEM_BU(0x78, (gpr)(int32_t)aim) : 0;
+    const uint8_t other = aim_ok ? MEM_BU(0x197, (gpr)(int32_t)aim) : 0;
+    const bool gun_out = in_hands != 0 || other != 0;
+    const uint16_t key = gun_out ? ded_fire : ded_crouch;   // the one of the two Z is now
+    const bool held = (keys & key) != 0;
+    const bool pressed = held && (before & key) == 0;
+    if (pressed && z_keys_told < 40) {
+        z_keys_told++;
+        char line[200];
+        std::snprintf(line, sizeof(line), "[z keys] f=%u player %d: %s pressed (in his hands %02X, +0x197 %u): Z given to his update", (unsigned)conker::netsession::frame(),
+            i, gun_out ? "Fire" : "Crouch", (unsigned)in_hands, (unsigned)other);
+        conker::netsession::log(line);
+    } else if (!held && ((keys & ~before) & (ded_crouch | ded_fire)) != 0 && z_keys_told < 40) {
+        z_keys_told++;
+        char line[200];
+        std::snprintf(line, sizeof(line), "[z keys] f=%u player %d: %s pressed with %s (in his hands %02X, +0x197 %u): nothing", (unsigned)conker::netsession::frame(),
+            i, gun_out ? "Crouch" : "Fire", gun_out ? "a gun out" : "no gun out", (unsigned)in_hands, (unsigned)other);
+        conker::netsession::log(line);
+    }
+    if (!held) {
+        return;
+    }
+    const uint32_t pad = (uint32_t)MEM_W(-0x3D7C, (gpr)(int32_t)0x800D0000);
+    if ((pad & 0xFF000000u) == 0x80000000u && (z_half(rdram, pad) & z_bit) == 0) {
+        z_half_set(rdram, pad, true);
+        z_added.pad = pad;
+    }
+    const uint32_t entry = 0x800BE710u + 2u * (uint32_t)i;
+    if (pressed && (z_half(rdram, entry) & z_bit) == 0) {
+        z_half_set(rdram, entry, true);
+        z_added.pressed = entry;
+    }
+}
+
+// func_1504A730 at 0x1504AC78 (the character done with, or passed over)
+extern "C" void conker_crouch_end(uint8_t* rdram, recomp_context* ctx) {
+    (void)ctx;
+    z_take_back(rdram);
+    for (uint16_t& t : weapon_taps) {
+        t = 0;
+    }
+}
+
+// ---- (0.11.4) Weapon Swap and Reload: B and A for the weapon alone ----
+// In the arenas each player carries one weapon (the match's pickup in his hands, M+0xEB0[player]; walking over another swaps it for
+// the one held). B takes it out or puts it away (func_15063E84, by the buttons pressed this frame the weapons' code is given), and A,
+// with the SMG (kind 0x09), the M4 (0x39) or the revolver (0x23) out, reloads it (0x15066D4C, 0x15067538, 0x15069470) as well as
+// jumping. Weapon Swap is B and Reload is A for the weapons' code alone: func_15065A5C (from func_1506045C at 0x15060724: $s0 the
+// character, $s2 its buttons pressed this frame, the weapon's kind at 0x16C of its stack, "putting it away" at 0x168), added to $s2
+// as it starts (0x15065AB8), before the game's own masking (0x15065AF8: B taken out while the weapon is going away), so the game's
+// rules still apply; never the jump, the pee, the frying pan or anything else B or A does. Pressed, not held: once a press.
+namespace {
+    bool weapon_kind(uint32_t kind) {
+        switch (kind) {
+        case 0x09: case 0x0C: case 0x14: case 0x15: case 0x16: case 0x18: case 0x19: case 0x21: case 0x22: case 0x23: case 0x24:
+        case 0x37: case 0x39: case 0x3B: case 0x40: case 0x41:
+            return true;
+        default:
+            return false;   // (3 the pee, 0x20 the gas mask, 0x25, 0x26 and 0x3A the grenades, the story's own kinds)
+        }
+    }
+    uint32_t weapon_keys_told = 0;
+}
+
+extern "C" void conker_weapon_keys(uint8_t* rdram, recomp_context* ctx) {
+    constexpr uint32_t characters = 0x800CC2D0, character_size = 0x32C;
+    const uint32_t c = (uint32_t)ctx->r16;
+    if (c < characters || (c - characters) % character_size != 0 || (c - characters) / character_size >= 5) {
+        return;
+    }
+    const int i = (int)((c - characters) / character_size);
+    const uint16_t taps = weapon_taps[i];
+    if (taps == 0) {
+        return;
+    }
+    weapon_taps[i] = 0;
+    const uint32_t kind = (uint32_t)MEM_W(0x16C, ctx->r29) & 0x7Fu;
+    const bool putting_away = MEM_W(0x168, ctx->r29) != 0;
+    const bool held_off = MEM_BU(0x104, ctx->r16) != 0;
+    const uint32_t brain = (uint32_t)MEM_W(0x31C, ctx->r16);
+    const uint8_t out = (brain >> 24) == 0x80 ? MEM_BU(0x78, (gpr)(int32_t)brain) : 0;
+    uint32_t add = 0;
+    if ((taps & ded_weapon_swap) != 0 && weapon_kind(kind)) {
+        add |= 0x4000u;
+    }
+    if ((taps & ded_reload) != 0 && (kind == 0x09 || kind == 0x39 || kind == 0x23) && out == kind && !putting_away && !held_off) {
+        add |= 0x8000u;
+    }
+    ctx->r18 = (gpr)(int32_t)((uint32_t)ctx->r18 | add);
+    if (weapon_keys_told < 40) {
+        weapon_keys_told++;
+        char line[200];
+        std::snprintf(line, sizeof(line), "[weapon keys] f=%u player %d: %s%s pressed, kind %02X (out %02X)%s", (unsigned)conker::netsession::frame(), i,
+            (taps & ded_weapon_swap) ? "Weapon Swap " : "", (taps & ded_reload) ? "Reload " : "", (unsigned)kind, (unsigned)out,
+            add == 0 ? ": nothing to do" : ((add & 0x8000u) ? ": A given to the weapon (reload)" : ": B given to the weapon"));
+        conker::netsession::log(line);
+    }
+}
+
+// ---- (0.11.4) Zoom In / Zoom Out: the scope's zoom alone ----
+// The second aiming mode (func_15126378: the sniper scope; $s0 the camera, its player at +0x23D) zooms by the buttons held (0x98 of its
+// stack, in $t3 from 0x15127050): C-Up in (0x15127084, the view's width +0x1A4 made smaller), C-Down out (0x151270CC), neither with
+// both. Zoom In is C-Up and Zoom Out C-Down there and nowhere else (button_probe.log: C-Up and C-Down with R held, the scope's).
+extern "C" void conker_scope_zoom_keys(uint8_t* rdram, recomp_context* ctx) {
+    const gpr camera = ctx->r16;
+    if (((uint32_t)camera & 0xFF000000u) != 0x80000000u) {
+        return;
+    }
+    const int player = (int)MEM_BU(0x23D, camera);
+    const uint16_t keys = player_keys(player);
+    uint32_t add = 0;
+    if (keys & ded_zoom_in) {
+        add |= 0x8u;
+    }
+    if (keys & ded_zoom_out) {
+        add |= 0x4u;
+    }
+    if (add == 0) {
+        return;
+    }
+    ctx->r11 = (gpr)(int32_t)((uint32_t)ctx->r11 | add);
+    static uint32_t told = 0;
+    if (told < 20) {
+        told++;
+        char line[160];
+        std::snprintf(line, sizeof(line), "[zoom] f=%u player %d: %s", (unsigned)conker::netsession::frame(), player,
+            add == 0xCu ? "both zoom keys (the scope does neither)" : add == 0x8u ? "Zoom In: the scope zooms in" : "Zoom Out: the scope zooms out");
+        conker::netsession::log(line);
+    }
+}
+
+// ---- (0.11.4, temporary) The button probe ----
+// Every place the game tests Z, C-Up or C-Down with an andi (conker.toml's generated block: the place, the register tested and the mask),
+// logged to button_probe.log when the value tested is a controller's buttons (one of the ports' held or pressed this frame, as the game
+// was given them, frontend.cpp's probe_buttons) and has one of those bits: each place once a press (not again until a frame without it),
+// at most 40 times a place. With the presses themselves logged ([pad]), the place that does each action (first person, crouch, the
+// scope's zoom) shows by when it fires. To be taken out once the dedicated controls are wired there.
+namespace {
+    std::FILE* probe_file = nullptr;
+    std::mutex probe_mutex;
+    struct ProbeSite { uint32_t last = 0; uint32_t count = 0; };
+    std::vector<ProbeSite> probe_sites;
+    uint32_t probe_lines = 0;
+    uint32_t probe_clock() {
+        static const auto start = std::chrono::steady_clock::now();
+        return (uint32_t)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
+    }
+    void probe_write(const char* line) {
+        if (probe_file == nullptr) {
+            probe_file = std::fopen("button_probe.log", "w");
+            if (probe_file == nullptr) {
+                return;
+            }
+            std::fprintf(probe_file, "button probe: where the game tests A (8000), B (4000), Z (2000), the D-Pad (0800 up, 0400 down, 0200 left, 0100 right),\n"
+                "L (0020), C-Up (0008), C-Down (0004), C-Left (0002) and C-Right (0001)\n");
+        }
+        std::fprintf(probe_file, "%s\n", line);
+        std::fflush(probe_file);
+    }
+}
+
+void conker::look_aim::probe_pad(int port, uint16_t held, uint16_t before) {
+    if (held == before || port < 0 || port > 3) {
+        return;
+    }
+    std::lock_guard lock{ probe_mutex };
+    if (probe_lines >= 20000) {
+        return;
+    }
+    probe_lines++;
+    char line[120];
+    std::snprintf(line, sizeof(line), "[pad] t=%u ms f=%u port %d held %04X (was %04X)", probe_clock(), (unsigned)conker::netsession::frame(), port,
+        (unsigned)held, (unsigned)before);
+    probe_write(line);
+}
+
+extern "C" void conker_button_probe(uint8_t* rdram, int site, uint32_t address, uint32_t value, uint32_t mask) {
+    (void)rdram;
+    // (the second part: A, B, L, the D-Pad, C-Left and C-Right as well; not R or Start)
+    const uint32_t interest = mask & 0xEF2Fu & value;
+    if (interest == 0 || site < 0 || site > 8000) {
+        return;
+    }
+    const uint16_t v = (uint16_t)(value & 0xFFFFu);
+    bool is_buttons = false;
+    int port_seen = -1;
+    for (int p = 0; p < 4 && !is_buttons; p++) {
+        uint16_t held = 0, pressed = 0;
+        conker::frontend::probe_buttons(p, &held, &pressed);
+        if ((held != 0 && v == held) || (pressed != 0 && v == pressed)) {
+            is_buttons = true;
+            port_seen = p;
+        }
+    }
+    if (!is_buttons) {
+        return;
+    }
+    std::lock_guard lock{ probe_mutex };
+    if ((size_t)site >= probe_sites.size()) {
+        probe_sites.resize((size_t)site + 1);
+    }
+    ProbeSite& ps = probe_sites[(size_t)site];
+    const uint32_t now = conker::netsession::active() ? conker::netsession::frame() : probe_clock() / 33;
+    const bool new_press = ps.count == 0 || now > ps.last + 1;
+    ps.last = now;
+    if (!new_press || ps.count >= 40 || probe_lines >= 20000) {
+        return;
+    }
+    ps.count++;
+    probe_lines++;
+    static const struct { uint32_t bit; const char* name; } names[] = {
+        { 0x8000u, " A" }, { 0x4000u, " B" }, { 0x2000u, " Z" }, { 0x0800u, " D-Up" }, { 0x0400u, " D-Down" }, { 0x0200u, " D-Left" },
+        { 0x0100u, " D-Right" }, { 0x0020u, " L" }, { 0x0008u, " C-Up" }, { 0x0004u, " C-Down" }, { 0x0002u, " C-Left" }, { 0x0001u, " C-Right" } };
+    char which[96] = "";
+    for (const auto& nb : names) {
+        if (interest & nb.bit) {
+            std::strncat(which, nb.name, sizeof(which) - std::strlen(which) - 1);
+        }
+    }
+    char line[200];
+    std::snprintf(line, sizeof(line), "[probe] t=%u ms f=%u site %d at %08X: mask %04X, value %04X (port %d)%s", probe_clock(), (unsigned)now, site,
+        address, (unsigned)mask, (unsigned)value, port_seen, which);
+    probe_write(line);
+}
+
+bool conker::look_aim::dedicated_aim_tilt(uint16_t keys, float* x, float* y) {
+    const int ax = ((keys & ded_aim_right) ? 1 : 0) - ((keys & ded_aim_left) ? 1 : 0);
+    const int ay = ((keys & ded_aim_down) ? 1 : 0) - ((keys & ded_aim_up) ? 1 : 0);
+    if (ax == 0 && ay == 0) {
+        return false;
+    }
+    *x = (float)ax;
+    *y = (float)ay;
+    return true;
+}
+
+// (0.11.4) The mouse's aim: 0.1 degrees a pixel at 100% (Mouse: Sensitivity is in the pixels already, recompinput), the mouse right
+// turning right and up looking up (yaw grows to the left, pitch downward), Mouse: Invert Aiming turning either around.
+void conker::look_aim::mouse_aim_degrees(float mouse_x, float mouse_y, float* yaw, float* pitch) {
+    constexpr float degrees_per_pixel = 0.1f;
+    *yaw = -mouse_x * degrees_per_pixel;
+    *pitch = mouse_y * degrees_per_pixel;
+#if defined(CONKER_RT64)
+    const Invert invert = option<Invert>(options::mouse_invert);
+    if (invert == Invert::X || invert == Invert::Both) *yaw = -*yaw;
+    if (invert == Invert::Y || invert == Invert::Both) *pitch = -*pitch;
+#endif
+}
+
+bool conker::look_aim::mouse_aim(int player, float* yaw, float* pitch) {
+    *yaw = 0.0f;
+    *pitch = 0.0f;
+    if (conker::netsession::active()) {
+        return conker::netsession::mouse_aim(player, yaw, pitch);
+    }
+    if (player != 0) {
+        return false;
+    }
+    float mx = 0.0f, my = 0.0f;
+    conker::frontend::frame_mouse(&mx, &my);
+    if (mx == 0.0f && my == 0.0f) {
+        return false;
+    }
+    mouse_aim_degrees(mx, my, yaw, pitch);
+    return true;
+}
+
+uint8_t conker::look_aim::sampled_field_of_view() {
+#if defined(CONKER_RT64)
+    return (uint8_t)std::lround(conker::look_aim::camera_field_of_view());
+#else
+    return 50;
+#endif
+}
+
+uint8_t conker::look_aim::sampled_aim_sensitivity() {
+#if defined(CONKER_RT64)
+    return (uint8_t)std::clamp(std::lround(number_option("aim_stick_sensitivity", 100.0)), 25L, 250L);
+#else
+    return 100;
+#endif
+}
+
+#if defined(CONKER_RT64)
+namespace {
+    // (0.11.4) Stick: Aiming Sensitivity: how much faster or slower the stick aims, in R-Look (yaw and pitch) and the second aiming mode
+    // (the scopes): online that camera's player's own (the frame's agreed input), offline this machine's. Not the mouse or gyro.
+    float aim_sensitivity(uint8_t* rdram, gpr camera) {
+        if (conker::netsession::active()) {
+            return conker::netsession::aim_sensitivity((int)MEM_BU(0x23D, camera)) / 100.0f;
+        }
+        return conker::look_aim::sampled_aim_sensitivity() / 100.0f;
+    }
+}
+#endif
 
 // The stick's yaw: target - stick x * scale, stored at 0x15120A14 (one state, which then goes on
 // through the next one too) and at 0x15120A44 (every state). Turned around, it's a +.
@@ -2077,7 +2601,9 @@ namespace {
         if (((uint32_t)camera & 0xFF000000u) == 0x80000000u && MEM_BU(0x23E, camera) == 0x3B) {
             return 1.0f;
         }
-        return conker::netsession::active() ? online_look_speed : 1.0f;
+        // (0.11.4) the online 1.5x gone for everyone (conker_gun_aim_turn too): the game's own speed, Stick: Aiming Sensitivity for faster
+        (void)online_look_speed;
+        return 1.0f;
     }
 }
 #endif
@@ -2085,7 +2611,7 @@ namespace {
 extern "C" void conker_look_stick_yaw_a(uint8_t* rdram, recomp_context* ctx) {
 #if defined(CONKER_RT64)
     // 0x15120A10: sub.s $f6, $f8, $f18 (the target less the stick's turn; turned around, plus)
-    const float turn = ctx->f18.fl * look_speed(rdram, ctx->r16);
+    const float turn = ctx->f18.fl * look_speed(rdram, ctx->r16) * aim_sensitivity(rdram, ctx->r16);
     ctx->f6.fl = look_flag(rdram, ctx->r16, look_turn_x) ? ctx->f8.fl + turn : ctx->f8.fl - turn;
 #endif
 }
@@ -2093,7 +2619,7 @@ extern "C" void conker_look_stick_yaw_a(uint8_t* rdram, recomp_context* ctx) {
 extern "C" void conker_look_stick_yaw_b(uint8_t* rdram, recomp_context* ctx) {
 #if defined(CONKER_RT64)
     // 0x15120A40: sub.s $f18, $f4, $f10
-    const float turn = ctx->f10.fl * look_speed(rdram, ctx->r16);
+    const float turn = ctx->f10.fl * look_speed(rdram, ctx->r16) * aim_sensitivity(rdram, ctx->r16);
     ctx->f18.fl = look_flag(rdram, ctx->r16, look_turn_x) ? ctx->f4.fl + turn : ctx->f4.fl - turn;
 #endif
 }
@@ -2103,7 +2629,7 @@ extern "C" void conker_look_stick_pitch(uint8_t* rdram, recomp_context* ctx) {
 #if defined(CONKER_RT64)
     {
         // 0x15120A94: add.s $f10, $f6, $f8 (the target plus the stick's turn; turned around, less)
-        const float turn = ctx->f8.fl;
+        const float turn = ctx->f8.fl * aim_sensitivity(rdram, ctx->r16);
         ctx->f10.fl = look_flag(rdram, ctx->r16, look_turn_y) ? ctx->f6.fl - turn : ctx->f6.fl + turn;
     }
     if (gun_aim_online(rdram, ctx->r16)) {
@@ -2157,33 +2683,13 @@ extern "C" void conker_camera_turn_speed_released(uint8_t* rdram, recomp_context
 
 #if defined(CONKER_RT64)
 namespace {
-    // The mouse and keyboard are player 1's. The camera (struct108, the look mode's and the second
+    // The camera (struct108, the look mode's and the second
     // aiming mode's $s0) keeps its index into the cameras (D_800BE628) at + 0x23D, 0 for player 1;
     // in multiplayer the aiming code runs for each player's camera in turn.
     bool is_player_one(uint8_t* rdram, gpr camera) {
         return MEM_BU(0x23D, camera) == 0;
     }
 
-    // One poll's mouse and gyro movement as a turn of the view, in degrees: the yaw grows to the left
-    // and the pitch downward (see conker_look_targets). False if there was none.
-    bool take_movement(float& mouse_yaw, float& mouse_pitch, float& gyro_yaw, float& gyro_pitch) {
-        Movement m;
-        {
-            std::lock_guard lock{queue_mutex};
-            if (queue.empty()) {
-                return false;
-            }
-            m = queue.front();
-            queue.pop_front();
-        }
-        mouse_yaw = -m.mouse_x * mouse_degrees_per_pixel;
-        mouse_pitch = m.mouse_y * mouse_degrees_per_pixel;
-        gyro_yaw = m.gyro_y * gyro_scale;
-        gyro_pitch = -m.gyro_x * gyro_scale;
-        apply_invert(option<Invert>(options::mouse_invert), mouse_yaw, mouse_pitch);
-        apply_invert(option<Invert>(options::gyro_invert), gyro_yaw, gyro_pitch);
-        return true;
-    }
 }
 #endif
 
@@ -2192,20 +2698,23 @@ namespace {
 // the look mode's stick (X normal, Y inverted), so the same setting turns them around. Some states
 // have scaled or clamped them (symmetrically) already.
 //
-// The mouse and gyro turn it here too (issue #61: the sniper scope didn't follow the mouse at all).
-// This mode turns the aim at once, with no spring to ease it. Zoomed in, the stick turns slower;
-// the mouse and gyro turn by the same part of the view: their turn is scaled by the zoom, the
-// tangent of the field of view in use (the camera's + 0x74) against the unzoomed one's (+ 0x6C),
-// as func_1510B128 sets it.
+// This mode turns the aim at once, with no spring to ease it. Zoomed in, the stick turns slower.
 namespace {
     // (0.10.9: the frame each player's camera last ran the second aiming mode, online; second_aim_recent)
     // (possess46: the 5th player's too, its extra camera's, signal_player: net_session.cpp's input for its slot goes by it, on every
     // machine alike, as the game runs that camera on all of them)
     bool second_aim_seen[signal_players] = {};
     uint32_t second_aim_frame[signal_players] = {};
+    // (0.11.4) offline, when (steady clock ticks) each player's camera last ran it: the dedicated Zoom keys go by it in single player too
+    std::atomic<int64_t> second_aim_ticks[signal_players] = {};
 }
 
 bool conker::look_aim::second_aim_recent(int player) {
+    if (player >= 0 && player < signal_players && !conker::netsession::active()) {
+        const int64_t then = second_aim_ticks[player].load();
+        return then != 0 && std::chrono::steady_clock::now().time_since_epoch().count() - then <
+            std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::milliseconds(150)).count();
+    }
     if (player < 0 || player >= signal_players || !second_aim_seen[player]) {
         return false;
     }
@@ -2221,6 +2730,11 @@ extern "C" void conker_aim_stick(uint8_t* rdram, recomp_context* ctx) {
             second_aim_seen[aim_player] = true;
             second_aim_frame[aim_player] = conker::netsession::frame();
         }
+    } else {
+        const int aim_player = signal_player(rdram, ctx->r16);
+        if (aim_player >= 0 && aim_player < signal_players) {
+            second_aim_ticks[aim_player] = std::chrono::steady_clock::now().time_since_epoch().count();
+        }
     }
     // Aiming: Swap Sticks: this camera's player is aiming.
     note_aiming(rdram, ctx->r16, signal_player(rdram, ctx->r16));
@@ -2230,25 +2744,32 @@ extern "C" void conker_aim_stick(uint8_t* rdram, recomp_context* ctx) {
     if (look_flag(rdram, ctx->r16, look_turn_y)) {
         ctx->f12.fl = -ctx->f12.fl;
     }
-
-    const gpr camera = ctx->r16;
-    if (!is_player_one(rdram, camera)) {
-        return;
+    // (0.11.4) The scopes' up and down is left at the game's own speed for Modern too: at full tilt the game already turns 1.656 a frame
+    // each way, up and down as left and right (the 0.11.4 test's [scope] lines), so the 0.11.4 test's R-Look speed-up (gun_pitch_scale)
+    // here made up and down about twice as fast as left and right.
+    {
+        const float sens = aim_sensitivity(rdram, ctx->r16);
+        ctx->f14.fl *= sens;
+        ctx->f12.fl *= sens;
     }
-    float mouse_yaw, mouse_pitch, gyro_yaw, gyro_pitch;
-    if (!take_movement(mouse_yaw, mouse_pitch, gyro_yaw, gyro_pitch)) {
-        return;
+    // (0.11.4) The mouse, back: this camera's player's mouse aim, scaled by the zoom (the tangent of the field of view in use, the view's
+    // + 0x74, against the unzoomed one's, + 0x6C, as func_1510B128 sets it) so it turns the same part of the view zoomed in or not. The
+    // yaw's turn is subtracted, the pitch's added.
+    {
+        const int player = (int)MEM_BU(0x23D, ctx->r16);
+        float yaw = 0.0f, pitch = 0.0f;
+        if (conker::look_aim::mouse_aim(player, &yaw, &pitch) && (yaw != 0.0f || pitch != 0.0f)) {
+            const gpr view = (gpr)(int32_t)((uint32_t)MEM_W(0, (gpr)(int32_t)0x800BE628) + (uint32_t)player * 0x180u);
+            constexpr float half_degrees_to_radians = 3.14159265358979f / 360.0f;
+            const float fov = read_float(rdram, view, 0x74), unzoomed = read_float(rdram, view, 0x6C);
+            float zoom = 1.0f;
+            if (fov > 0.0f && unzoomed > 0.0f && fov < 180.0f && unzoomed < 180.0f) {
+                zoom = std::clamp(conker::det::tan(fov * half_degrees_to_radians) / conker::det::tan(unzoomed * half_degrees_to_radians), 0.02f, 2.0f);
+            }
+            ctx->f14.fl -= yaw * zoom;
+            ctx->f12.fl += pitch * zoom;
+        }
     }
-    const gpr view = (gpr)(int32_t)((uint32_t)MEM_W(0, (gpr)(int32_t)0x800BE628) + MEM_BU(0x23D, camera) * 0x180);
-    constexpr float half_degrees_to_radians = 3.14159265358979f / 360.0f;
-    const float fov = read_float(rdram, view, 0x74), unzoomed = read_float(rdram, view, 0x6C);
-    float zoom = 1.0f;
-    if (fov > 0.0f && unzoomed > 0.0f && fov < 180.0f && unzoomed < 180.0f) {
-        zoom = std::clamp(std::tan(fov * half_degrees_to_radians) / std::tan(unzoomed * half_degrees_to_radians), 0.02f, 2.0f);
-    }
-    // The yaw's turn is subtracted, the pitch's added.
-    ctx->f14.fl -= (mouse_yaw + gyro_yaw) * zoom;
-    ctx->f12.fl += (mouse_pitch + gyro_pitch) * zoom;
 #endif
 }
 
@@ -2565,7 +3086,6 @@ extern "C" void conker_steady_walk(uint8_t* rdram, recomp_context* ctx) {
 
 // Before the pitch clamp: $s0 is the look state, $t0 the targets (reloaded at 0x15120B40).
 extern "C" void conker_look_targets(uint8_t* rdram, recomp_context* ctx) {
-    frame = Frame{};
 #if defined(CONKER_RT64)
     // Aiming: Swap Sticks: this camera's player is aiming (the look mode, R-Look too: the stick aims, not moves).
     note_aiming(rdram, ctx->r16, signal_player(rdram, ctx->r16));
@@ -2646,7 +3166,6 @@ extern "C" void conker_look_targets(uint8_t* rdram, recomp_context* ctx) {
             MEM_H(0x12, aim) = (int16_t)(angle - moved);
             MEM_H(0x76, conker) = (int16_t)moving;
             note_move_written(look_player, moving);
-            aim_remainder = 0.0f;
             if (look_player >= 0 && look_player < aim_players) {
                 release_move[look_player] = moving;
                 release_frames[look_player] = 12;
@@ -2686,59 +3205,38 @@ extern "C" void conker_look_targets(uint8_t* rdram, recomp_context* ctx) {
             MEM_H(0x76, conker) = (int16_t)release_move[player];
         }
     }
-#endif
-#if defined(CONKER_RT64)
-    // Directions, all measured by playing: the yaw grows to the left and the pitch downward (the
-    // game's stick is inverted: up looks down). The mouse's x grows to the right and its y
-    // downward. recompinput's gyro gives the controller's turn on y (positive turning left) and
-    // its tilt on x (positive tilting it back, toward you). Without inverting, the mouse and gyro
-    // look the way they move: mouse or controller up looks up (take_movement).
-    if (!is_player_one(rdram, ctx->r16)) {
-        return;
-    }
-    float mouse_yaw, mouse_pitch, gyro_yaw, gyro_pitch;
-    if (!take_movement(mouse_yaw, mouse_pitch, gyro_yaw, gyro_pitch)) {
-        return;
-    }
-
-    const float yaw = mouse_yaw + gyro_yaw, pitch = mouse_pitch + gyro_pitch;
-    if (yaw == 0.0f && pitch == 0.0f) {
-        return;
-    }
-    const gpr targets = ctx->r8;
-    write_float(rdram, targets, target_yaw, read_float(rdram, targets, target_yaw) + yaw);
-    if (units_per_degree != 0.0f) {
-        // Turn the aiming angle as far, for the next frame's target, which grows as it shrinks.
-        const gpr aim = (gpr)(int32_t)MEM_W(0x3D4, ctx->r16);
-        const float units = yaw * units_per_degree + aim_remainder;
-        const int32_t whole = (int32_t)units;
-        aim_remainder = units - (float)whole;
-        // As the stick's turn does (func_15063A38, 0x15063AEC): past +-9000 units the aim stops there and Conker
-        // turns by the rest (his facing, +0x7A, and +0x76 with it), so the view (facing less the aim) turns the
-        // same and his body follows. The mouse turned the aim alone: swung fast, it went past 9000 and his body
-        // stayed behind, and walking forward (the C-buttons, by his body) came out as a strafe (issue #84).
-        constexpr int32_t aim_limit = 9000;
-        int32_t angle = (int32_t)MEM_H(0x12, aim) - whole;
-        if (angle < -aim_limit || angle > aim_limit) {
-            const int32_t limit = (angle < 0) ? -aim_limit : aim_limit;
-            const gpr conker = (gpr)(int32_t)MEM_W(0x3D0, ctx->r16);
-            const uint16_t facing = (uint16_t)((uint32_t)MEM_HU(0x7A, conker) - (uint32_t)(angle - limit));
-            MEM_H(0x7A, conker) = (int16_t)facing;
-            MEM_H(0x76, conker) = (int16_t)facing;
-            angle = limit;
+    // (0.11.4) The mouse, back: this camera's player's mouse aim (online the frame's agreed input, every camera on every machine alike;
+    // offline player 1's) turns the targets before the clamp, so the game's own limits apply to it as to the stick. Where the look works
+    // its yaw out from Conker's facing less the aiming angle (units_per_degree), the angle turns as far, as the stick's turn does
+    // (func_15063A38): past +-9000 units it stops there and Conker turns by the rest.
+    {
+        float yaw = 0.0f, pitch = 0.0f;
+        if (conker::look_aim::mouse_aim((int)MEM_BU(0x23D, ctx->r16), &yaw, &pitch) && (yaw != 0.0f || pitch != 0.0f)) {
+            const gpr targets = ctx->r8;
+            // (the guns' looks take the mouse's turn across in their aim angle instead, conker_gun_aim_turn, from the look's start)
+            const bool gun = gun_look_kind(MEM_BU(0x23E, ctx->r16));
+            if (!gun) {
+                write_float(rdram, targets, target_yaw, read_float(rdram, targets, target_yaw) + yaw);
+            }
+            write_float(rdram, targets, target_pitch, read_float(rdram, targets, target_pitch) + pitch);
+            if (!gun && units_per_degree != 0.0f) {
+                const gpr aim = (gpr)(int32_t)MEM_W(0x3D4, ctx->r16);
+                const gpr conker = (gpr)(int32_t)MEM_W(0x3D0, ctx->r16);
+                if (((uint32_t)aim & 0xFF000000u) == 0x80000000u && ((uint32_t)conker & 0xFF000000u) == 0x80000000u) {
+                    const int32_t whole = (int32_t)std::lround(yaw * units_per_degree);
+                    constexpr int32_t aim_limit = 9000;
+                    int32_t angle = (int32_t)MEM_H(0x12, aim) - whole;
+                    if (angle < -aim_limit || angle > aim_limit) {
+                        const int32_t limit = (angle < 0) ? -aim_limit : aim_limit;
+                        const uint16_t facing = (uint16_t)((uint32_t)MEM_HU(0x7A, conker) - (uint32_t)(angle - limit));
+                        MEM_H(0x7A, conker) = (int16_t)facing;
+                        MEM_H(0x76, conker) = (int16_t)facing;
+                        angle = limit;
+                    }
+                    MEM_H(0x12, aim) = (int16_t)angle;
+                }
+            }
         }
-        MEM_H(0x12, aim) = (int16_t)angle;
-    }
-    frame.pitch_target_set = read_float(rdram, targets, target_pitch) + pitch;
-    write_float(rdram, targets, target_pitch, frame.pitch_target_set);
-    frame.targets_moved = true;
-    if (option<Response>(options::mouse_response) == Response::Direct) {
-        frame.direct_yaw += mouse_yaw;
-        frame.direct_pitch += mouse_pitch;
-    }
-    if (option<Response>(options::gyro_response) == Response::Direct) {
-        frame.direct_yaw += gyro_yaw;
-        frame.direct_pitch += gyro_pitch;
     }
 #endif
 }
@@ -2787,7 +3285,9 @@ extern "C" void conker_look_currents(uint8_t* rdram, recomp_context* ctx) {
     }
     // Online, aiming a gun in R-Look (the SMG, the M4): up and down follows the target at once, as left and right does
     // (see gun_aim_online).
-    if (gun_aim_online(rdram, state) && settle > 0.0f) {
+    // (0.11.4) not for a Direct player (look_snap): Direct's own snap below puts the view on the aim, both ways, so it's done once
+    const bool snap = look_flag(rdram, state, look_snap);
+    if (!snap && gun_aim_online(rdram, state) && settle > 0.0f) {
         const float pitch_target = read_float(rdram, targets, target_pitch);
         const float current = read_float(rdram, targets, current_pitch);
         float pitch = settle >= 1.0f ? pitch_target : current + angle_difference(pitch_target, current) * settle;
@@ -2796,27 +3296,24 @@ extern "C" void conker_look_currents(uint8_t* rdram, recomp_context* ctx) {
         if (pitch >= 360.0f) pitch -= 360.0f;
         write_float(rdram, targets, current_pitch, pitch);
         write_float(rdram, targets, pitch_velocity, read_float(rdram, targets, pitch_velocity) * (1.0f - settle));
+        // (0.11.4) Modern: left and right on the aim at once too, as up and down (no spring's lag or swing either way), once the look
+        // has settled as up and down does, so R-Look's start still swings in as on a Nintendo 64. (Swap Sticks puts it there already.)
+        {
+            const float yaw_target = read_float(rdram, targets, target_yaw);
+            const float yaw_now = read_float(rdram, state, current_yaw);
+            const float yaw = settle >= 1.0f ? yaw_target : yaw_now + angle_difference(yaw_target, yaw_now) * settle;
+            write_float(rdram, state, current_yaw, yaw);
+            write_float(rdram, targets, yaw_velocity, read_float(rdram, targets, yaw_velocity) * (1.0f - settle));
+        }
     }
-    if (look_flag(rdram, state, look_direct)) {
-        // The view is where the targets are, and the spring keeps no speed to overshoot with.
+    // (0.11.4) The old Direct (back for testing as its own choice, look_snap): the view is where the targets are, and the spring keeps no
+    // speed to overshoot with, as 0.11.3's Direct. (Its bit 4 is Modern's now, gun_aim_online.)
+    if (snap) {
         write_float(rdram, state, current_yaw, read_float(rdram, targets, target_yaw));
         write_float(rdram, targets, current_pitch, read_float(rdram, targets, target_pitch));
         write_float(rdram, targets, yaw_velocity, 0.0f);
         write_float(rdram, targets, pitch_velocity, 0.0f);
-        return;
     }
-    if (!frame.targets_moved) {
-        return;
-    }
-    write_float(rdram, state, current_yaw, read_float(rdram, state, current_yaw) + frame.direct_yaw);
-    // The clamp may have held the pitch target back; the current pitch mustn't pass it either.
-    const float target = read_float(rdram, targets, target_pitch);
-    const float clamped = target - frame.pitch_target_set;
-    float pitch = read_float(rdram, targets, current_pitch) + frame.direct_pitch;
-    if ((clamped < 0.0f && pitch > target) || (clamped > 0.0f && pitch < target)) {
-        pitch = target;
-    }
-    write_float(rdram, targets, current_pitch, pitch);
 #endif
 }
 
@@ -2836,7 +3333,6 @@ void conker::look_aim::reset_online_state() {
     }
     turn_keep = TurnKeep{};
     aim_turn_keep = AimTurnKeep{};
-    aim_remainder = 0.0f;
     for (int p = 0; p < aim_players; p++) {
         look_settle[p] = 0.0f;
         stage_one_followed[p] = false;
@@ -2934,35 +3430,88 @@ extern "C" void conker_coop_camera_height(uint8_t* rdram, recomp_context* ctx) {
 // the co-op campaign, for the players' characters (the first 5). From the frame's agreed buttons, the same on every machine.
 extern "C" void conker_dpad_strafe(uint8_t* rdram, recomp_context* ctx) {
 #if defined(CONKER_RT64)
-    if (!conker::netsession::active()) {
-        return;
-    }
     const uint32_t held = (uint32_t)ctx->r5 & 0xFFFFu;
-    if ((held & 0x0F00u) == 0) {
-        return;
-    }
-    if (MEM_BU(0, (gpr)(int32_t)0x800BE616) == 0 && !conker::netmenu::coop_running(rdram)) {
-        return;
-    }
     const uint32_t c = (uint32_t)ctx->r16;
     constexpr uint32_t characters = 0x800CC2D0, character_size = 0x32C;
     if (c < characters || (c - characters) % character_size != 0 || (c - characters) / character_size >= 5) {
         return;
     }
+    // (0.11.4) Move Forward/Back/Left/Right with R held (aiming): this strafe alone, online and offline, anywhere the game strafes. Not
+    // aiming they're the stick (frontend.cpp), so not here then.
+    // (R as the game has it here, or the character's camera in a look (its +0x73C stage: R-Look with the M4 or the SMG, the 30 Oct test
+    // where R alone wasn't seen), or a weapon scoped)
+    bool aiming = (held & 0x0010u) != 0;
+    {
+        const uint32_t cam = (uint32_t)MEM_W(0x318, (gpr)(int32_t)c);
+        if ((cam >> 24) == 0x80 && (cam & 0x00FFFFFFu) < 0x007F0000u && MEM_H(0x73C, (gpr)(int32_t)cam) != 0) {
+            aiming = true;
+        }
+        const uint32_t aim = (uint32_t)MEM_W(0x31C, (gpr)(int32_t)c);
+        if ((aim >> 24) == 0x80 && (aim & 0x00FFFFFFu) < 0x007F0000u && MEM_BU(0x197, (gpr)(int32_t)aim) != 0) {
+            aiming = true;
+        }
+    }
+    const uint16_t keys_now = player_keys((int)((c - characters) / character_size));
+    // (online too, from the frame's agreed input: never a button of the game's)
+    const uint16_t moves = aiming ? (uint16_t)(keys_now & 0x1E00u) : (uint16_t)0;
+    {
+        static uint32_t told_moves = 0;
+        static uint16_t last_keys = 0;
+        if ((keys_now & 0x1E00u) != last_keys && told_moves < 60) {
+            told_moves++;
+            last_keys = (uint16_t)(keys_now & 0x1E00u);
+            char line[160];
+            std::snprintf(line, sizeof(line), "[strafe] f=%u character %u: Move keys %03X, aiming %d (buttons %04X, the game's C-button mask %X)",
+                (unsigned)conker::netsession::frame(), (unsigned)((c - characters) / character_size), (unsigned)(last_keys >> 9), aiming ? 1 : 0,
+                (unsigned)held, (unsigned)((uint32_t)ctx->r2 & 0xFu));
+            conker::netsession::log(line);
+        }
+    }
+    const bool dpad = conker::netsession::active() && (held & 0x0F00u) != 0 &&
+        (MEM_BU(0, (gpr)(int32_t)0x800BE616) != 0 || conker::netmenu::coop_running(rdram));
+    if (!dpad && moves == 0) {
+        return;
+    }
     uint32_t pad = 0;
-    if (held & 0x0800u) {
+    if (moves & ded_move_forward) {
+        pad |= 0x0008u;
+    }
+    if (moves & ded_move_back) {
+        pad |= 0x0004u;
+    }
+    if (moves & ded_move_left) {
+        pad |= 0x0002u;
+    }
+    if (moves & ded_move_right) {
+        pad |= 0x0001u;
+    }
+    if (dpad && (held & 0x0800u)) {
         pad |= 0x0008u;   // up: C-Up, forward
     }
-    if (held & 0x0400u) {
+    if (dpad && (held & 0x0400u)) {
         pad |= 0x0004u;   // down: C-Down, back
     }
-    if (held & 0x0200u) {
+    if (dpad && (held & 0x0200u)) {
         pad |= 0x0002u;   // left: C-Left
     }
-    if (held & 0x0100u) {
+    if (dpad && (held & 0x0100u)) {
         pad |= 0x0001u;   // right: C-Right
     }
-    const uint32_t mask = (uint32_t)ctx->r2 & 0xFu;
+    uint32_t mask = (uint32_t)ctx->r2 & 0xFu;
+    // (0.11.4) With no weapon out the game masks the C-buttons to C-Left and C-Right, so the D-pad's up and down did nothing: there they
+    // walk him forward and back as with a weapon out (the strafe's way table has C-Up and C-Down; the D-pad's alone, not the C-buttons').
+    {
+        const uint32_t aim = (uint32_t)MEM_W(0x31C, (gpr)(int32_t)c);
+        const bool aim_ok = (aim >> 24) == 0x80 && (aim & 0x00FFFFFFu) < 0x007F0000u;
+        if (aim_ok && MEM_BU(0x78, (gpr)(int32_t)aim) == 0 && MEM_BU(0x197, (gpr)(int32_t)aim) == 0 && (mask & 0xCu) == 0) {
+            mask |= 0xCu;
+        }
+        // (0.11.4) and for the Move keys with a gun out, not scoped (R-Look with the M4 or the SMG): forward and back walk him there too,
+        // whatever the game's mask, the strafe's way table having them
+        if (aim_ok && moves != 0 && MEM_BU(0x197, (gpr)(int32_t)aim) == 0) {
+            mask |= 0xCu;
+        }
+    }
     const uint32_t before = (uint32_t)ctx->r4 & 0xFFFFu;
     const uint32_t now = before | (pad & mask);
     ctx->r4 = (gpr)(int32_t)now;

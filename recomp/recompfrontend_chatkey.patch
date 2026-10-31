@@ -1,0 +1,106 @@
+diff --git a/recompui/src/config/ui_config_option.cpp b/recompui/src/config/ui_config_option.cpp
+--- a/recompui/src/config/ui_config_option.cpp
++++ b/recompui/src/config/ui_config_option.cpp
+@@ -258,6 +258,18 @@
+     name_label->set_margin_bottom(4.0f);
+ 
+     ContextId context = recompui::get_current_context();
++    if (option_id == "chat_key") {
++        key_button = context.create_element<Button>(this, "", ButtonStyle::Secondary, ButtonSize::Medium);
++        key_button->add_pressed_callback([this]() {
++            this->key_waiting = true;
++            this->key_armed = false;
++            this->key_button->set_text("Press a key...");
++            this->on_hover(this->option_id);
++            this->queue_update();
++        });
++        update_value();
++        return;
++    }
+     text_input = context.create_element<TextInput>(this);
+     text_input->set_width(100.0f, Unit::Percent);
+     text_input->set_max_width(100.0f, Unit::Percent);
+@@ -274,14 +286,58 @@
+ 
+ void ConfigOptionString::update_value() {
+     std::string value = std::get<std::string>(get_value());
++    if (key_button != nullptr) {
++        key_button->set_text(value.empty() ? std::string("None") : value);
++        return;
++    }
+     text_input->set_text(value);
+ };
+ 
+ void ConfigOptionString::update_disabled() {
+     bool disabled = get_disabled();
++    if (key_button != nullptr) {
++        key_button->set_enabled(!disabled);
++        return;
++    }
+     text_input->set_enabled(!disabled);
+ };
+ 
++void ConfigOptionString::process_event(const Event &e) {
++    if (e.type != EventType::Update) {
++        ConfigOptionElement::process_event(e);
++        return;
++    }
++    if (key_button == nullptr || !key_waiting) {
++        return;
++    }
++    // the key that pressed the button let go of first, then the next key pressed
++    int count = 0;
++    const Uint8 *keys = SDL_GetKeyboardState(&count);
++    int pressed = 0;
++    for (int code = 1; code < count; code++) {
++        if (keys[code] != 0) {
++            pressed = code;
++            break;
++        }
++    }
++    if (!key_armed) {
++        key_armed = pressed == 0;
++    }
++    else if (pressed != 0) {
++        key_waiting = false;
++        if (pressed == SDL_SCANCODE_BACKSPACE || pressed == SDL_SCANCODE_DELETE) {
++            set_option_value(option_id, std::string());
++        }
++        else if (pressed != SDL_SCANCODE_ESCAPE) {
++            set_option_value(option_id, std::string(SDL_GetScancodeName((SDL_Scancode)pressed)));
++        }
++        update_value();
++    }
++    if (key_waiting) {
++        queue_update();
++    }
++}
++
+ // ConfigOptionBool
+ ConfigOptionBool::ConfigOptionBool(
+     ResourceId rid,
+diff --git a/recompui/src/config/ui_config_option.h b/recompui/src/config/ui_config_option.h
+--- a/recompui/src/config/ui_config_option.h
++++ b/recompui/src/config/ui_config_option.h
+@@ -7,6 +7,8 @@
+ #include "elements/ui_text_input.h"
+ #include "elements/ui_slider.h"
+ #include "elements/ui_toggle.h"
++#include "elements/ui_button.h"
++#include "SDL.h"
+ 
+ namespace recompui {
+     using set_option_value_t = std::function<void(const std::string &option_id, recomp::config::ConfigValueVariant value)>;
+@@ -92,6 +94,12 @@
+ class ConfigOptionString : public ConfigOptionElement {
+ protected:
+     TextInput *text_input = nullptr;
++    // The chat key (option id "chat_key"): a button showing the key; pressed, it waits for the next key on the keyboard (Esc: as it
++    // was; Backspace or Delete: none). The value is the key's SDL name.
++    Button *key_button = nullptr;
++    bool key_waiting = false;
++    bool key_armed = false;
++    virtual void process_event(const Event &e) override;
+ 
+     std::string_view get_type_name() override { return "ConfigOptionString"; }
+ public:

@@ -1,0 +1,11 @@
+diff --git a/recompui/src/base/ui_launcher.cpp b/recompui/src/base/ui_launcher.cpp
+--- a/recompui/src/base/ui_launcher.cpp
++++ b/recompui/src/base/ui_launcher.cpp
+@@ -552,6 +552,7 @@
+         version_label->set_position(Position::Absolute);
+         version_label->set_bottom(4.0f);
+         version_label->set_left(4.0f);
++        version_label->set_display(Display::None);   // (the library's own version, not the game's: not shown)
+     }
+ 
+     void LauncherMenu::remove_default_title() {

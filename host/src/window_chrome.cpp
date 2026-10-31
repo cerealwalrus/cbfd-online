@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 
@@ -285,6 +286,11 @@ void conker::window_chrome::attach(SDL_Window* window, bool maximized, int x, in
         std::printf("[window] couldn't take over the frame: the Windows title bar stays\n");
     }
     // the frame recomputed (none), the window's place set (its whole size now the picture), then shown
+    // (0.11.4) not maximized yet (frontend.cpp's create_window makes it so): its place first, then maximized, so Windows sizes it to the
+    // screen and keeps 1600 x 900 as its place when it's restored
+    if (IsZoomed(window_handle)) {
+        ShowWindow(window_handle, SW_RESTORE);
+    }
     SetWindowPos(window_handle, nullptr, x, y, width, height, SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
     ShowWindow(window_handle, maximized ? SW_SHOWMAXIMIZED : SW_SHOW);
     SetForegroundWindow(window_handle);
@@ -302,6 +308,14 @@ void conker::window_chrome::attach(SDL_Window* window, bool maximized, int x, in
 
 bool conker::window_chrome::custom() {
     return active && !restored.load();
+}
+
+void conker::window_chrome::hide_for_quit() {
+#if defined(_WIN32)
+    if (window_handle != nullptr) {
+        ShowWindowAsync(window_handle, SW_HIDE);   // (async: from any thread, without waiting on the window's own)
+    }
+#endif
 }
 
 void conker::window_chrome::minimize() {
@@ -330,6 +344,67 @@ void conker::window_chrome::update(bool game_started, bool settings_full_screen)
     }
     HWND hwnd = window_handle;
     zoomed = IsZoomed(hwnd) != 0;
+    {
+        // (0.11.4) Opened as a 1600 x 900 window, the launcher's buttons and the mouse disagreed (the button lit was one or two above
+        // the cursor, more so further from the window's middle) until F11 was pressed twice: the window maximized and put back to
+        // 1600 x 900. Neither a 2-pixel resize nor a maximize and back as it opened did (the window, SDL and the picture all agree on
+        // its size). The sizes, and where the mouse is by Windows and by SDL, are written to launcher_window.log for the first 10
+        // seconds; 
+        static int frames_up = 0;
+        static bool cycled = false;
+        static FILE* log_file = nullptr;
+        static auto opened_at = std::chrono::steady_clock::now();
+        static int last_logged_ms = -1000;
+        const auto log_sizes = [&](const char* when) {
+            if (log_file == nullptr) {
+                log_file = std::fopen("launcher_window.log", "w");
+                if (log_file == nullptr) {
+                    return;
+                }
+            }
+            RECT client{};
+            GetClientRect(hwnd, &client);
+            RECT outer{};
+            GetWindowRect(hwnd, &outer);
+            int w = 0, h = 0, pw = 0, ph = 0, mx = 0, my = 0;
+            SDL_GetWindowSize(chrome_window, &w, &h);
+            SDL_GetWindowSizeInPixels(chrome_window, &pw, &ph);
+            SDL_GetMouseState(&mx, &my);
+            POINT cursor{};
+            GetCursorPos(&cursor);
+            ScreenToClient(hwnd, &cursor);
+            const int ms = (int)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - opened_at).count();
+            std::fprintf(log_file, "%6d ms frame %d %s: picture %ld x %ld, window %ld x %ld at %ld %ld, SDL %d x %d (%d x %d pixels), "
+                "mouse by Windows %ld %ld, by SDL %d %d, dpi %u%s\n", ms, frames_up, when, client.right - client.left, client.bottom - client.top,
+                outer.right - outer.left, outer.bottom - outer.top, outer.left, outer.top, w, h, pw, ph, cursor.x, cursor.y, mx, my,
+                window_dpi(hwnd), IsZoomed(hwnd) ? ", maximized" : "");
+            std::fflush(log_file);
+        };
+        // (0.11.4) maximized but not the work area's size (the picture the screen's, squeezed into a smaller window: the buttons lit above
+        // the cursor): maximized again, properly
+        if (!game_started && IsZoomed(hwnd) && !IsIconic(hwnd)) {
+            static int fixes = 0;
+            RECT outer{};
+            GetWindowRect(hwnd, &outer);
+            const RECT area = work_area(hwnd);
+            if (fixes < 5 && (outer.right - outer.left) < (area.right - area.left) - 40) {
+                fixes++;
+                log_sizes("maximized but smaller than the screen: maximized again");
+                std::printf("[window] maximized but %ld x %ld: maximized again\n", outer.right - outer.left, outer.bottom - outer.top);
+                ShowWindow(hwnd, SW_RESTORE);
+                ShowWindow(hwnd, SW_MAXIMIZE);
+            }
+        }
+        if (!game_started && frames_up < 100000) {
+            frames_up++;
+            const int ms = (int)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - opened_at).count();
+            if (ms < 10000 && ms - last_logged_ms >= 500) {
+                last_logged_ms = ms;
+                log_sizes("the launcher");
+            }
+            (void)cycled;   // (the maximize and back as it opened is gone: it flashed, and didn't fix the buttons)
+        }
+    }
     {
         // (0.10.49) the Graphics tab's Windowed Size changed: the window takes the new size at once (not in full screen)
         static int size_seen = -1;

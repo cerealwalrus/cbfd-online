@@ -18,9 +18,14 @@
 // from the game's own field of view instead, divided by how much wider the view is
 // (conker::field_of_view::adjust_cull_scales, before widescreen.cpp widens it for the window).
 //
-// Only player 1's camera (index 0) in the normal camera (where the C-buttons turn it: not
-// R-Look, aiming, cutscenes or other special cameras, so the scope's zoom and cutscenes' framing
-// are the game's). Changing between them eases the change over a few frames.
+// Only the normal camera (where the C-buttons turn it: not R-Look, aiming, cutscenes or other
+// special cameras, so the scope's zoom and cutscenes' framing are the game's). Changing between
+// them eases the change over a few frames.
+//
+// (0.11.4) Online too: every camera with its own player's setting, which travels in that player's
+// input each frame (net_session.cpp), so every machine widens every camera alike and their games
+// stay the same. Online alone: single player keeps the game's own view. 40 to 75
+// degrees tall (the game's own is 50), clamped on every machine whatever a player sends.
 
 #include <algorithm>
 #include <cmath>
@@ -35,14 +40,21 @@ namespace {
     constexpr uint32_t cameras = 0x800BE628; // D_800BE628, a pointer to the cameras
     constexpr uint32_t camera_size = 0x180;
     constexpr uint32_t cull_scales = 0x800D35E0; // cullScaleX_800D35E0, then y
+    constexpr uint32_t game_cameras = 0x800DBFF0; // D_800DBFF0, the game's cameras (0x9A0 each), +0x23D the player
+    constexpr uint32_t game_camera_size = 0x9A0;
     constexpr float degrees_to_radians = 3.14159265358979f / 180.0f;
     constexpr float max_fov = 150.0f;
     // Each frame, the widening moves this fraction of the way to the setting's.
     constexpr float ease = 0.25f;
+    // (0.11.4) every camera's own (online each player's; offline the one controller 1 plays): players 1 to 4 and the 5th's extra one
+    constexpr int view_cameras = 5;
 
-    float widening = 1.0f;      // how much player 1's view is widened now (tan of the half angle)
-    float game_fov[2] = {};     // the game's own fields of view (x, y) before them
-    float widened[2] = { 1.0f, 1.0f }; // how much wider (tan of the half angle) they made them
+    struct View {
+        float widening = 1.0f;      // how much this view is widened now (tan of the half angle)
+        float game_fov[2] = {};     // the game's own fields of view (x, y) before them
+        float widened[2] = { 1.0f, 1.0f }; // how much wider (tan of the half angle) they made them
+    };
+    View views[view_cameras];
 
     float read_float(uint8_t* rdram, gpr base, int32_t offset) {
         uint32_t word = (uint32_t)MEM_W(offset, base);
@@ -66,14 +78,23 @@ namespace {
         return 2.0f * std::atan(t) / degrees_to_radians;
     }
 
-    // The setting's vertical field of view, or 0 without one (the build without the menus).
-    float setting_degrees() {
-        if (conker::netsession::active()) {
-            return 0.0f;   // online every machine's game has to see the same camera
-        }
+    // (0.11.4) The vertical field of view camera i is to have, or 0 for the game's own. Online every camera's player's own, from the
+    // frame's agreed input (net_session.cpp's field_of_view, the same on every machine, so every machine's game holds the same
+    // cameras); offline none: the setting is for online alone.
+    float setting_degrees(uint8_t* rdram, int i) {
 #if defined(CONKER_RT64)
-        return conker::look_aim::camera_field_of_view();
+        if (conker::netsession::active()) {
+            const uint32_t base = (uint32_t)MEM_W(0, (gpr)(int32_t)game_cameras);
+            if ((base & 0xFF000000u) != 0x80000000u) {
+                return 0.0f;
+            }
+            const int player = (int)MEM_BU(0x23D, (gpr)(int32_t)(base + (uint32_t)i * game_camera_size));
+            return player >= 0 && player < 5 ? (float)conker::netsession::field_of_view(player) : 0.0f;
+        }
+        return 0.0f;   // (0.11.4: the setting is for online alone; single player keeps the game's own view)
 #else
+        (void)rdram;
+        (void)i;
         return 0.0f;
 #endif
     }
@@ -82,40 +103,48 @@ namespace {
 // func_1510B128, at 0x1510B1A8: both fields of view are stored, $v0 is the camera and $s0 its
 // offset in the array.
 extern "C" void conker_field_of_view(uint8_t* rdram, recomp_context* ctx) {
-    if ((uint32_t)ctx->r16 != 0) {
+    const uint32_t offset = (uint32_t)ctx->r16;
+    if (offset % camera_size != 0 || offset / camera_size >= (uint32_t)view_cameras) {
         return;
     }
+    const int i = (int)(offset / camera_size);
+    View& v = views[i];
     const gpr camera = ctx->r2;
     const float base_y = read_float(rdram, camera, 0x70);
-    const float setting = setting_degrees();
+    const float setting = setting_degrees(rdram, i);
     float target = 1.0f;
-    if (conker::mouse_camera::normal_camera() && setting > 0.0f && base_y > 0.0f && base_y < 180.0f) {
+    if (conker::mouse_camera::camera_normal(i) && setting > 0.0f && base_y > 0.0f && base_y < 180.0f) {
         target = half_tan(setting) / half_tan(base_y);
     }
-    widening += (target - widening) * ease;
-    if (std::fabs(widening - target) < 0.001f) {
-        widening = target;
+    v.widening += (target - v.widening) * ease;
+    if (std::fabs(v.widening - target) < 0.001f) {
+        v.widening = target;
     }
     const float x = read_float(rdram, camera, 0x74);
     const float y = read_float(rdram, camera, 0x78);
-    game_fov[0] = x;
-    game_fov[1] = y;
-    widened[0] = widened[1] = 1.0f;
-    if (widening == 1.0f || x <= 0.0f || y <= 0.0f || x >= 180.0f || y >= 180.0f) {
+    v.game_fov[0] = x;
+    v.game_fov[1] = y;
+    v.widened[0] = v.widened[1] = 1.0f;
+    if (v.widening == 1.0f || x <= 0.0f || y <= 0.0f || x >= 180.0f || y >= 180.0f) {
         return;
     }
-    const float wide_x = std::min(from_half_tan(half_tan(x) * widening), max_fov);
-    const float wide_y = std::min(from_half_tan(half_tan(y) * widening), max_fov);
+    const float wide_x = std::min(from_half_tan(half_tan(x) * v.widening), max_fov);
+    const float wide_y = std::min(from_half_tan(half_tan(y) * v.widening), max_fov);
     write_float(rdram, camera, 0x74, wide_x);
     write_float(rdram, camera, 0x78, wide_y);
-    widened[0] = half_tan(wide_x) / half_tan(x);
-    widened[1] = half_tan(wide_y) / half_tan(y);
+    v.widened[0] = half_tan(wide_x) / half_tan(x);
+    v.widened[1] = half_tan(wide_y) / half_tan(y);
 }
 
 void conker::field_of_view::adjust_cull_scales(uint8_t* rdram, uint64_t camera_address) {
     const gpr camera = (gpr)camera_address;
-    const gpr first = (gpr)(int32_t)MEM_W(0, (gpr)(int32_t)cameras);
-    if ((uint32_t)camera != (uint32_t)first || (widened[0] == 1.0f && widened[1] == 1.0f)) {
+    const uint32_t first = (uint32_t)MEM_W(0, (gpr)(int32_t)cameras);
+    const uint32_t at = (uint32_t)camera;
+    if (first == 0 || at < first || (at - first) % camera_size != 0 || (at - first) / camera_size >= (uint32_t)view_cameras) {
+        return;
+    }
+    const View& v = views[(at - first) / camera_size];
+    if (v.widened[0] == 1.0f && v.widened[1] == 1.0f) {
         return;
     }
     // The game's scales at its own fields of view (as updateCullScales_1510B958 works them out),
@@ -127,7 +156,13 @@ void conker::field_of_view::adjust_cull_scales(uint8_t* rdram, uint64_t camera_a
         if (base_fov <= 0.0f) {
             continue;
         }
-        const float scale = base_scale - (game_fov[i] / base_fov - 1.0f);
-        write_float(rdram, scales, i * 4, scale / widened[i]);
+        const float scale = base_scale - (v.game_fov[i] / base_fov - 1.0f);
+        write_float(rdram, scales, i * 4, scale / v.widened[i]);
+    }
+}
+
+void conker::field_of_view::reset() {
+    for (View& v : views) {
+        v = View{};
     }
 }

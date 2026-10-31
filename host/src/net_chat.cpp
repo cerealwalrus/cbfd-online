@@ -56,28 +56,21 @@ namespace {
     bool y_was_down = false, enter_was_down = false;
     std::string shown_signature;
 
-    // The General tab's Chat Key setting (the Online tab's before possess67) (the settings are made by add_options; without them, Y).
-    enum class ChatKey : uint32_t { Y, T, V, B, N, M, Tab, Backtick, Backslash, Off };
-    const std::string chat_key_option = "online_chat_key";
-
-    SDL_Scancode chat_scancode(bool* off) {
-        *off = false;
-        uint32_t value = 0;
-        if (recomp::config::Config* config = recompui::config::find_option_config(chat_key_option)) {
-            value = std::get<uint32_t>(config->get_option_value(chat_key_option));
+    // (0.11.4) the General tab's Chat: Key, a key of the keyboard bound to it (recomp/recompfrontend_chatkey.patch: its button waits for
+    // the next key), Y to begin with, in place of its preset keys; none, chat is off (the others' lines still show)
+    bool chat_key_down(bool* none_bound) {
+        std::string name = "Y";
+        if (recomp::config::Config* config = recompui::config::find_option_config("chat_key")) {
+            name = std::get<std::string>(config->get_option_value("chat_key"));
         }
-        switch ((ChatKey)value) {
-            case ChatKey::T: return SDL_SCANCODE_T;
-            case ChatKey::V: return SDL_SCANCODE_V;
-            case ChatKey::B: return SDL_SCANCODE_B;
-            case ChatKey::N: return SDL_SCANCODE_N;
-            case ChatKey::M: return SDL_SCANCODE_M;
-            case ChatKey::Tab: return SDL_SCANCODE_TAB;
-            case ChatKey::Backtick: return SDL_SCANCODE_GRAVE;
-            case ChatKey::Backslash: return SDL_SCANCODE_BACKSLASH;
-            case ChatKey::Off: *off = true; return SDL_SCANCODE_UNKNOWN;
-            default: return SDL_SCANCODE_Y;
+        const SDL_Scancode code = name.empty() ? SDL_SCANCODE_UNKNOWN : SDL_GetScancodeFromName(name.c_str());
+        *none_bound = code == SDL_SCANCODE_UNKNOWN;
+        if (*none_bound) {
+            return false;
         }
+        int count = 0;
+        const Uint8* keys = SDL_GetKeyboardState(&count);
+        return (int)code < count && keys[code] != 0;
     }
 
     int64_t now_ms() {
@@ -240,6 +233,11 @@ void conker::netchat::update() {
     const clock::time_point now = clock::now();
     // lines that came in
     for (auto& [slot, text] : conker::netsession::chat_poll()) {
+        // (/bot from anyone: applied on every machine alike)
+        const std::string reply = conker::mp_characters::bot_command(text);
+        if (!reply.empty()) {
+            lines.push_back({ -1, reply, now + line_time });
+        }
         lines.push_back({ slot, text, now + line_time });
         while (lines.size() > 50) {
             lines.pop_front();
@@ -247,8 +245,7 @@ void conker::netchat::update() {
     }
     const Uint8* keys = SDL_GetKeyboardState(nullptr);
     bool chat_off = false;
-    const SDL_Scancode chat_scan = chat_scancode(&chat_off);
-    const bool y_down = !chat_off && keys[chat_scan] != 0;
+    const bool y_down = chat_key_down(&chat_off) && !chat_off;
     const bool enter_down = keys[SDL_SCANCODE_RETURN] != 0 || keys[SDL_SCANCODE_KP_ENTER] != 0;
     const bool focused = SDL_GetKeyboardFocus() != nullptr;
     if (!open) {
@@ -272,7 +269,11 @@ void conker::netchat::update() {
         }
         else {
             const bool sent = !text.empty() && conker::netsession::chat_send(text);
-            (void)sent;
+            // (/bot offline, or as sent: applied here too; the others apply it as it reaches them)
+            if (command.rfind("/bot", 0) == 0) {
+                const std::string reply = conker::mp_characters::bot_command(text);
+                lines.push_back({ -1, reply, now + std::chrono::seconds(10) });
+            }
         }
         close_box();
     }
@@ -299,26 +300,4 @@ void conker::netchat::update() {
     y_was_down = y_down;
     enter_was_down = enter_down;
     refresh_lines(now);
-}
-
-// The Online tab of the settings.
-void conker::netchat::add_options(recomp::config::Config& config) {
-    using EnumOptions = const std::vector<recomp::config::ConfigOptionEnumOption>;
-    static EnumOptions keys = {
-        {ChatKey::Y, "Y", "Y"},
-        {ChatKey::T, "T", "T"},
-        {ChatKey::V, "V", "V"},
-        {ChatKey::B, "B", "B"},
-        {ChatKey::N, "N", "N"},
-        {ChatKey::M, "M", "M"},
-        {ChatKey::Tab, "Tab", "Tab"},
-        {ChatKey::Backtick, "Backtick", "` (backtick)"},
-        {ChatKey::Backslash, "Backslash", "\\ (backslash)"},
-        {ChatKey::Off, "Off", "Off"},
-    };
-    config.add_enum_option(chat_key_option, "Chat: Key",
-        "The keyboard key that opens the text chat in an online game. Pick one the controls don't use, as the key does what it's "
-        "bound to as well. Enter sends the line you typed (on an empty line it closes the box). <recomp-color primary>Off</recomp-color> "
-        "turns typing off; the others' lines still show.",
-        keys, ChatKey::Y);
 }

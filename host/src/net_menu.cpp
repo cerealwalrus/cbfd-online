@@ -497,7 +497,7 @@ namespace {
     // (0.10.73) the co-op stage is running online: the pause screen (drawn only on a machine whose menu is open, and for its fade
     // after) gets the co-op layout, whether the menu is still open or fading out
     bool coop_pause_screen() {
-        return conker::netsession::active() && coop_started && coop_players >= 2;
+        return conker::netsession::active() && coop_started && coop_players >= 1;
     }
     uint32_t coop_loaded_frame() {
         return coop_loaded_at.load();
@@ -753,7 +753,10 @@ extern "C" int conker_coop_start(uint8_t* rdram, recomp_context* ctx) {
             if (controller < 0 || controller >= 4 || pick < 0 || pick >= 32) {
                 continue;
             }
-            const uint8_t character = (uint8_t)MEM_BU(0, (gpr)(int32_t)(0x800AB57Cu + (uint32_t)pick * 8u + 6u));
+            // (0.11.4) Koala Kong (pick 22, past the game's table): made as the teddy, his model put on (mp_characters.cpp)
+            const bool kong = conker::mp_characters::kong_pick(pick);
+            const uint8_t character = kong ? (uint8_t)0x26 : (uint8_t)MEM_BU(0, (gpr)(int32_t)(0x800AB57Cu + (uint32_t)pick * 8u + 6u));
+            conker::mp_characters::kong_set_picked(controller, kong);
             coop_characters[controller] = (int8_t)character;
             if (at > 0 && at < (int)sizeof(line)) {
                 at += std::snprintf(line + at, sizeof(line) - (size_t)at, " player %d pick %d character %u;", controller + 1, pick, (unsigned)character);
@@ -764,10 +767,12 @@ extern "C" int conker_coop_start(uint8_t* rdram, recomp_context* ctx) {
     const recomp_context saved = *ctx;
     func_151E30C4(rdram, ctx);
     *ctx = saved;
-    coop_started = players >= 2;
+    // (0.11.4) one player alone too: the stage is started as it is for two or more (their character as picked, the co-op's handling
+    // throughout), not left as the one-player game's (Conker, whoever was picked: Koala Kong never came)
+    coop_started = players >= 1;
     coop_players = players;
     coop_restart_pending = false;
-    if (players >= 2) {
+    if (players >= 1) {
         // 0.10.30, stage 2: every player who joined is a player of the stage, each with a Conker of their own (character 0, the
         // one-player game's) and a camera of their own: the scene's request (func_1501C730, mode 6) left with the player mask at
         // D_800BEA00 (1 for the one-player game) and the screen's layout at D_800BEA04 (0, one screen); the scene's load
@@ -809,6 +814,24 @@ extern "C" void conker_online_no_back(uint8_t* rdram, recomp_context* ctx) {
         return;
     }
     const gpr gs = (gpr)(int32_t)state;
+    // (0.11.4, the race's character select missing the second time) the menus' state as it changes: the barrels (+0x3E), the one
+    // zoomed into (+0x2B), the lobby's screens (+0x3F, +0x40), the mode (+0x42) and the players joined (D_8008FE40)
+    {
+        static uint32_t last = 0xFFFFFFFFu;
+        static int told = 0;
+        const uint32_t now = ((uint32_t)MEM_BU(0x3E, gs) << 24) | ((uint32_t)MEM_BU(0x2B, gs) << 16) | ((uint32_t)MEM_BU(0x3F, gs) << 8) |
+            (uint32_t)MEM_BU(0x40, gs);
+        const uint32_t extra = ((uint32_t)MEM_BU(0x42, gs) << 8) | (uint32_t)MEM_BU(0, (gpr)(int32_t)0x8008FE40);
+        if ((now ^ (extra << 1)) != last && told < 300) {
+            last = now ^ (extra << 1);
+            told++;
+            char line[160];
+            std::snprintf(line, sizeof(line), "[menus] f=%u barrels %u, zoomed %u, screens %u %u, mode %u, players %d", (unsigned)conker::netsession::frame(),
+                (unsigned)MEM_BU(0x3E, gs), (unsigned)MEM_BU(0x2B, gs), (unsigned)MEM_BU(0x3F, gs), (unsigned)MEM_BU(0x40, gs),
+                (unsigned)MEM_BU(0x42, gs), (int)(int8_t)MEM_B(0, (gpr)(int32_t)0x8008FE40));
+            conker::netsession::log(line);
+        }
+    }
     coop_started = false;   // (0.10.31) back in the bar: no co-op stage running
     coop_restart_pending = false;
     if (MEM_B(0x3E, gs) != 1) {
@@ -933,7 +956,7 @@ namespace {
 // read, $s0 Conker, $t0 his control block), a player's Conker with no weapon in the look (+0x198 of the control block set) reads it
 // as set. Only the game's own memory, the same on every machine.
 extern "C" void conker_coop_look_strafe(uint8_t* rdram, recomp_context* ctx) {
-    if (ctx->r14 != 0 || !conker::netsession::active() || !conker::netmenu::coop_running(rdram) || coop_players < 2) {
+    if (ctx->r14 != 0 || !conker::netsession::active() || !conker::netmenu::coop_running(rdram) || coop_players < 1) {
         return;
     }
     const uint32_t object = (uint32_t)ctx->r16;
@@ -1019,7 +1042,7 @@ namespace {
 }
 
 extern "C" void conker_coop_camera_distance(uint8_t* rdram, recomp_context* ctx) {
-    if (!conker::netsession::active() || !conker::netmenu::coop_running(rdram) || coop_players < 2) {
+    if (!conker::netsession::active() || !conker::netmenu::coop_running(rdram) || coop_players < 1) {
         return;
     }
     coop_camera_near(rdram, ctx->r4);
@@ -1370,7 +1393,7 @@ extern "C" void func_15063570(uint8_t* rdram, recomp_context* ctx);
 extern "C" void func_150634E4(uint8_t* rdram, recomp_context* ctx);
 
 extern "C" void conker_coop_weapon(uint8_t* rdram, recomp_context* ctx, int which) {
-    if (!conker::netsession::active() || !coop_started || coop_players < 2) {
+    if (!conker::netsession::active() || !coop_started || coop_players < 1) {
         return;
     }
     constexpr uint32_t objects = 0x800CC2D0, object_size = 0x32C;
@@ -1427,7 +1450,7 @@ extern "C" void conker_coop_near_test(uint8_t* rdram, recomp_context* ctx, int w
         return;
     }
     coop_near_test_changed = false;
-    if (!conker::netsession::active() || !coop_started || coop_players < 2) {
+    if (!conker::netsession::active() || !coop_started || coop_players < 1) {
         return;
     }
     const int current = (int)(int8_t)MEM_B(0, (gpr)(int32_t)0x800C3E78);   // gCurrentObjectIndex
@@ -1478,7 +1501,7 @@ namespace {
 
     // the HUD's state for players 2-4: made from player 1's as a stage (re)loads, without player 1's allocated pieces
     bool hud_ready(uint8_t* rdram) {
-        if (!conker::netsession::active() || !conker::netmenu::coop_running(rdram) || coop_players < 2) {
+        if (!conker::netsession::active() || !conker::netmenu::coop_running(rdram) || coop_players < 1) {
             return false;
         }
         if (MEM_BU(0, (gpr)(int32_t)0x800BE616) != 0) {
@@ -1608,7 +1631,7 @@ bool conker::netmenu::coop_hud_range(int k, uint32_t* start, uint32_t* end) {
 // players of the mask; the one-player game's reload asks for its own (player 1 alone, one screen), so the other players were left
 // watching player 1. In co-op, a load of the stage's scene gets the stage's players and layout again (as conker_coop_start set them).
 extern "C" void conker_coop_scene_load(uint8_t* rdram, recomp_context* ctx) {
-    if (!conker::netsession::active() || !coop_started || coop_players < 2 || coop_mask == 0) {
+    if (!conker::netsession::active() || !coop_started || coop_players < 1 || coop_mask == 0) {
         return;
     }
     const uint32_t scene = (uint32_t)ctx->r6;
@@ -1674,7 +1697,7 @@ namespace {
 
 // func_1507C8FC at 0x1507CBA0: player $s2's control block's +0x122 (its continue) is read next; $s1 the character
 extern "C" void conker_coop_continue(uint8_t* rdram, recomp_context* ctx) {
-    if (!conker::netsession::active() || !coop_started || coop_players < 2) {
+    if (!conker::netsession::active() || !coop_started || coop_players < 1) {
         return;
     }
     const int i = (int)(int32_t)ctx->r18;
@@ -1704,7 +1727,7 @@ extern "C" void conker_coop_continue(uint8_t* rdram, recomp_context* ctx) {
 // (conker_coop_start: func_151E30C4 for the table's stage, then the players' mask, the screens' layout and the counts), once; the
 // load that follows is the co-op stage's (conker_coop_scene_load). Every machine at the same frame.
 extern "C" int conker_coop_out(uint8_t* rdram, recomp_context* ctx) {
-    if (!conker::netsession::active() || !coop_started || coop_players < 2) {
+    if (!conker::netsession::active() || !coop_started || coop_players < 1) {
         return 0;
     }
     const int i = (int)(int16_t)(uint16_t)(uint32_t)ctx->r4;

@@ -1,0 +1,3 @@
+# The ogre's sounds (mp_characters.cpp, conker_extra_sound): a sound the game plays for him, then the ones played instead, in turn.
+# Hexadecimal sound numbers. 005A: the grunt as he swings (3B's); the ogre's own grunts.
+005A 03DB 03DC 03DD 03E1 03E2 03E3 03E4 03E5 03EB 03EC 03ED 03EE 03EF 03F0 0432

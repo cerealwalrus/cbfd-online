@@ -1,0 +1,25 @@
+diff --git a/recompui/src/config/ui_config_page_controls.cpp b/recompui/src/config/ui_config_page_controls.cpp
+--- a/recompui/src/config/ui_config_page_controls.cpp
++++ b/recompui/src/config/ui_config_page_controls.cpp
+@@ -356,6 +356,8 @@
+     {
+         body->get_right()->clear_children();
+         description_container = context.create_element<Element>(body->get_right(), 0, "p", true);
++        description_container->set_font_size(28.0f);
++        description_container->set_line_height(36.0f);
+         description_container->set_text("");
+     }
+ }
+diff --git a/recompui/src/config/ui_config_page_options_menu.cpp b/recompui/src/config/ui_config_page_options_menu.cpp
+--- a/recompui/src/config/ui_config_page_options_menu.cpp
++++ b/recompui/src/config/ui_config_page_options_menu.cpp
+@@ -23,7 +23,8 @@
+     render_config_options();
+     description_container = context.create_element<Element>(body->get_right(), 0, "p", true);
+     description_container->set_typography(theme::Typography::Body);
+-    description_container->set_line_height(28.0f);
++    description_container->set_font_size(28.0f);
++    description_container->set_line_height(36.0f);
+     description_container->set_padding(8.0f);
+     set_description_text("");
+ 

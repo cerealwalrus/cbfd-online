@@ -1,3 +1,16 @@
+diff --git a/recompinput/include/recompinput/input_types.h b/recompinput/include/recompinput/input_types.h
+--- a/recompinput/include/recompinput/input_types.h
++++ b/recompinput/include/recompinput/input_types.h
+@@ -21,7 +21,8 @@
+         DEFINE_INPUT(DPAD_UP, 0x0800, "D-Pad Up") \
+         DEFINE_INPUT(DPAD_DOWN, 0x0400, "D-Pad Down") \
+         DEFINE_INPUT(DPAD_LEFT, 0x0200, "D-Pad Left") \
+-        DEFINE_INPUT(DPAD_RIGHT, 0x0100, "D-Pad Right")
++        DEFINE_INPUT(DPAD_RIGHT, 0x0100, "D-Pad Right") \
++        DEFINE_INPUT(GRENADE, 0x0040, "Grenade")
+ 
+     #define DEFINE_N64_AXIS_INPUTS() \
+         DEFINE_INPUT(Y_AXIS_POS, 0, "Up") \
 diff --git a/recompinput/src/input_events.cpp b/recompinput/src/input_events.cpp
 index c76a1dc..e17c26f 100644
 --- a/recompinput/src/input_events.cpp
@@ -24,6 +37,17 @@ index c76a1dc..e17c26f 100644
      default:
          queue_if_enabled(event);
          break;
+diff --git a/recompinput/src/input_mapping.cpp b/recompinput/src/input_mapping.cpp
+--- a/recompinput/src/input_mapping.cpp
++++ b/recompinput/src/input_mapping.cpp
+@@ -21,6 +21,7 @@
+         { GameInput::DPAD_RIGHT,     { InputField::keyboard(SDL_SCANCODE_L) } },
+         { GameInput::DPAD_UP,        { InputField::keyboard(SDL_SCANCODE_I) } },
+         { GameInput::DPAD_DOWN,      { InputField::keyboard(SDL_SCANCODE_K) } },
++        { GameInput::GRENADE,        { InputField::keyboard(SDL_SCANCODE_G) } },
+         { GameInput::X_AXIS_NEG,     { InputField::keyboard(SDL_SCANCODE_A) } },
+         { GameInput::X_AXIS_POS,     { InputField::keyboard(SDL_SCANCODE_D) } },
+         { GameInput::Y_AXIS_POS,     { InputField::keyboard(SDL_SCANCODE_W) } },
 diff --git a/recompinput/src/input_state.cpp b/recompinput/src/input_state.cpp
 index 03ed871..d6e76c9 100644
 --- a/recompinput/src/input_state.cpp
@@ -298,6 +322,51 @@ index 86428c9..39f7d0e 100644
      slider->add_value_changed_callback([this](double v){
          this->set_option_value(this->option_id, v);
      });
+diff --git a/recompui/src/config/ui_config_page_options_menu.cpp b/recompui/src/config/ui_config_page_options_menu.cpp
+--- a/recompui/src/config/ui_config_page_options_menu.cpp
++++ b/recompui/src/config/ui_config_page_options_menu.cpp
+@@ -1,5 +1,10 @@
+ #include "ui_config_page_options_menu.h"
+ 
++#include <algorithm>
++#include <cctype>
++#include <string>
++#include <vector>
++
+ 
+ namespace recompui {
+ 
+@@ -181,7 +186,29 @@
+             this->on_set_option_value(option_id, value);
+         };
+         auto schema = config->get_config_schema();
+-        for (size_t i = 0; i < schema.options.size(); i++) {
++        // The options listed in alphabetical order of their names (each keeps its own index in the schema)
++        std::vector<size_t> order(schema.options.size());
++        for (size_t i = 0; i < order.size(); i++) {
++            order[i] = i;
++        }
++        const auto lower = [](const std::string &text) {
++            std::string out = text;
++            for (char &c : out) {
++                c = (char)std::tolower((unsigned char)c);
++            }
++            return out;
++        };
++        // Right Stick: Free Camera listed right after Aiming: Swap Sticks (the rest in alphabetical order)
++        const auto key = [&](size_t i) {
++            if (schema.options[i].id == "stick_free_camera") {
++                return std::string("aiming: swap sticks~");
++            }
++            return lower(schema.options[i].name);
++        };
++        std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) {
++            return key(a) < key(b);
++        });
++        for (size_t i : order) {
+             auto &config_option = schema.options[i];
+             ConfigOptionElement *element = nullptr;
+             switch (config_option.type) {
 diff --git a/recompui/src/config/ui_config_tab_general.cpp b/recompui/src/config/ui_config_tab_general.cpp
 index 296ce0e..193466d 100644
 --- a/recompui/src/config/ui_config_tab_general.cpp
@@ -331,6 +400,73 @@ index 296ce0e..193466d 100644
      }
      
      double general::get_joystick_deadzone() {
+diff --git a/recompui/src/config/ui_config_tab_graphics.cpp b/recompui/src/config/ui_config_tab_graphics.cpp
+--- a/recompui/src/config/ui_config_tab_graphics.cpp
++++ b/recompui/src/config/ui_config_tab_graphics.cpp
+@@ -81,6 +81,7 @@
+             {ultramodern::renderer::RefreshRate::Original, "Original"},
+             {ultramodern::renderer::RefreshRate::Display, "Display"},
+             {ultramodern::renderer::RefreshRate::Manual, "Manual"},
++            {ultramodern::renderer::RefreshRate::NoLeSync, "NoLeSync"},
+         };
+ 
+         static EnumOptionVector hpfb_options = {
+@@ -91,7 +92,6 @@
+ 
+         static EnumOptionVector hud_ratio_mode_options = {
+             {ultramodern::renderer::HUDRatioMode::Original, "Original"},
+-            {ultramodern::renderer::HUDRatioMode::Clamp16x9, "Clamp16x9", "16:9"},
+             {ultramodern::renderer::HUDRatioMode::Full, "Expand"},
+         };
+ 
+@@ -168,6 +168,10 @@
+             new_config.res_option = get_graphics_enum_value<ultramodern::renderer::Resolution>(graphics::options::res_option);
+             new_config.wm_option = get_graphics_enum_value<ultramodern::renderer::WindowMode>(graphics::options::wm_option);
+             new_config.hr_option = get_graphics_enum_value<ultramodern::renderer::HUDRatioMode>(graphics::options::hr_option);
++            // (16:9 is no longer offered: a setting saved with it is Expand's)
++            if (new_config.hr_option == ultramodern::renderer::HUDRatioMode::Clamp16x9) {
++                new_config.hr_option = ultramodern::renderer::HUDRatioMode::Full;
++            }
+             new_config.api_option = get_graphics_enum_value<ultramodern::renderer::GraphicsApi>(graphics::options::api_option);
+             new_config.ar_option = get_graphics_enum_value<ultramodern::renderer::AspectRatio>(graphics::options::ar_option);
+             new_config.msaa_option = get_graphics_enum_value<ultramodern::renderer::Antialiasing>(graphics::options::msaa_option);
+@@ -318,7 +322,8 @@
+                     graphics::options::rr_manual_value,
+                     graphics::options::rr_option,
+                     ultramodern::renderer::RefreshRate::Original,
+-                    ultramodern::renderer::RefreshRate::Display
++                    ultramodern::renderer::RefreshRate::Display,
++                    ultramodern::renderer::RefreshRate::NoLeSync
+                 );
+             }
+ 
+@@ -336,9 +341,9 @@
+             config.add_enum_option(
+                 graphics::options::hr_option,
+                 "HUD Placement",
+-                "Adjusts the placement of HUD elements to fit the selected aspect ratio. <recomp-color primary>Expand</recomp-color> will use the aspect ratio of the game's output window.",
++                "Adjusts the placement of HUD elements. <recomp-color primary>Original</recomp-color> keeps them where the game puts them, inside the 4:3 frame. <recomp-color primary>Expand</recomp-color> moves the HUD at the screen's sides out to the edges of the game's window (online, each player's radar, weapon and health).",
+                 hud_ratio_mode_options,
+-                ultramodern::renderer::HUDRatioMode::Clamp16x9
++                ultramodern::renderer::HUDRatioMode::Original
+             );
+ 
+             config.add_enum_option(
+diff --git a/recompui/src/elements/ui_document.cpp b/recompui/src/elements/ui_document.cpp
+index a60c585..9650a6b 100644
+--- a/recompui/src/elements/ui_document.cpp
++++ b/recompui/src/elements/ui_document.cpp
+@@ -198,7 +198,9 @@ namespace recompui {
+ 
+             int cur_element_index = get_element_index(this_element, nav_parent->nav_children);
+             if (cur_element_index == -1) {
+-                throw std::runtime_error("This should never ever ever happen. Element not found in its parent's nav children.");
++                // (CBFD: it did happen, a gamepad press on the launcher while a page was being rebuilt (the online lobby starting
++                // the game) took the launcher down: staying where it is instead.)
++                return this_element;
+             }
+ 
+             // Process grid navigation if retained_grid_index is valid and grid navs are different.
 diff --git a/recompui/src/elements/ui_modal.cpp b/recompui/src/elements/ui_modal.cpp
 index b057f46..cfad7f0 100644
 --- a/recompui/src/elements/ui_modal.cpp
@@ -429,55 +565,18 @@ index 2c5dc52..9b175f4 100644
      set_as_navigation_container(NavigationType::Horizontal);
  }
  
-diff --git a/recompui/src/config/ui_config_tab_graphics.cpp b/recompui/src/config/ui_config_tab_graphics.cpp
---- a/recompui/src/config/ui_config_tab_graphics.cpp
-+++ b/recompui/src/config/ui_config_tab_graphics.cpp
-@@ -91,7 +91,6 @@
- 
-         static EnumOptionVector hud_ratio_mode_options = {
-             {ultramodern::renderer::HUDRatioMode::Original, "Original"},
--            {ultramodern::renderer::HUDRatioMode::Clamp16x9, "Clamp16x9", "16:9"},
-             {ultramodern::renderer::HUDRatioMode::Full, "Expand"},
-         };
- 
-@@ -168,6 +167,10 @@
-             new_config.res_option = get_graphics_enum_value<ultramodern::renderer::Resolution>(graphics::options::res_option);
-             new_config.wm_option = get_graphics_enum_value<ultramodern::renderer::WindowMode>(graphics::options::wm_option);
-             new_config.hr_option = get_graphics_enum_value<ultramodern::renderer::HUDRatioMode>(graphics::options::hr_option);
-+            // (16:9 is no longer offered: a setting saved with it is Expand's)
-+            if (new_config.hr_option == ultramodern::renderer::HUDRatioMode::Clamp16x9) {
-+                new_config.hr_option = ultramodern::renderer::HUDRatioMode::Full;
-+            }
-             new_config.api_option = get_graphics_enum_value<ultramodern::renderer::GraphicsApi>(graphics::options::api_option);
-             new_config.ar_option = get_graphics_enum_value<ultramodern::renderer::AspectRatio>(graphics::options::ar_option);
-             new_config.msaa_option = get_graphics_enum_value<ultramodern::renderer::Antialiasing>(graphics::options::msaa_option);
-@@ -336,9 +339,9 @@
-             config.add_enum_option(
-                 graphics::options::hr_option,
-                 "HUD Placement",
--                "Adjusts the placement of HUD elements to fit the selected aspect ratio. <recomp-color primary>Expand</recomp-color> will use the aspect ratio of the game's output window.",
-+                "Adjusts the placement of HUD elements. <recomp-color primary>Original</recomp-color> keeps them where the game puts them, inside the 4:3 frame. <recomp-color primary>Expand</recomp-color> moves the HUD at the screen's sides out to the edges of the game's window (online, each player's radar, weapon and health).",
-                 hud_ratio_mode_options,
--                ultramodern::renderer::HUDRatioMode::Clamp16x9
-+                ultramodern::renderer::HUDRatioMode::Original
-             );
- 
-             config.add_enum_option(
-diff --git a/recompui/src/elements/ui_document.cpp b/recompui/src/elements/ui_document.cpp
-index a60c585..9650a6b 100644
---- a/recompui/src/elements/ui_document.cpp
-+++ b/recompui/src/elements/ui_document.cpp
-@@ -198,7 +198,9 @@ namespace recompui {
- 
-             int cur_element_index = get_element_index(this_element, nav_parent->nav_children);
-             if (cur_element_index == -1) {
--                throw std::runtime_error("This should never ever ever happen. Element not found in its parent's nav children.");
-+                // (CBFD: it did happen, a gamepad press on the launcher while a page was being rebuilt (the online lobby starting
-+                // the game) took the launcher down: staying where it is instead.)
-+                return this_element;
-             }
- 
-             // Process grid navigation if retained_grid_index is valid and grid navs are different.
+diff --git a/recompui/src/renderer/rt64_render_context.cpp b/recompui/src/renderer/rt64_render_context.cpp
+--- a/recompui/src/renderer/rt64_render_context.cpp
++++ b/recompui/src/renderer/rt64_render_context.cpp
+@@ -109,6 +109,8 @@
+             return RT64::UserConfiguration::RefreshRate::Display;
+         case ultramodern::renderer::RefreshRate::Manual:
+             return RT64::UserConfiguration::RefreshRate::Manual;
++        case ultramodern::renderer::RefreshRate::NoLeSync:
++            return RT64::UserConfiguration::RefreshRate::NoLeSync;
+         case ultramodern::renderer::RefreshRate::OptionCount:
+             return RT64::UserConfiguration::RefreshRate::OptionCount;
+     }
 diff --git a/recompui/src/renderer/ui_renderer.cpp b/recompui/src/renderer/ui_renderer.cpp
 --- a/recompui/src/renderer/ui_renderer.cpp
 +++ b/recompui/src/renderer/ui_renderer.cpp
@@ -491,65 +590,3 @@ diff --git a/recompui/src/renderer/ui_renderer.cpp b/recompui/src/renderer/ui_re
          }
      }
  };
-diff --git a/recompui/src/config/ui_config_page_options_menu.cpp b/recompui/src/config/ui_config_page_options_menu.cpp
---- a/recompui/src/config/ui_config_page_options_menu.cpp
-+++ b/recompui/src/config/ui_config_page_options_menu.cpp
-@@ -1,5 +1,10 @@
- #include "ui_config_page_options_menu.h"
- 
-+#include <algorithm>
-+#include <cctype>
-+#include <string>
-+#include <vector>
-+
- 
- namespace recompui {
- 
-@@ -181,7 +186,22 @@
-             this->on_set_option_value(option_id, value);
-         };
-         auto schema = config->get_config_schema();
--        for (size_t i = 0; i < schema.options.size(); i++) {
-+        // The options listed in alphabetical order of their names (each keeps its own index in the schema)
-+        std::vector<size_t> order(schema.options.size());
-+        for (size_t i = 0; i < order.size(); i++) {
-+            order[i] = i;
-+        }
-+        const auto lower = [](const std::string &text) {
-+            std::string out = text;
-+            for (char &c : out) {
-+                c = (char)std::tolower((unsigned char)c);
-+            }
-+            return out;
-+        };
-+        std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) {
-+            return lower(schema.options[a].name) < lower(schema.options[b].name);
-+        });
-+        for (size_t i : order) {
-             auto &config_option = schema.options[i];
-             ConfigOptionElement *element = nullptr;
-             switch (config_option.type) {
-diff --git a/recompinput/include/recompinput/input_types.h b/recompinput/include/recompinput/input_types.h
---- a/recompinput/include/recompinput/input_types.h
-+++ b/recompinput/include/recompinput/input_types.h
-@@ -21,7 +21,8 @@
-         DEFINE_INPUT(DPAD_UP, 0x0800, "D-Pad Up") \
-         DEFINE_INPUT(DPAD_DOWN, 0x0400, "D-Pad Down") \
-         DEFINE_INPUT(DPAD_LEFT, 0x0200, "D-Pad Left") \
--        DEFINE_INPUT(DPAD_RIGHT, 0x0100, "D-Pad Right")
-+        DEFINE_INPUT(DPAD_RIGHT, 0x0100, "D-Pad Right") \
-+        DEFINE_INPUT(GRENADE, 0x0040, "Grenade")
- 
-     #define DEFINE_N64_AXIS_INPUTS() \
-         DEFINE_INPUT(Y_AXIS_POS, 0, "Up") \
-diff --git a/recompinput/src/input_mapping.cpp b/recompinput/src/input_mapping.cpp
---- a/recompinput/src/input_mapping.cpp
-+++ b/recompinput/src/input_mapping.cpp
-@@ -21,6 +21,7 @@
-         { GameInput::DPAD_RIGHT,     { InputField::keyboard(SDL_SCANCODE_L) } },
-         { GameInput::DPAD_UP,        { InputField::keyboard(SDL_SCANCODE_I) } },
-         { GameInput::DPAD_DOWN,      { InputField::keyboard(SDL_SCANCODE_K) } },
-+        { GameInput::GRENADE,        { InputField::keyboard(SDL_SCANCODE_G) } },
-         { GameInput::X_AXIS_NEG,     { InputField::keyboard(SDL_SCANCODE_A) } },
-         { GameInput::X_AXIS_POS,     { InputField::keyboard(SDL_SCANCODE_D) } },
-         { GameInput::Y_AXIS_POS,     { InputField::keyboard(SDL_SCANCODE_W) } },

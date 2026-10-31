@@ -182,8 +182,39 @@ step "Patching the tools"
 apply_patch tools/N64Recomp recomp/n64recomp.patch
 apply_patch tools/N64ModernRuntime recomp/n64modernruntime.patch
 apply_patch tools/rt64 recomp/rt64.patch
+# (0.11.4) the menu library's patches as one set: when any of them has changed since they were last applied
+# (recomp/build/frontend_patches.stamp), the library is reset first and all of them applied again in order. One reset
+# in the middle of them, for a changed patch, lost the patches before it.
+FRONTEND_PATCHES="recomp/recompfrontend.patch recomp/recompfrontend_text.patch recomp/recompfrontend_hints.patch recomp/recompfrontend_chat.patch recomp/recompfrontend_chatkey.patch recomp/recompfrontend_version.patch recomp/recompfrontend_controls.patch recomp/recompfrontend_nogyro.patch recomp/recompfrontend_mousepage.patch recomp/recompfrontend_quit.patch recomp/recompfrontend_wheel.patch"
+mkdir -p recomp/build
+if ! cat $FRONTEND_PATCHES | cmp -s - recomp/build/frontend_patches.stamp; then
+    echo "  the menu library's patches have changed: resetting it to apply them all again."
+    git -C tools/RecompFrontend reset --hard -q
+    git -C tools/RecompFrontend clean -fdq
+fi
 # RecompFrontend: mouse buttons can be bound (with the keyboard's controls).
 apply_patch tools/RecompFrontend recomp/recompfrontend.patch
+# (0.11.4) the settings' descriptions in bigger text (28 dp, was 20), as a patch of its own on top
+apply_patch tools/RecompFrontend recomp/recompfrontend_text.patch
+# (0.11.4) the menus' button hints (Close: Esc...) 3 times the size, a patch of its own
+apply_patch tools/RecompFrontend recomp/recompfrontend_hints.patch
+# (0.11.4) the Chat control (the keyboard's, Y to begin with) and no Close hint at the menus' bottom, a patch of its own
+apply_patch tools/RecompFrontend recomp/recompfrontend_chat.patch
+# (0.11.4) Chat: Key on the General tab a key you bind (its button waits for the next key), a patch of its own
+apply_patch tools/RecompFrontend recomp/recompfrontend_chatkey.patch
+# (0.11.4) the launcher's corner version (the menu library's own, v0.1.6) not shown, a patch of its own
+apply_patch tools/RecompFrontend recomp/recompfrontend_version.patch
+# (0.11.4) dedicated controls (First-Person View, Crouch, Zoom In/Out, Aim Up/Down/Left/Right), unbound to begin with, a patch of its own
+apply_patch tools/RecompFrontend recomp/recompfrontend_controls.patch
+# (0.11.4) no gyro aiming in the menu library (its sensors never turned on), a patch of its own
+apply_patch tools/RecompFrontend recomp/recompfrontend_nogyro.patch
+# (0.11.4) the Controls tab's Mouse page (its footer's third button): the mouse's settings, Mouse Controls on or off, a patch of its own
+apply_patch tools/RecompFrontend recomp/recompfrontend_mousepage.patch
+# (0.11.4) the quit button while the game runs goes back to the launcher (the game says how), a patch of its own
+apply_patch tools/RecompFrontend recomp/recompfrontend_quit.patch
+# (0.11.4) the scroll wheel bindable as two mouse buttons (Wheel Up, Wheel Down), each notch a press of its own
+apply_patch tools/RecompFrontend recomp/recompfrontend_wheel.patch
+cat $FRONTEND_PATCHES > recomp/build/frontend_patches.stamp
 # RmlUi's fix for GCC 15 and later (RmlUi #766), which isn't in the RmlUi that RecompFrontend
 # uses: its robin_hood.h uses uint64_t without including <cstdint>. Unneeded, and skipped as
 # already applied, once RecompFrontend uses RmlUi 6.2 or later.

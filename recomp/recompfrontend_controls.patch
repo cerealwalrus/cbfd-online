@@ -1,0 +1,27 @@
+diff --git a/recompinput/include/recompinput/input_types.h b/recompinput/include/recompinput/input_types.h
+--- a/recompinput/include/recompinput/input_types.h
++++ b/recompinput/include/recompinput/input_types.h
+@@ -22,7 +22,22 @@
+         DEFINE_INPUT(DPAD_DOWN, 0x0400, "D-Pad Down") \
+         DEFINE_INPUT(DPAD_LEFT, 0x0200, "D-Pad Left") \
+         DEFINE_INPUT(DPAD_RIGHT, 0x0100, "D-Pad Right") \
+-        DEFINE_INPUT(GRENADE, 0x0040, "Grenade")
++        DEFINE_INPUT(GRENADE, 0x0040, "Grenade") \
++        DEFINE_INPUT(FIRST_PERSON, 0, "First-Person View") \
++        DEFINE_INPUT(CROUCH, 0, "Crouch") \
++        DEFINE_INPUT(ZOOM_IN, 0, "Zoom In") \
++        DEFINE_INPUT(ZOOM_OUT, 0, "Zoom Out") \
++        DEFINE_INPUT(AIM_UP, 0, "Aim Up") \
++        DEFINE_INPUT(AIM_DOWN, 0, "Aim Down") \
++        DEFINE_INPUT(AIM_LEFT, 0, "Aim Left") \
++        DEFINE_INPUT(AIM_RIGHT, 0, "Aim Right") \
++        DEFINE_INPUT(FIRE, 0, "Fire") \
++        DEFINE_INPUT(MOVE_FORWARD, 0, "Move Forward") \
++        DEFINE_INPUT(MOVE_BACK, 0, "Move Back") \
++        DEFINE_INPUT(MOVE_LEFT, 0, "Move Left") \
++        DEFINE_INPUT(MOVE_RIGHT, 0, "Move Right") \
++        DEFINE_INPUT(WEAPON_SWAP, 0, "Weapon Swap") \
++        DEFINE_INPUT(RELOAD, 0, "Reload")
+ 
+     #define DEFINE_N64_AXIS_INPUTS() \
+         DEFINE_INPUT(Y_AXIS_POS, 0, "Up") \

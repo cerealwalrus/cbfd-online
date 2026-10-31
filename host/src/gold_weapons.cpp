@@ -13,6 +13,7 @@
 // a pickup of its kind, as the script runs. Every machine alike: the level's data and the game's memory, at the same frame.
 
 #include <algorithm>
+#include <iterator>
 #include <cmath>
 #include <cstdarg>
 #include <cstdint>
@@ -127,6 +128,12 @@ extern "C" void conker_gold_props(uint8_t* rdram, recomp_context* ctx) {
     for (Gold& g : golds) {
         g.id = 0;
         g.pickup = -1;
+    }
+    // (0.11.4) Cave of Horror in this arena's place: its setup records moved onto the cave first
+    if (conker::mp_characters::cave_on((int32_t)MEM_W(0, (gpr)(int32_t)scene_now))) {
+        const gpr sp0 = ctx->r29;
+        conker::mp_characters::cave_props(rdram, (uint32_t)MEM_W(0xA0, sp0), (uint32_t)MEM_W(0, (gpr)(int32_t)first_count));
+        conker::mp_characters::cave_props(rdram, (uint32_t)MEM_W(0x9C, sp0), (uint32_t)ctx->r2 / record_size);
     }
     if ((int32_t)MEM_W(0, (gpr)(int32_t)scene_now) != total_war) {
         return;
@@ -561,6 +568,10 @@ namespace {
     bool scope_last_set = false;
 }
 
+int conker::gold_weapons::held_by(uint8_t* rdram, int character) {
+    return gold_held(rdram, character);
+}
+
 // func_1502E4C4 at 0x1502E9A0: $t7 the character's +0x74 with its own view's bit set ($t4 as it was), $s1 the character.
 extern "C" void conker_gold_scope_body(uint8_t* rdram, recomp_context* ctx) {
     const uint32_t c = (uint32_t)ctx->r17;
@@ -688,6 +699,25 @@ namespace {
         // own: the revolver's 13 loads at 265490, the sniper rifle's 5 at 264D90, the possess131 test), so all of it gold, its combiners too
         bool whole = false;
         uint32_t hidden = 0, hidden_vertices = 0;
+        // (0.11.4) which of the RSP's 64 vertex slots hold the body's (left out) vertices now, as the copy loads them: a triangle using
+        // any of them is left out, whatever was loaded last. The body's are collapsed to one point (possess135), so a triangle joining
+        // them to the gun's or a hand's vertices (Conker's model is skinned: a triangle can span loads) was drawn as long dark spikes
+        // from that point across the scope's view, changing every frame as he moved (flashinggun.mp4); possess135 cleared only the
+        // triangles straight after a body load, not those after the gun's that still used the body's slots.
+        bool body_slot[64] = {};
+        void mark_slots(uint32_t w0, bool body) {
+            const uint32_t n = (w0 >> 12) & 0xFFu;
+            const uint32_t end = (w0 & 0xFFu) >> 1;
+            for (uint32_t i = end >= n ? end - n : 0; i < end && i < 64u; i++) {
+                body_slot[i] = body;
+            }
+        }
+        bool body_triangle(uint32_t a, uint32_t b, uint32_t c) const {
+            a = (a & 0xFFu) >> 1;
+            b = (b & 0xFFu) >> 1;
+            c = (c & 0xFFu) >> 1;
+            return (a < 64u && body_slot[a]) || (b < 64u && body_slot[b]) || (c < 64u && body_slot[c]);
+        }
         bool weapon_vertex(uint32_t a) const {
             auto it = vertex_holders.find(a);
             return it != vertex_holders.end() && weapons_own(it->second, g);
@@ -715,6 +745,9 @@ namespace {
         uint32_t list(uint32_t src, uint32_t* seg, int depth) {
             if (!phys_ok(src) || depth > 8 || full) {
                 return 0;
+            }
+            if (depth == 0) {
+                std::fill(std::begin(body_slot), std::end(body_slot), false);
             }
             uint32_t length = 0;
             for (uint32_t c = src; phys_ok(c) && c - src < 0x4000u; c += 8) {
@@ -751,13 +784,29 @@ namespace {
                         combiners++;
                         changed = true;
                     }
-                } else if ((op == 0x05 || op == 0x06 || op == 0x07) && hide_body && !last_weapon) {
-                    MEM_W(0, cmd) = 0;
-                    MEM_W(4, cmd) = 0;
-                    hidden++;
-                    changed = true;
+                } else if ((op == 0x05 || op == 0x06 || op == 0x07) && hide_body) {
+                    // (0.11.4) each triangle by its own vertices' slots: left out if it uses any of the body's, kept otherwise
+                    const bool first_body = body_triangle(w0 >> 16, w0 >> 8, w0);
+                    const bool second_body = op != 0x05 && body_triangle(w1 >> 16, w1 >> 8, w1);
+                    if (op == 0x05 ? first_body : (first_body && second_body)) {
+                        MEM_W(0, cmd) = 0;   // (a no-op: G_NOOP)
+                        MEM_W(4, cmd) = 0;
+                        hidden++;
+                        changed = true;
+                    } else if (op != 0x05 && first_body) {
+                        MEM_W(0, cmd) = (int32_t)(0x05000000u | (w1 & 0x00FFFFFFu));   // the second alone, as a G_TRI1
+                        MEM_W(4, cmd) = 0;
+                        hidden++;
+                        changed = true;
+                    } else if (op != 0x05 && second_body) {
+                        MEM_W(0, cmd) = (int32_t)(0x05000000u | (w0 & 0x00FFFFFFu));   // the first alone
+                        MEM_W(4, cmd) = 0;
+                        hidden++;
+                        changed = true;
+                    }
                 } else if (op == 0x01 && !whole && !(by_vertices ? weapon_vertex(resolve(seg, w1)) : in_part)) {
                     last_weapon = false;
+                    mark_slots(w0, hide_body);
                     // (possess135) the body left out by its vertices: a copy of them all at one place (its first's), so whatever draws its
                     // triangles draws nothing (possess131-133 cleared the triangle commands alone, 0x05 to 0x07, and the body stayed)
                     const uint32_t n = (w0 >> 12) & 0xFFu;
@@ -779,6 +828,7 @@ namespace {
                     }
                 } else if (op == 0x01) {
                     last_weapon = true;
+                    mark_slots(w0, false);
                     const uint32_t n = (w0 >> 12) & 0xFFu;
                     const uint32_t from = resolve(seg, w1);
                     if (n != 0 && phys_ok(from) && from + n * 0x10u <= walk_limit) {

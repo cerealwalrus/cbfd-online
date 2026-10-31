@@ -1,4 +1,4 @@
-// Save states (issue #94): F5 saves the game as it is right now to the current slot, F7 loads it back,
+// Save states (issue #94; 0.11.4: their keys taken out, see init): F5 saved the game as it is right now to the current slot, F7 loaded it back,
 // F6 picks the next slot (1 to 9). A state is a file in the savestates folder beside the settings.
 //
 // How a recompiled game can be saved at all is told in the runtime (ultramodern/save_states.hpp): a
@@ -499,5 +499,7 @@ void conker::save_states::init_headless() {
 
 void conker::save_states::init() {
     ultramodern::save_states::set_safe_point_callback(on_safe_point);
-    SDL_AddEventWatch(watch_keys, nullptr);
+    // (0.11.4) No save state keys: F5, F6 and F7 do nothing, offline or online, so no one can save or load a state on demand. The
+    // states themselves stay for the online session's own snapshots and resyncs (net_capture, net_restore).
+    (void)watch_keys;
 }

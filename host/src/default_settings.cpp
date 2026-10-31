@@ -8,9 +8,10 @@ namespace conker {
         extern const char* const general_json;
         const char* const general_json = R"CONKERJSON(
 {
+ "aim_stick_sensitivity": 100,
  "background_input_mode": "On",
  "debug_mode": false,
- "joystick_deadzone": 4,
+ "joystick_deadzone": 5,
  "launcher_window_mode": "Windowed",
  "launcher_windowed_size": "FillScreen",
  "online_chat_key": "Y"
@@ -28,7 +29,6 @@ namespace conker {
  "hpfb_option": "Off",
  "hr_option": "Expand",
  "msaa_option": "None",
- "overscan_borders": "Hidden",
  "res_option": "Auto",
  "rr_manual_value": 60,
  "rr_option": "Original",
