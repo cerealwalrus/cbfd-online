@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <mutex>
 #include <string>
@@ -822,12 +823,19 @@ namespace {
         uint8_t* rdram;
     };
 
+    bool developer_tools_allowed() {
+        std::error_code ec;
+        return std::filesystem::exists(recomp::get_config_path() / "developer_tools.txt", ec);
+    }
+
     std::unique_ptr<ultramodern::renderer::RendererContext> create_render_context(
         uint8_t* rdram, ultramodern::renderer::WindowHandle window_handle, bool developer_mode) {
         auto real = recompui::renderer::create_render_context(rdram, window_handle,
             ultramodern::renderer::PresentationMode::PresentEarly,
-            // TEMP-DEBUG: CONKER_DEV_MODE turns on RT64's developer tools (F1: inspector).
-            developer_mode || SDL_getenv("CONKER_DEV_MODE") != nullptr);
+            // (0.11.4) RT64's developer tools (F1: the inspector, texture dumps) only on a computer whose config folder has a file named
+            // developer_tools.txt (the author's): the Dev Mode setting (developer_mode in graphics.json) or CONKER_DEV_MODE then turns them
+            // on. Everyone else never has them, whatever their settings say.
+            developer_tools_allowed() && (developer_mode || SDL_getenv("CONKER_DEV_MODE") != nullptr));
         return std::make_unique<RewriteRestoringRenderer>(std::move(real), rdram);
     }
 
