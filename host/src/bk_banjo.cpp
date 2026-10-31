@@ -311,6 +311,7 @@ namespace {
         Gait gait = Gait::None;
         int jump_phase = 0;
         double st_time = 0;
+        double feet_t = 0;         // (in the air by its flag: how long the game's been on its feet, still)
         double ground_y = 0;       // (where it took off: world)
         uint16_t game_anim = 0xFFFF;
         bool was_air = false;
@@ -514,9 +515,11 @@ bool pose(int k, const Input& in, SlotXf out[28], int* eye_slot) {
                 }
             }
             // (a fall's landing, bsjump_fall's: the jump's from 0.6667, as it lands, the floor below not known here)
-            // (or the game's back on its feet, running or standing, not rising or falling: its airborne flag can stay set after a landing,
+            // (or the game's back on its feet, running or standing (down a slope too), not falling fast: its airborne flag can stay set after a landing,
             // and he stood frozen at the jump's end)
-            const bool on_feet = is_any(ga, { 0x0002, 0x000F, 0x0001, 0x0021, 0x0016, 0x0036 }) && std::fabs(in.vy) < 1.0 && b.st_time > 0.15;
+            const bool feet_now = is_any(ga, { 0x0002, 0x000F, 0x0001, 0x0021, 0x0016, 0x0036 }) && std::fabs(in.vy) < 8.0;   // (down a slope too)
+            b.feet_t = feet_now ? b.feet_t + dt : 0.0;
+            const bool on_feet = b.feet_t > 0.2;   // (a while: not just the top of a jump)
             if (landed || (!air && b.st_time > 0.1) || on_feet) {
                 set(St::Land);
                 if (b.c.anim != 0x08 || b.c.timer < 0.6667) start(b.c, 0x08, 2.0, Mode::Once, 0.6667, 0.1, true, 1.0);
