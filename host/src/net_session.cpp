@@ -43,6 +43,9 @@
 #include <cstring>
 #include <deque>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <cctype>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -74,6 +77,7 @@
 #include "conker.hpp"
 #include "net_transport.hpp"
 #include "version.hpp"
+#include "log_files.hpp"
 
 #ifdef _WIN32
 #pragma comment(lib, "ws2_32.lib")
@@ -93,7 +97,7 @@ namespace {
     constexpr auto client_waits_for_host = std::chrono::seconds(10);
 
     enum Msg : uint8_t { Hello = 1, Welcome = 2, Start = 3, Input = 4, Frame = 5, Check = 6, ResyncRequest = 7, Snapshot = 8, FrameRngMsg = 9, DiagRequest = 10, DiagData = 11, LobbyInfo = 12, Refused = 13, Chat = 14, Ping = 15, Pong = 16,
-        SnapHashes = 17, SnapDiff = 18, DelayChange = 19, InputMore = 20, FrameMore = 21 };
+        SnapHashes = 17, SnapDiff = 18, DelayChange = 19, InputMore = 20, FrameMore = 21, LogBundle = 22 };
 
     // (possess158) Every message goes reliably and in order (ENet's channel 0), so one lost packet held every one after it until ENet
     // sent it again, and on a connection whose round trip jumps about ENet waits long before it does (its estimate was 125 to 200 ms,
@@ -755,6 +759,129 @@ namespace {
         return op == out_size;
     }
 
+    // --- (0.11.4) Players' logs to the host ---
+    // A player's logs (their run's folder, log_files.cpp) go to the host, never while a match is played: as a match ends (the match
+    // flag D_800BE616 falls, on a player's machine), and as they join, their run before this one's (a crash, a quit: what they hadn't
+    // sent; a run's folder sent whole is marked sent_to_host.txt). Packed (lz_compress), on the transport's second channel, from a
+    // thread of its own. The host writes them in its own run's folder: players\<name>\<their run>\. Only with Send Logs to Host on
+    // (the General tab; conker::send_logs_to_host). Ignored by a host on an older version (an unknown message).
+    constexpr uint64_t log_file_most = 16u << 20, log_bundle_most = 48u << 20;
+
+    std::string log_file_name_ok(std::string name) {
+        // (a file's own name only: letters, digits, . _ - and spaces; nothing that could reach outside the folder)
+        std::string out;
+        for (char c : name) {
+            if (std::isalnum((unsigned char)c) || c == '.' || c == '_' || c == '-' || c == ' ') {
+                out += c;
+            }
+        }
+        while (!out.empty() && out[0] == '.') {
+            out.erase(0, 1);
+        }
+        return out.substr(0, 64);
+    }
+
+    void send_log_folder(const std::filesystem::path& run, bool mark_sent) {
+        if (!conker::send_logs_to_host()) {
+            return;
+        }
+        std::thread([run, mark_sent]() {
+            Writer w(LogBundle);
+            w.put_string(log_file_name_ok(run.filename().string()));
+            std::vector<std::filesystem::path> files;
+            std::error_code ec;
+            for (const auto& entry : std::filesystem::directory_iterator(run, ec)) {
+                if (entry.is_regular_file(ec) && entry.path().filename() != "sent_to_host.txt") {
+                    files.push_back(entry.path());
+                }
+            }
+            uint64_t total = 0;
+            std::vector<std::pair<std::string, std::vector<uint8_t>>> packed_files;
+            for (const auto& file : files) {
+                const uint64_t size = std::filesystem::file_size(file, ec);
+                if (ec || size == 0 || size > log_file_most || total + size > log_bundle_most) {
+                    continue;
+                }
+                std::ifstream in(file, std::ios::binary);
+                std::vector<uint8_t> raw((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+                if (raw.empty()) {
+                    continue;
+                }
+                total += raw.size();
+                packed_files.emplace_back(file.filename().string(), std::move(raw));
+            }
+            w.put((uint16_t)packed_files.size());
+            for (auto& [name, raw] : packed_files) {
+                const std::vector<uint8_t> packed = lz_compress(raw.data(), raw.size());
+                w.put_string(log_file_name_ok(name)).put((uint32_t)raw.size()).put((uint32_t)packed.size()).put_bytes(packed.data(), packed.size());
+            }
+            const auto& bytes = w.finish();
+            Peer* host = nullptr;
+            {
+                std::lock_guard lock{ mtx };
+                if (!is_host && !peers.empty() && peers[0]->alive) {
+                    host = peers[0].get();
+                }
+            }
+            if (host != nullptr && host->send_message(bytes, 1)) {
+                if (mark_sent) {
+                    std::ofstream(run / "sent_to_host.txt") << "sent\n";
+                }
+                log_line("[logs] %u files of %s sent to the host (%u bytes packed)", (unsigned)packed_files.size(), run.filename().string().c_str(), (unsigned)bytes.size());
+            }
+        }).detach();
+    }
+
+    // As this machine joins: its run before this one's, if it wasn't sent whole.
+    void send_earlier_logs() {
+        const std::vector<std::filesystem::path> earlier = conker::logs::earlier_sessions();
+        std::error_code ec;
+        if (!earlier.empty() && !std::filesystem::exists(earlier[0] / "sent_to_host.txt", ec)) {
+            send_log_folder(earlier[0], true);
+        }
+    }
+
+    // Host: a player's logs, written in this run's folder (players\<name>\<their run>\), from a thread of its own.
+    void host_receive_logs(int slot, std::vector<uint8_t> payload) {
+        std::string who;
+        {
+            std::lock_guard lock{ mtx };
+            who = log_file_name_ok(names[slot]);
+        }
+        if (who.empty()) {
+            who = "player" + std::to_string(slot + 1);
+        }
+        std::thread([who, payload = std::move(payload)]() {
+            Reader r{ payload.data(), payload.size() };
+            const std::string their_run = log_file_name_ok(r.get_string());
+            const uint16_t count = r.get<uint16_t>();
+            if (r.bad || their_run.empty()) {
+                return;
+            }
+            const std::filesystem::path folder = conker::logs::folder() / "players" / who / their_run;
+            std::error_code ec;
+            std::filesystem::create_directories(folder, ec);
+            unsigned written = 0;
+            for (uint16_t i = 0; i < count && !r.bad; i++) {
+                const std::string name = log_file_name_ok(r.get_string());
+                const uint32_t raw_size = r.get<uint32_t>(), packed_size = r.get<uint32_t>();
+                if (r.bad || r.at + packed_size > r.size || raw_size > log_file_most) {
+                    break;
+                }
+                std::vector<uint8_t> raw(raw_size);
+                const bool ok = lz_decompress(payload.data() + r.at, packed_size, raw.data(), raw.size());
+                r.at += packed_size;
+                if (!ok || name.empty()) {
+                    continue;
+                }
+                std::ofstream out(folder / name, std::ios::binary | std::ios::trunc);
+                out.write(reinterpret_cast<const char*>(raw.data()), (std::streamsize)raw.size());
+                written++;
+            }
+            log_line("[logs] %u files from %s (their run %s) put in %s", written, who.c_str(), their_run.c_str(), folder.string().c_str());
+        }).detach();
+    }
+
     // --- Resync state ---
 
     uint32_t snapshot_wanted_mask = 0;       // host: who asked
@@ -796,7 +923,7 @@ namespace {
     uint32_t last_target = 0;
     PlayerInput carry;               // finished sounds and a QUIT from inputs that had no frame of their own
     int delay_up_seconds = 0, delay_down_seconds = 0;   // host: seconds in a row the round trips have called for more, or fewer, frames
-    constexpr int auto_delay_min = 2, auto_delay_max = 10;
+    constexpr int auto_delay_min = 1, auto_delay_max = 10;   // (0.11.4: down to 1 for a fast connection, was 2)
     // (0.10.14: Auto's delay is worked out as the game starts and kept; true would have it follow the round trips during the game again)
     constexpr bool delay_follows_round_trips = false;
 
@@ -1529,6 +1656,9 @@ namespace {
                     host_chat(peer->slot, text);   // (the slot in the message is ignored: it's whoever sent it)
                 }
             }
+            else if (type == LogBundle) {
+                host_receive_logs(peer->slot, std::vector<uint8_t>(r.data + r.at, r.data + r.size));   // (0.11.4)
+            }
         }
         std::lock_guard lock{ mtx };
         peer->alive = false;
@@ -2132,6 +2262,7 @@ namespace {
         raw->reader = std::thread(client_reader, raw);
         raw->reader.detach();
         log_line("[net] joined as player %d of %d, delay %u", my_slot + 1, players_expected, delay);
+        send_earlier_logs();   // (0.11.4)
         return true;
     }
 
@@ -2289,7 +2420,7 @@ void conker::netsession::lobby_leave() {
 void conker::netsession::lobby_open(const LobbySettings& cfg) {
     lobby_leave();
     static const bool network_ok = net_startup();
-    open_log(cfg.host ? "netplay_host.txt" : "netplay_join.txt");
+    open_log((conker::logs::folder() / (cfg.host ? "netplay_host.txt" : "netplay_join.txt")).string());   // (0.11.4: this run's logs folder)
     std::lock_guard lock{ mtx };
     if (enabled) {
         lobby_phase = 3;
@@ -3956,6 +4087,16 @@ void conker::netsession::on_port_read(int port) {
         conker::mouse_camera::reset();
         conker::field_of_view::reset();
         log_line("[net] f=%u the hooks' own state starts over (the resync's frame), on every machine", f);
+    }
+    if (ram != nullptr && !is_host) {
+        // (0.11.4) a match just ended on this machine (D_800BE616, a multiplayer match, fell): this run's logs to the host
+        static bool was_in_match = false;
+        const bool in_match = ram[(0x800BE616u ^ 3u) & 0x7FFFFFu] != 0;
+        if (was_in_match && !in_match) {
+            std::fflush(nullptr);   // (every log written out so far)
+            send_log_folder(conker::logs::folder(), false);
+        }
+        was_in_match = in_match;
     }
     if (ram != nullptr) {
         // a player chose QUIT in the pause menu: every machine sets what the game's quit sets, at this same frame

@@ -8,11 +8,7 @@
 //
 // Deaths: each character's +0x31C (its weapons' and life's state) +0x120, 0 while alive (func_1507C8FC, the deaths frame by frame,
 // goes over the characters by it): a character whose +0x120 leaves 0 has died.
-// Who killed whom: not known yet from the game's code. Each death is looked at half a second later: every other character's counters
-// (bytes and halfwords of its +0x31C and of the character itself) that went up by exactly one since the frame before the death are the
-// candidates for its kills, kept by place. A place where exactly one other character went up by one at two deaths or more, and never two
-// characters at once, is taken for the kills' counter from then on: the one who went up there is the killer. Until it's found the line is
-// "Mark died". Every death's candidates go in killfeed.log, to find the game's own place for the next version.
+// Who killed whom (0.11.5): the game's own kill counts and last hitters, watched every frame (see watch_kills below).
 
 #include <algorithm>
 #include <array>
@@ -34,6 +30,7 @@
 #include "ultramodern/ultramodern.hpp"
 
 #include "conker.hpp"
+#include "log_files.hpp"
 
 namespace {
     using clock = std::chrono::steady_clock;
@@ -46,7 +43,7 @@ namespace {
     std::FILE* log_file = nullptr;
     void log(const char* line) {
         if (log_file == nullptr) {
-            log_file = std::fopen("killfeed.log", "w");
+            log_file = std::fopen(conker::logs::path("killfeed.log").string().c_str(), "w");
             if (log_file == nullptr) {
                 return;
             }
@@ -55,80 +52,34 @@ namespace {
         std::fflush(log_file);
     }
 
-    struct Snapshot {
-        bool valid = false;
-        std::array<uint8_t, character_size> body{};
-        std::array<uint8_t, state_size> state{};
-    };
-    struct Pending {
-        int victim;
-        uint32_t frame;
-        std::array<Snapshot, max_chars> before;
-        std::array<int32_t, 16> scores_before{};
-        bool have_scores = false;
-        std::array<uint8_t, 0x40> matrix_before{};
-        bool have_matrix = false;
-        std::array<uint8_t, 0x60> stats_before{};
-        bool have_stats = false;
-    };
-    // (30 Oct, again) D_800E0AD0 turned out to be two bytes a character (the HUD's func reads it at its number x 2), its second the
-    // deaths: no killer in it. The players' stats are in the game state (gGameState, 0x8008FDD4's pointer): +0x46 (0x20 bytes) and +0x66
-    // (0xC a player, cleared as a match starts; +0x66 shots that hit, +0x6C shots fired, as the HUD shows them). The killer is the one
-    // player other than the victim with a halfword there gone up by one at the death; every one of them logged to pin it down.
-    std::array<uint8_t, 0x60> stats_last{};
-    bool have_stats_last = false;
-    bool read_stats(uint8_t* rdram, std::array<uint8_t, 0x60>& out) {
-        const uint32_t gs = (uint32_t)MEM_W(0, (gpr)(int32_t)0x8008FDD4u);
-        if ((gs >> 24) != 0x80 || (gs & 0x00FFFFFFu) >= 0x007FF000u) {
-            return false;
-        }
-        for (uint32_t i = 0; i < out.size(); i++) {
-            out[i] = (uint8_t)MEM_BU(0x40 + i, (gpr)(int32_t)gs);
-        }
-        return true;
-    }
-    // (0.11.4, the killer at last) D_800E0AD0 is the game's table of kills, a byte for each victim and killer: victim x the characters +
-    // the killer (the 30 Oct killfeed.log: character 0 killed by 1, +1; character 1 by itself, a fall, +3; the scores table never moved
-    // and D_800E0AC0 is the places, 1st and 2nd, not slots). The byte that went up at a death gives the killer.
-    constexpr uint32_t kill_matrix = 0x800E0AD0u;
-    std::array<uint8_t, 0x40> matrix_last{};
-    bool have_matrix_last = false;
-    void read_matrix(uint8_t* rdram, std::array<uint8_t, 0x40>& out) {
-        for (uint32_t i = 0; i < out.size(); i++) {
-            out[i] = (uint8_t)MEM_BU(i, (gpr)(int32_t)kill_matrix);
-        }
-    }
-    // (the killer, from the game's own scores) The HUD's score ("1 (2nd)", func_15091B..., 0x15092000) is a word of the table that
-    // D_800E0BD8 points to, +0x20 + 4 x the slot, the slot each character's byte in D_800E0AC0. A kill puts one on the killer's slot's
-    // score: the slot whose score went up, and the character in it other than the one who died, is the killer.
-    std::array<int32_t, 16> scores_last{};
-    bool have_scores_last = false;
-    bool read_scores(uint8_t* rdram, std::array<int32_t, 16>& out) {
-        const uint32_t table = (uint32_t)MEM_W(0, (gpr)(int32_t)0x800E0BD8u);
-        if ((table >> 24) != 0x80 || (table & 0x00FFFFFFu) >= 0x007FF000u) {
-            return false;
-        }
-        for (int i = 0; i < 16; i++) {
-            out[(size_t)i] = (int32_t)MEM_W(0x20 + 4 * i, (gpr)(int32_t)table);
-        }
-        return true;
-    }
-    std::array<Snapshot, max_chars> last;
-    // (0.11.4, finding the score table: the characters' own counters weren't it) the game's globals, 0x80080000 to 0x800F0000, as the
-    // frame before each death left them; half a second after, every byte that went up by exactly one is logged
-    constexpr uint32_t globals_from = 0x80080000u, globals_to = 0x800F0000u;
-    std::vector<uint8_t> globals_last;
-    struct PendingGlobals { uint32_t frame; std::vector<uint8_t> before; };
-    std::vector<PendingGlobals> pending_globals;
+    // (0.11.5) Who killed whom, from the game's own code. func_151E5FF4 (a hit: $a0 who hit, or a thrown or shot thing whose +0x124 is
+    // its owner + 1; $a1 the one hit) writes D_800E0BB8[the one hit] = the hitter | 0x80, and when the hit leaves the one hit with no
+    // health (+0x1CA 0) it gives the hitter a kill: gGameState (0x8008FDD4's pointer) +0x46 + 2 x the hitter, a halfword (or, on the
+    // same team, a team kill: +0x70 + 12 x the hitter). The character's +0x120 only leaves 0 later, as it falls down (the old reading of
+    // the stats at that moment missed the kill, made a second or more before). So the kills are watched every frame, and a death is the
+    // last hitter's when that hitter was given a kill not long before it (or just after); otherwise (a fall, a mine of its own...) it's
+    // the victim's own.
+    constexpr uint32_t last_hitter = 0x800E0BB8u;
+    constexpr uint32_t window = 30 * 20;      // frames back from a death that a kill given to its last hitter still counts
+    constexpr uint32_t near_window = 30 * 4;  // frames back from a death that any other character's kill counts for it
+    struct Credit { int killer; uint32_t frame; };
+    std::vector<Credit> credits;
+    std::array<int, max_chars> kills_last{};
+    std::array<int, 4> team_kills_last{};
+    bool have_kills = false;
     std::array<uint8_t, max_chars> last_life{};
     bool have_last = false;
     uint32_t frames = 0;
+    struct Pending { int victim; uint32_t frame; uint8_t hitter; };
     std::vector<Pending> pending;
 
-    // a place: (0: the character, 1: its +0x31C) << 16 | offset << 1 | (1: a halfword)
-    struct Score { int alone = 0; int crowded = 0; };
-    std::map<uint32_t, Score> scores;
-    int counter_place = -1;
+    uint32_t game_state(uint8_t* rdram) {
+        const uint32_t gs = (uint32_t)MEM_W(0, (gpr)(int32_t)0x8008FDD4u);
+        if ((gs >> 24) != 0x80 || (gs & 0x00FFFFFFu) >= 0x007FF000u) {
+            return 0;
+        }
+        return gs;
+    }
 
     struct Event { int killer; int victim; };
     std::mutex events_mutex;
@@ -139,34 +90,6 @@ namespace {
         return std::clamp(n, 0, max_chars);
     }
 
-    bool take(uint8_t* rdram, int k, Snapshot& s) {
-        const uint32_t c = characters + (uint32_t)k * character_size;
-        const uint32_t st = (uint32_t)MEM_W(0x31C, (gpr)(int32_t)c);
-        if ((st >> 24) != 0x80 || (st & 0x00FFFFFFu) >= 0x007FF000u) {
-            s.valid = false;
-            return false;
-        }
-        for (uint32_t i = 0; i < character_size; i++) {
-            s.body[i] = (uint8_t)MEM_BU(i, (gpr)(int32_t)c);
-        }
-        for (uint32_t i = 0; i < state_size; i++) {
-            s.state[i] = (uint8_t)MEM_BU(i, (gpr)(int32_t)st);
-        }
-        s.valid = true;
-        return true;
-    }
-
-    uint32_t read_place(const Snapshot& s, uint32_t place) {
-        const bool half = (place & 1u) != 0;
-        const uint32_t off = (place >> 1) & 0x7FFFu;
-        const uint8_t* p = ((place >> 16) == 0) ? s.body.data() : s.state.data();
-        const uint32_t size = ((place >> 16) == 0) ? character_size : state_size;
-        if (off + (half ? 2u : 1u) > size) {
-            return 0;
-        }
-        return half ? ((uint32_t)p[off] << 8 | p[off + 1]) : p[off];
-    }
-
     void push_event(int killer, int victim) {
         std::lock_guard lock{ events_mutex };
         events.push_back({ killer, victim });
@@ -175,216 +98,79 @@ namespace {
         }
     }
 
-    void judge(uint8_t* rdram, const Pending& p, int count) {
-        // every other character's places that went up by one since the frame before the death
-        std::map<uint32_t, std::vector<int>> up;
-        for (int k = 0; k < count; k++) {
-            if (k == p.victim || !p.before[k].valid) {
-                continue;
-            }
-            Snapshot now;
-            if (!take(rdram, k, now)) {
-                continue;
-            }
-            for (uint32_t region = 0; region < 2; region++) {
-                const uint32_t size = region == 0 ? character_size : state_size;
-                for (uint32_t off = 0; off < size; off++) {
-                    for (uint32_t half = 0; half < 2; half++) {
-                        if (half && (off & 1u)) {
-                            continue;
-                        }
-                        const uint32_t place = (region << 16) | (off << 1) | half;
-                        if (read_place(now, place) == read_place(p.before[k], place) + 1) {
-                            up[place].push_back(k);
-                        }
-                    }
+    // the kills given since the last frame, each a credit
+    void watch_kills(uint8_t* rdram, int count) {
+        const uint32_t gs = game_state(rdram);
+        if (gs == 0) {
+            have_kills = false;
+            return;
+        }
+        std::array<int, max_chars> kills{};
+        std::array<int, 4> team_kills{};
+        for (int k = 0; k < max_chars; k++) {
+            kills[(size_t)k] = (int)(int16_t)MEM_H(0x46 + 2 * k, (gpr)(int32_t)gs);
+        }
+        for (int k = 0; k < 4; k++) {
+            team_kills[(size_t)k] = (int)(int16_t)MEM_H(0x70 + 12 * k, (gpr)(int32_t)gs);
+        }
+        if (have_kills) {
+            for (int k = 0; k < count; k++) {
+                const int more = kills[(size_t)k] - kills_last[(size_t)k] + (k < 4 ? team_kills[(size_t)k] - team_kills_last[(size_t)k] : 0);
+                for (int i = 0; i < more && i < 4; i++) {
+                    credits.push_back({ k, frames });
+                    char line[80];
+                    std::snprintf(line, sizeof(line), "[kill feed] f=%u character %d given a kill (now %d)", frames, k, kills[(size_t)k]);
+                    log(line);
                 }
             }
         }
-        int killer = -1;
-        // (the game state's players' stats: the halfword gone up by one, and whose block it's in)
-        if (p.have_stats) {
-            std::array<uint8_t, 0x60> now{};
-            if (read_stats(rdram, now)) {
-                std::set<int> who;
-                std::string notes;
-                for (uint32_t off = 0; off + 1 < now.size(); off += 2) {
-                    const int was = (int)((p.stats_before[off] << 8) | p.stats_before[off + 1]);
-                    const int is = (int)((now[off] << 8) | now[off + 1]);
-                    if (is == was) {
-                        continue;
-                    }
-                    const uint32_t at = 0x40 + off;
-                    int player = -1;
-                    if (at >= 0x66 && at < 0x96) {
-                        player = (int)((at - 0x66) / 0xC);
-                    } else if (at >= 0x46 && at < 0x66) {
-                        player = (int)((at - 0x46) / 8);
-                    }
-                    char piece[48];
-                    std::snprintf(piece, sizeof(piece), " +0x%X %d->%d (player %d)", (unsigned)at, was, is, player);
-                    notes += piece;
-                    if (is == was + 1 && player >= 0 && player != p.victim) {
-                        who.insert(player);
-                    }
-                }
-                if (who.size() == 1) {
-                    killer = *who.begin();
-                }
-                char sline[400];
-                std::snprintf(sline, sizeof(sline), "[kill feed] f=%u the game state's stats:%s -> killer %d", p.frame, notes.empty() ? " none changed" : notes.c_str(), killer);
-                log(sline);
-            }
-        }
-        // (failing that: a halfword of another character's +0x31C block between +0x80 and +0x200 gone up by one, alone: the kills by weapon
-        // there, by the 30 Oct killfeed.log: +0x174 for the killer as player 1 shot Bot 2, +0x138 and +0x90 for the bot's own kills)
-        if (killer < 0) {
-            std::set<int> who;
-            for (const auto& [place, ks] : up) {
-                const uint32_t off = (place >> 1) & 0x7FFF;
-                if ((place >> 16) == 1 && (place & 1) && off >= 0x80 && off < 0x200 && off != 0x11A && ks.size() == 1) {
-                    who.insert(ks[0]);
-                }
-            }
-            if (who.size() == 1) {
-                killer = *who.begin();
-            }
-        }
-        // (nobody else's: by its own hand)
-        if (killer < 0) {
-            killer = p.victim;
-        }
-        // (the game's D_800E0AD0, for the log only now)
-        if (p.have_matrix) {
-            std::array<uint8_t, 0x40> now{};
-            read_matrix(rdram, now);
-            int at = -1;
-            for (int i = 0; i < (int)now.size(); i++) {
-                if (now[(size_t)i] == (uint8_t)(p.matrix_before[(size_t)i] + 1)) {
-                    at = i;
-                    break;
-                }
-            }
-            int rows = -1;
-            if (at >= 0) {
-                // (rows as long as the characters, or failing that whatever length puts the byte in the victim's row)
-                if (count > 0 && at / count == p.victim) {
-                    rows = count;
-                } else {
-                    for (int n = count; n <= 16; n++) {
-                        if (n > 0 && at / n == p.victim) {
-                            rows = n;
-                            break;
-                        }
-                    }
-                }
-                (void)rows;
-            }
-            char mline[160];
-            std::snprintf(mline, sizeof(mline), "[kill feed] f=%u D_800E0AD0: byte %d went up (character %d's deaths)", p.frame, at, at >= 0 ? at / 2 : -1);
-            log(mline);
-        }
-        // (the scores: the slot that went up)
-        if (killer < 0 && p.have_scores) {
-            std::array<int32_t, 16> now{};
-            if (read_scores(rdram, now)) {
-                int slot = -1;
-                for (int i = 0; i < 16; i++) {
-                    if (now[(size_t)i] > p.scores_before[(size_t)i]) {
-                        slot = i;
+        kills_last = kills;
+        team_kills_last = team_kills;
+        have_kills = true;
+        // (old ones dropped)
+        credits.erase(std::remove_if(credits.begin(), credits.end(), [](const Credit& c) { return frames > c.frame + window * 2; }), credits.end());
+    }
+
+    void judge(const Pending& p) {
+        int killer = p.victim;
+        const char* why = "no kill given to its last hitter: its own";
+        if (p.hitter & 0x80) {
+            const int h = p.hitter & 0x7F;
+            if (h != p.victim) {
+                for (size_t i = 0; i < credits.size(); i++) {
+                    const Credit& c = credits[i];
+                    if (c.killer == h && c.frame + window >= p.frame && c.frame <= p.frame + look_after) {
+                        killer = h;
+                        why = "its last hitter, given a kill";
+                        credits.erase(credits.begin() + (std::ptrdiff_t)i);
                         break;
                     }
                 }
-                char sline[160];
-                std::snprintf(sline, sizeof(sline), "[kill feed] f=%u scores: slot %d went up (victim %d's slot %d)", p.frame, slot, p.victim,
-                    (int)MEM_B(p.victim, (gpr)(int32_t)0x800E0AC0u));
-                log(sline);
-                if (slot >= 0) {
-                    for (int k = 0; k < count; k++) {
-                        if (k != p.victim && (int)MEM_B(k, (gpr)(int32_t)0x800E0AC0u) == slot) {
-                            killer = k;
-                            break;
-                        }
-                    }
-                }
             }
         }
-        if (killer < 0 && counter_place >= 0 && false) {
-            auto it = up.find((uint32_t)counter_place);
-            if (it != up.end() && it->second.size() == 1) {
-                killer = it->second[0];
-            }
-        }
-        for (const auto& [place, who] : up) {
-            Score& s = scores[place];
-            (who.size() == 1 ? s.alone : s.crowded)++;
-        }
-        // the counter: the place alone most often (at least twice), never crowded
-        if (counter_place < 0 && false) {
-            int best = -1, best_alone = 1;
-            for (const auto& [place, s] : scores) {
-                if (s.crowded == 0 && s.alone > best_alone) {
-                    best = (int)place;
-                    best_alone = s.alone;
+        // (0.11.5, the 31 Oct log: D_800E0BB8 held 0xF6 and 0xAD whoever killed, so not the hitter as read here; but every kill was given
+        // 0 to 76 frames before the death it was for. So, failing the hitter: the latest kill given to another character in the 4 seconds
+        // before the death (or just after it), each kill used once)
+        if (killer == p.victim) {
+            int best = -1;
+            for (size_t i = 0; i < credits.size(); i++) {
+                const Credit& c = credits[i];
+                if (c.killer != p.victim && c.frame + near_window >= p.frame && c.frame <= p.frame + look_after &&
+                    (best < 0 || c.frame > credits[(size_t)best].frame)) {
+                    best = (int)i;
                 }
             }
             if (best >= 0) {
-                counter_place = best;
-                char line[120];
-                std::snprintf(line, sizeof(line), "[kill feed] the kills' counter taken to be %s +0x%X (%s), up alone at %d deaths",
-                    (best >> 16) == 0 ? "the character" : "its +0x31C", (unsigned)((best >> 1) & 0x7FFF), (best & 1) ? "halfword" : "byte", best_alone);
-                log(line);
-                auto it = up.find((uint32_t)best);
-                if (it != up.end() && it->second.size() == 1) {
-                    killer = it->second[0];
-                }
+                killer = credits[(size_t)best].killer;
+                why = "the kill given just before it";
+                credits.erase(credits.begin() + best);
             }
         }
         char line[160];
-        std::snprintf(line, sizeof(line), "[kill feed] f=%u character %d died (its +0x120 %02X); killer %d; %zu places up by one in the others:",
-            p.frame, p.victim, (unsigned)last_life[p.victim], killer, up.size());
+        std::snprintf(line, sizeof(line), "[kill feed] f=%u character %d died; last hitter %02X; killer %d (%s)", p.frame, p.victim, (unsigned)p.hitter,
+            killer, why);
         log(line);
-        int shown = 0;
-        for (const auto& [place, who] : up) {
-            if (shown++ >= 60) {
-                break;
-            }
-            std::string ks;
-            for (int k : who) {
-                ks += " " + std::to_string(k);
-            }
-            std::snprintf(line, sizeof(line), "[kill feed]   %s +0x%X %s: characters%s", (place >> 16) == 0 ? "body" : "+0x31C", (unsigned)((place >> 1) & 0x7FFF),
-                (place & 1) ? "h" : "b", ks.c_str());
-            log(line);
-        }
         push_event(killer, p.victim);
-        for (size_t g = 0; g < pending_globals.size(); g++) {
-            if (pending_globals[g].frame != p.frame) {
-                continue;
-            }
-            std::string row;
-            int n = 0;
-            for (uint32_t a = globals_from; a < globals_to; a++) {
-                const uint8_t was = pending_globals[g].before[a - globals_from];
-                const uint8_t now = (uint8_t)MEM_BU(0, (gpr)(int32_t)a);
-                if (now == (uint8_t)(was + 1) && was < 200) {
-                    char piece[16];
-                    std::snprintf(piece, sizeof(piece), " %08X:%u", (unsigned)a, (unsigned)now);
-                    row += piece;
-                    if (++n >= 400) {
-                        break;
-                    }
-                }
-            }
-            char head[96];
-            std::snprintf(head, sizeof(head), "[kill feed] f=%u character %d's death: globals up by one (%d):", p.frame, p.victim, n);
-            log(head);
-            for (size_t at = 0; at < row.size(); at += 180) {
-                log(("[kill feed]  " + row.substr(at, 180)).c_str());
-            }
-            pending_globals.erase(pending_globals.begin() + (std::ptrdiff_t)g);
-            break;
-        }
     }
 
     // ---- the badges: the game's own P1 to P4 icons (and our P5), kept as the game draws them (possess_test.cpp) ----
@@ -444,8 +230,19 @@ namespace {
         return conker::notices::boxed() ? Mode::Boxed : Mode::Text;
     }
 
+    // (0.11.5) the players are the match's first D_8008FE40 characters (the players on the screen, the same on every machine) and, online
+    // with 5, the bot's character the 5th player plays. (D_80082FA0, the views less one, was used before: online each machine draws one
+    // view, so it was 0 there and player 2 was taken for a bot, "Bot 2" in grey.)
     bool is_human(uint8_t* rdram, int k) {
-        return k >= 0 && k <= (int)(int32_t)MEM_W(0, (gpr)(int32_t)0x80082FA0u);
+        if (k < 0) {
+            return false;
+        }
+        const int players = (int)(int8_t)MEM_B(0, (gpr)(int32_t)0x8008FE40u);
+        const int views = (int)(int32_t)MEM_W(0, (gpr)(int32_t)0x80082FA0u) + 1;
+        if (k < std::max(players, views)) {
+            return true;
+        }
+        return conker::netsession::active() && k == conker::possess_test::fifth_object();
     }
 
     recompui::Color player_colour(int k, bool human) {
@@ -468,6 +265,9 @@ namespace {
             return "Bot " + std::to_string(k + 1);
         }
         if (conker::netsession::active()) {
+            if (k == conker::possess_test::fifth_object()) {
+                return conker::netsession::player_name(4);
+            }
             const int port = conker::netsession::port_of_player(k);
             return conker::netsession::player_name(port >= 0 ? port : k);
         }
@@ -549,10 +349,13 @@ extern "C" void conker_kill_feed_frame(uint8_t* rdram) {
     const bool match = MEM_BU(0, (gpr)(int32_t)0x800BE616) != 0;
     if (!match) {
         have_last = false;
+        have_kills = false;
         pending.clear();
+        credits.clear();
         return;
     }
     const int count = count_now(rdram);
+    watch_kills(rdram, count);
     // deaths: +0x120 of +0x31C leaving 0
     for (int k = 0; k < count; k++) {
         const uint32_t c = characters + (uint32_t)k * character_size;
@@ -561,56 +364,22 @@ extern "C" void conker_kill_feed_frame(uint8_t* rdram) {
             continue;
         }
         const uint8_t life = MEM_BU(0x120, (gpr)(int32_t)st);
-        if (have_last && last[k].valid && last_life[k] == 0 && life != 0) {
-            Pending p;
-            p.victim = k;
-            p.frame = frames;
-            p.before = last;
-            p.scores_before = scores_last;
-            p.have_scores = have_scores_last;
-            p.matrix_before = matrix_last;
-            p.have_matrix = have_matrix_last;
-            p.stats_before = stats_last;
-            p.have_stats = have_stats_last;
-            pending.push_back(p);
-            if (!globals_last.empty() && pending_globals.size() < 8) {
-                pending_globals.push_back({ frames, globals_last });
-            }
-            char line[100];
-            std::snprintf(line, sizeof(line), "[kill feed] f=%u character %d: +0x120 0 -> %02X", frames, k, (unsigned)life);
-            log(line);
+        if (have_last && last_life[k] == 0 && life != 0) {
+            pending.push_back({ k, frames, (uint8_t)MEM_BU(k, (gpr)(int32_t)last_hitter) });
         }
         last_life[k] = life;
     }
+    have_last = true;
     for (size_t i = 0; i < pending.size();) {
         if (frames >= pending[i].frame + look_after) {
-            judge(rdram, pending[i], count);
+            judge(pending[i]);
             pending.erase(pending.begin() + (std::ptrdiff_t)i);
         } else {
             i++;
         }
     }
-    for (int k = 0; k < max_chars; k++) {
-        if (k < count) {
-            take(rdram, k, last[k]);
-        } else {
-            last[k].valid = false;
-        }
-    }
-    have_last = true;
-    have_scores_last = read_scores(rdram, scores_last);
-    read_matrix(rdram, matrix_last);
-    have_matrix_last = true;
-    have_stats_last = read_stats(rdram, stats_last);
-    globals_last.resize(globals_to - globals_from);
-    for (uint32_t a = globals_from; a < globals_to; a += 4) {
-        const uint32_t w = (uint32_t)MEM_W(0, (gpr)(int32_t)a);
-        globals_last[a - globals_from + 0] = (uint8_t)(w >> 24);
-        globals_last[a - globals_from + 1] = (uint8_t)(w >> 16);
-        globals_last[a - globals_from + 2] = (uint8_t)(w >> 8);
-        globals_last[a - globals_from + 3] = (uint8_t)w;
-    }
 }
+
 
 void conker::killfeed::note_icon(int n, const uint32_t* words) {
     if (n < 0 || n >= 5) {

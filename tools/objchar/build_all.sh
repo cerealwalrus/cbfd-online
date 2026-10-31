@@ -5,7 +5,7 @@
 cd "$(dirname "$0")/../.."
 b() { python3 -I tools/objchar/obj_character.py "$@" 2>&1 | grep -E "own skeleton|arm |leg |tail|four legs|no legs|hint|crotch|written|rror|turned"; }
 b "tools/objchar/src/Jam Jars" jamjars --tex=0x2140 --hints=hip:0.1,feet:stiff
-b tools/objchar/src/lowpoly banjo --tex=0x2160 --hints=legs:none,arm+1:none,arm-1:none
+# (Banjo: tools/bkchar/banjo.py, Banjo-Tooie's model, Banjo-Kazooie's animations)
 b tools/objchar/src/mx/metatrix metatrix --tex=0x2180
 b "tools/objchar/src/snake/Naked Snake" snake --tex=0x2190
 b tools/objchar/src/lowsnake lowsnake --tex=0x21B0
@@ -15,5 +15,5 @@ b tools/objchar/src/scales scales --tex=0x2310 --tail=keep
 b tools/objchar/src/king king --tex=0x2330 --tail=keep
 b tools/objchar/src/kenny kenny --tex=0x2350 --height=120 --hints=head:spine,legs:none
 b tools/objchar/src/rocky rocky --tex=0x2360 --hints=legs:none
-b tools/objchar/src/fox fox --tex=0x2380 --height=175 --tail=keep --hints=hip:0.35,feet:stiff
+b tools/objchar/src/fox fox --tex=0x2380 --height=175 --tail=keep --hints=hip:0.35
 b tools/objchar/src/dreamkasco dreamkasco --tex=0x23A0

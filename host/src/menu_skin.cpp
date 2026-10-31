@@ -47,6 +47,7 @@
 #include <SDL.h>
 
 #include "conker.hpp"
+#include "librecomp/game.hpp"
 
 namespace {
     // The UI's own styling calls don't have z-index; this reaches Style's protected set_property for it.
@@ -686,8 +687,46 @@ namespace {
 // in the space right of the menu's plates (between their right edge and the window's), and Version and Add ROM moved down to the
 // panel's top on the other side, centred in the space left of the plates. Laid out again whenever the window's width changes (the UI is
 // 1080 dp high at any size, so only its width in dp changes). Read Full Notes opens the release's page.
+// (0.11.4) Wider (420 dp), its text bigger; a button at its top right folds it to its header and opens it again; held by its header with
+// the left mouse button it's dragged anywhere in the window. Where it is and whether it's folded are kept (patch_notes_panel.txt in the
+// config folder); dragged off the window it's brought back inside.
 namespace {
-    constexpr float notes_width = 325.0f, notes_height = 627.0f;
+    constexpr float notes_width = 420.0f, notes_height = 627.0f, notes_folded_height = 104.0f;
+    constexpr float notes_text = 19.0f, notes_line = 25.0f;
+    recompui::Element* notes_stripes = nullptr;
+    recompui::Element* notes_area = nullptr;
+    recompui::Label* notes_fold_label = nullptr;
+    std::atomic<bool> notes_fold_pressed{ false };
+    bool notes_folded = false;
+    bool notes_moved = false;            // (dragged somewhere of the player's own: notes_left/top, not the place beside the plates)
+    float notes_left = 0.0f, notes_top = 0.0f;
+    float drag_from_x = 0.0f, drag_from_y = 0.0f, drag_left = 0.0f, drag_top = 0.0f;
+    bool notes_place_dirty = false;
+    float notes_scale() {   // window pixels per dp
+        int w = 0, h = 0;
+        recompui::get_window_size(w, h);
+        return h > 0 ? (float)h / 1080.0f : 1.0f;
+    }
+    std::filesystem::path notes_state_path() {
+        return recomp::get_config_path() / "patch_notes_panel.txt";
+    }
+    void notes_save_state() {
+        std::ofstream out(notes_state_path(), std::ios::trunc);
+        if (out) {
+            out << (notes_folded ? 1 : 0) << " " << (notes_moved ? 1 : 0) << " " << notes_left << " " << notes_top << "\n";
+        }
+    }
+    void notes_load_state() {
+        std::ifstream in(notes_state_path());
+        int folded = 0, moved = 0;
+        float left = 0.0f, top = 0.0f;
+        if (in >> folded >> moved >> left >> top) {
+            notes_folded = folded != 0;
+            notes_moved = moved != 0;
+            notes_left = left;
+            notes_top = top;
+        }
+    }
     constexpr float corner_width = 330.0f;
     constexpr float frame_inset = 12.0f;   // (the window's frame at its sides)
     recompui::Element* notes_panel = nullptr;
@@ -775,22 +814,22 @@ namespace {
             notes_build->set_text("BUILD " + (tag.empty() ? std::string("v") + conker::updates::current_version() : tag));
         }
         if (state == 0) {
-            notes_label(notes_list, "Getting the patch notes from GitHub...", "CBFD Comic", 16.0f, notes_cream);
+            notes_label(notes_list, "Getting the patch notes from GitHub...", "CBFD Comic", notes_text, notes_cream);
             return;
         }
         std::vector<NotesLine> lines = state == 1 ? parse_notes(body) : std::vector<NotesLine>{};
         if (lines.empty()) {
-            notes_label(notes_list, "Couldn't get the patch notes from GitHub. Read Full Notes opens the release page.", "CBFD Comic", 16.0f, notes_cream);
+            notes_label(notes_list, "Couldn't get the patch notes from GitHub. Read Full Notes opens the release page.", "CBFD Comic", notes_text, notes_cream);
             return;
         }
         for (const NotesLine& line : lines) {
             if (line.heading) {
-                recompui::Label* label = notes_label(notes_list, line.text, "Lilita One", 20.0f, notes_gold);
+                recompui::Label* label = notes_label(notes_list, line.text, "Lilita One", 25.0f, notes_gold);
                 label->set_margin_top(6.0f);
                 continue;
             }
             if (!line.bullet) {
-                notes_label(notes_list, line.text, "CBFD Comic", 15.5f, notes_cream)->set_line_height(20.0f);
+                notes_label(notes_list, line.text, "CBFD Comic", notes_text, notes_cream)->set_line_height(notes_line);
                 continue;
             }
             // the font's bullet (0.11.4: CBFD Comic has one now; it showed as a box), the line beside it, wrapped lines kept clear of it
@@ -799,10 +838,29 @@ namespace {
             row->set_flex_direction(recompui::FlexDirection::Row);
             row->set_align_items(recompui::AlignItems::FlexStart);
             row->set_gap(6.0f);
-            notes_label(row, "\xE2\x80\xA2", "CBFD Comic", 15.5f, notes_cream)->set_line_height(20.0f);
-            recompui::Label* label = notes_label(row, line.text, "CBFD Comic", 15.5f, notes_cream);
-            label->set_line_height(20.0f);
+            notes_label(row, "\xE2\x80\xA2", "CBFD Comic", notes_text, notes_cream)->set_line_height(notes_line);
+            recompui::Label* label = notes_label(row, line.text, "CBFD Comic", notes_text, notes_cream);
+            label->set_line_height(notes_line);
             label->set_flex(1.0f, 1.0f, 0.0f);
+        }
+    }
+
+    void apply_fold() {
+        if (notes_panel == nullptr) {
+            return;
+        }
+        notes_panel->set_height(notes_folded ? notes_folded_height : notes_height);
+        for (recompui::Element* e : { notes_stripes, notes_area, (recompui::Element*)notes_button }) {
+            if (e != nullptr) {
+                if (notes_folded) {
+                    e->display_hide();
+                } else {
+                    e->display_show();
+                }
+            }
+        }
+        if (notes_fold_label != nullptr) {
+            notes_fold_label->set_text(notes_folded ? "+" : "-");
         }
     }
 
@@ -833,13 +891,60 @@ namespace {
         header->set_align_items(recompui::AlignItems::Center);
         header->set_gap(2.0f);
         notes_label(header, "PATCH NOTES", "Lilita One", 31.0f, notes_cream);
-        notes_build = notes_label(header, std::string("BUILD v") + conker::updates::current_version(), "CBFD Comic", 15.5f, notes_gold);
+        notes_build = notes_label(header, std::string("BUILD v") + conker::updates::current_version(), "CBFD Comic", 18.0f, notes_gold);
+
+        // (0.11.4) the header is the handle: held with the left mouse button, the panel follows the mouse
+        recompui::Clickable* handle = context.create_element<recompui::Clickable>(notes_panel, true);
+        handle->set_position(recompui::Position::Absolute);
+        handle->set_top(0);
+        handle->set_left(0);
+        handle->set_width(notes_width - 64.0f);
+        handle->set_height(96.0f);
+        handle->set_focusable(false);
+        StyleAccess::z_index(handle, 8);
+        handle->add_dragged_callback([](float x, float y, recompui::DragPhase phase) {
+            const float scale = notes_scale();
+            if (phase == recompui::DragPhase::Start) {
+                drag_from_x = x / scale;
+                drag_from_y = y / scale;
+                drag_left = notes_left;
+                drag_top = notes_top;
+                notes_moved = true;
+            } else if (phase == recompui::DragPhase::Move || phase == recompui::DragPhase::End) {
+                notes_left = drag_left + x / scale - drag_from_x;
+                notes_top = drag_top + y / scale - drag_from_y;
+                notes_place_dirty = true;
+                if (phase == recompui::DragPhase::End) {
+                    notes_save_state();
+                }
+            }
+        });
+
+        // (0.11.4) fold / open: a small square at the top right, "-" open, "+" folded
+        recompui::Clickable* fold = context.create_element<recompui::Clickable>(notes_panel);
+        fold->set_position(recompui::Position::Absolute);
+        fold->set_top(22.0f);
+        fold->set_right(24.0f);
+        fold->set_width(40.0f);
+        fold->set_height(40.0f);
+        fold->set_display(recompui::Display::Flex);
+        fold->set_align_items(recompui::AlignItems::Center);
+        fold->set_justify_content(recompui::JustifyContent::Center);
+        fold->set_background_color(recompui::Color{ 20, 24, 16, 220 });
+        fold->set_border_width(2.0f);
+        fold->set_border_color(notes_gold);
+        fold->set_border_radius(6.0f);
+        fold->set_focusable(false);
+        StyleAccess::z_index(fold, 9);
+        notes_fold_label = notes_label(fold, "-", "Lilita One", 30.0f, notes_cream);
+        fold->add_pressed_callback([](float, float) { notes_fold_pressed = true; });
 
         // the hazard stripes under the header: a picture of their own, the panel's width (the status bar's, cut to size, didn't clip
         // to its box and ran out past the panel)
         const std::string stripe = load("patch_notes_stripe");
         if (!stripe.empty()) {
             recompui::Image* stripes = make_layer(notes_panel, stripe);
+            notes_stripes = stripes;
             stripes->set_top(84.0f);
             stripes->set_left(27.0f);
             stripes->set_width(notes_width - 54.0f);
@@ -847,6 +952,7 @@ namespace {
         }
 
         recompui::Element* area = make_div(notes_panel);
+        notes_area = area;
         area->set_position(recompui::Position::Absolute);
         area->set_top(104.0f);
         area->set_left(27.0f);
@@ -894,6 +1000,8 @@ namespace {
         conker::updates::fetch_notes_in_background();
         fill_notes(0, {}, {});
         notes_state_shown = 0;
+        notes_load_state();
+        apply_fold();
     }
 
     // every frame: laid out again when the window's width changes; the notes filled in once they've come; the button lit and pressed
@@ -907,11 +1015,12 @@ namespace {
                 const float plates_left = (width - corner_plate_width) / 2.0f, plates_right = plates_left + corner_plate_width;
                 // the vertical middle between the title bar (51 dp) and the status bar (the bottom 66 dp)
                 const float top = title_bar_height + ((1080.0f - hazard_height - status_bar_height) - title_bar_height - notes_height) / 2.0f;
-                if (notes_panel != nullptr) {
+                if (notes_panel != nullptr && !notes_moved) {
                     const float space = (width - frame_inset) - plates_right;
-                    notes_panel->set_left(plates_right + (space - notes_width) / 2.0f);
-                    notes_panel->set_top(top);
+                    notes_left = plates_right + (space - notes_width) / 2.0f;
+                    notes_top = top;
                 }
+                notes_place_dirty = true;
                 // Version and Add ROM: their tops from the panel's, centred left of the plates (their left is from the plates' column)
                 const float space = plates_left - frame_inset;
                 const float corner_left = frame_inset + (space - corner_width) / 2.0f;
@@ -923,6 +1032,22 @@ namespace {
         }
         if (notes_panel == nullptr) {
             return;
+        }
+        if (notes_fold_pressed.exchange(false)) {
+            notes_folded = !notes_folded;
+            apply_fold();
+            notes_place_dirty = true;
+            notes_save_state();
+        }
+        if (notes_place_dirty && laid_out_width > 0.0f) {
+            notes_place_dirty = false;
+            // (kept inside the window, under the title bar and above the status bar)
+            const float height = notes_folded ? notes_folded_height : notes_height;
+            const float max_left = laid_out_width - frame_inset - notes_width, max_top = 1080.0f - hazard_height - status_bar_height - height;
+            notes_left = std::max(frame_inset, std::min(notes_left, max_left));
+            notes_top = std::max(title_bar_height, std::min(notes_top, max_top));
+            notes_panel->set_left(notes_left);
+            notes_panel->set_top(notes_top);
         }
         std::string tag, body, page;
         const int state = conker::updates::release_notes(&tag, &body, &page);

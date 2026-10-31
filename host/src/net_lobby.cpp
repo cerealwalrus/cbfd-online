@@ -449,7 +449,7 @@ void conker::netlobby::update(const std::u8string& game_id) {
                     refresh_settings_buttons();
                     break;
                 case Action::Delay: {
-                    static const int choices[] = { 0, 2, 3, 4, 5, 6, 8, 10 };   // (0: Auto)
+                    static const int choices[] = { 0, 1, 2, 3, 4, 5, 6, 8, 10 };   // (0: Auto; 0.11.4: 1 too, for a fast connection)
                     int next = choices[0];
                     for (int c : choices) {
                         if (c > delay_frames) {

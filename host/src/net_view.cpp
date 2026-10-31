@@ -619,12 +619,19 @@ namespace {
             for (uint32_t address = from; address < to; address += 8) {
                 const uint32_t w0 = (uint32_t)MEM_W(0, (gpr)(int32_t)address), w1 = (uint32_t)MEM_W(4, (gpr)(int32_t)address);
                 const uint32_t op = w0 >> 24;
-                if (op != 0xE4 && op != 0xE5) {
+                if (op != 0xE4 && op != 0xE5 && op != 0xF6) {
                     continue;
                 }
                 const int32_t yl = (int32_t)(w0 & 0xFFFu), yh = (int32_t)(w1 & 0xFFFu);
                 const int32_t xl = (int32_t)((w0 >> 12) & 0xFFFu), xh = (int32_t)((w1 >> 12) & 0xFFFu);
-                if ((float)std::abs(xl - xh) * 0.25f >= 0.5f * w && (float)std::abs(yl - yh) * 0.25f >= 0.5f * h) {
+                const float rw = (float)std::abs(xl - xh) * 0.25f, rh = (float)std::abs(yl - yh) * 0.25f;
+                const float rx = (float)std::min(xl, xh) * 0.25f - get_float(rdram, base, field_left);
+                // (0.11.5) and the launcher's green bar (a tall narrow rectangle and its fill, at the view's left side), which with more
+                // players goes with the overlay's pass: here it was left on screen
+                const bool overlay = rw >= 0.5f * w && rh >= 0.5f * h;
+                const float ry = (float)std::min(yl, yh) * 0.25f - get_float(rdram, base, field_top);
+                const bool bar = rh >= 0.01f * h && rw <= 0.06f * w && rx < 0.25f * w && ry > 0.12f * h;
+                if (overlay || bar) {
                     MEM_W(0, (gpr)(int32_t)address) = (int32_t)((w0 & ~0xFFFFFFu) | ((uint32_t)xh << 12) | (uint32_t)yh);
                     collapsed++;
                 }

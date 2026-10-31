@@ -26,6 +26,7 @@
 #endif
 
 #include "conker.hpp"
+#include "log_files.hpp"
 
 namespace {
     SDL_Window* chrome_window = nullptr;
@@ -212,7 +213,7 @@ int conker::window_chrome::tile() {
 int conker::window_chrome::display_index() {
     static const int value = []() {
         const int count = SDL_GetNumVideoDisplays();
-        FILE* list = std::fopen("conker_displays.txt", "w");
+        FILE* list = std::fopen(conker::logs::path("conker_displays.txt").string().c_str(), "w");
         const char* text = std::getenv("CONKER_WINDOW_DISPLAY");
         const int wanted = text != nullptr ? std::atoi(text) : 0;
         int found = 0;
@@ -357,7 +358,7 @@ void conker::window_chrome::update(bool game_started, bool settings_full_screen)
         static int last_logged_ms = -1000;
         const auto log_sizes = [&](const char* when) {
             if (log_file == nullptr) {
-                log_file = std::fopen("launcher_window.log", "w");
+                log_file = std::fopen(conker::logs::path("launcher_window.log").string().c_str(), "w");
                 if (log_file == nullptr) {
                     return;
                 }

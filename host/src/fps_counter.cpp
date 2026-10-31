@@ -25,6 +25,7 @@
 #include "elements/ui_label.h"
 
 #include "conker.hpp"
+#include "log_files.hpp"
 
 namespace RT64 {
     uint64_t presentedFrameCount();
@@ -238,7 +239,7 @@ std::string conker::latency_meter::text() {
                 samples.pop_front();
             }
             if (lat_file == nullptr) {
-                lat_file = std::fopen("latency.log", "w");
+                lat_file = std::fopen(conker::logs::path("latency.log").string().c_str(), "w");
                 if (lat_file != nullptr) {
                     std::fprintf(lat_file, "Show Latency: each press, in ms from the press (SDL's event): the game reads it, its frame handed to "
                         "the renderer, the screen first shows any of that frame (interpolated), the screen shows all of it\n");

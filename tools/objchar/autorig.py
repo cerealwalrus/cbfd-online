@@ -10,7 +10,8 @@
 #  - every vertex goes to the part (limb or body) whose cuts it is nearest to along the surface.
 # Its joints are put where its own limbs are, and its arms turned about the shoulders to hang as 3B's do in his bind pose, so his
 # animations (rotations from that pose) move them as they move his. Four legs: the back pair on 3B's legs, the head and tail on his
-# head and tail; the front pair go with the body (on his arms they'd be lifted to hold the guns).
+# head and tail; the front pair on his thumbs, swung by the game as the back legs swing (mp_characters.cpp, quadruped_pose; on
+# his arms they'd be lifted to hold the guns).
 import heapq
 import numpy as np
 
@@ -353,7 +354,14 @@ def accessories(V, lab, parts, keep, body_like=(0,)):
             sub = [(cnt[b] if b < len(cnt) else 0, b) for b in body_like]
             top_ = max(sub)[1]
         lab[ids] = top_
+        if top_ in body_like:
+            ACCESSORY_PIECES.append(ids)
     return lab
+
+
+# (0.11.5) the pieces accessories() gave to the body (a scabbard across the back, a belt), each put whole on one bone below: split by
+# height between the root and the spine it bent at the spine's joint as the two turned against each other (Sabre's scabbard)
+ACCESSORY_PIECES = []
 
 
 def bend_of(R, E, cents):
@@ -642,6 +650,7 @@ def rig(V, T, JT, floor, tail=False, log=print, quadruped=None, hints=None):
     keep = set()
     for l in limbs:
         keep.add(l[2]); keep.update(l[3])
+    del ACCESSORY_PIECES[:]
     lab = accessories(V, lab, getattr(graph, 'parts', None), keep, tuple([0] + [k + 1 for k, l in enumerate(limbs) if l[0] == 'head']))
     bone = np.full(n, SPINE)
 
@@ -727,6 +736,8 @@ def rig(V, T, JT, floor, tail=False, log=print, quadruped=None, hints=None):
             # there), what its cut took in above it goes with the body)
             hip_y = floor + float(hints['hip']) * H
             mine = (lab == k + 1) | ((lab == 0) & (s * V[:, 0] > 0))
+            for ids in ACCESSORY_PIECES:
+                mine[ids] = False   # (not a scabbard hanging down on that side: it goes with the body)
             above = np.where(mine & (V[:, 1] > hip_y + 0.01 * H) & (lab == k + 1))[0]
             lab[above] = 0
             P = np.where(mine & (V[:, 1] <= hip_y + 0.01 * H))[0]
@@ -780,6 +791,12 @@ def rig(V, T, JT, floor, tail=False, log=print, quadruped=None, hints=None):
     bone[body & (V[:, 1] >= neck)] = head_bone
     bone[body & (V[:, 1] < neck) & (V[:, 1] >= J[SPINE][1])] = SPINE
     bone[body & (V[:, 1] < J[SPINE][1])] = ROOT
+    # (an accessory on the body whole on one bone: the spine if it reaches up the back past halfway from the spine's joint to the
+    # shoulders (a scabbard or a pack strapped on), else the root (a belt and its pouches))
+    for ids in ACCESSORY_PIECES:
+        ids = ids[body[ids] & (V[ids, 1] < neck)]
+        if len(ids):
+            bone[ids] = SPINE if float(V[ids, 1].max()) > J[SPINE][1] + 0.5 * (shoulder_y - J[SPINE][1]) else ROOT
     # (a side with no leg found apart (a coat): that side of the lower body on its leg's top bone, to go with the other leg as it
     # goes. With no legs at all (a bust, a robe to the floor) the lower body stays with the body: its halves on the hips would tear
     # it apart down the middle at every step.)
@@ -799,6 +816,52 @@ def rig(V, T, JT, floor, tail=False, log=print, quadruped=None, hints=None):
     log('crotch at %.0f%s, neck at %.0f, torso half width %.0f, of %.0f; limbs %s' % (crotch - floor, '' if legs_apart else ' (legs together)',
         neck - floor, torso_w, H, ' '.join(labels[1:])))
     return V, J, bone
+
+
+def quad_legs(V, nb, floor, H, zc):
+    """(0.11.5) The four legs of a low mesh, by height: the mesh below a level falls into separate pieces, one a leg, while the level is
+    under the belly. The highest level at which the pieces standing on the floor are still four (or the most there are) is taken for
+    the legs' tops; each such piece is a leg. Returns {(side, front): (vertices, its top's middle)}."""
+    best = None
+    width = float(np.ptp(V[:, 0]))
+    for t in np.arange(floor + 0.08 * H, floor + 0.7 * H, 0.02 * H):
+        below = V[:, 1] < t
+        comp = {}
+        pieces = []
+        for a in np.where(below)[0]:
+            if a in comp:
+                continue
+            comp[a] = len(pieces); g = [a]; stack = [a]
+            while stack:
+                i = stack.pop()
+                for j in nb[i]:
+                    if below[j] and j not in comp:
+                        comp[j] = comp[a]; g.append(j); stack.append(j)
+            pieces.append(np.array(g))
+        # (a leg stands on the floor off the middle line: a tail lying on the floor (the King's) is on it)
+        standing = [g for g in pieces if V[g, 1].min() < floor + 0.06 * H and len(g) >= 3 and abs(float(np.mean(V[g, 0]))) > 0.1 * width]
+        if len(standing) >= 4:
+            best = (t, standing)
+        elif best is not None and len(standing) < len(best[1]):
+            break
+    if best is None:
+        return {}, None
+    t, standing = best
+    legs = {}
+    # (front and back by the feet's own middle: Garunda's front legs are behind the middle of a body with a long head)
+    zs = sorted(float(np.mean(V[g, 2])) for g in standing[:4])
+    zmid = (zs[1] + zs[2]) / 2 if len(zs) >= 4 else zc
+    for g in sorted(standing, key=len, reverse=True):
+        gx, gz = float(np.mean(V[g, 0])), float(np.mean(V[g, 2]))
+        key = (1 if gx >= 0 else -1, gz > zmid)
+        if key in legs:
+            continue
+        top = g[V[g, 1] > t - 0.12 * H]
+        if len(top) == 0:
+            top = g
+        c = np.array([float(np.mean(V[top, 0])), float(t), float(np.mean(V[top, 2]))])
+        legs[key] = (g, c)
+    return legs, t
 
 
 def rig_quadruped(V, T, Tc, J, JT, floor, H, nb, tail, log, hints=None):
@@ -910,12 +973,19 @@ def rig_quadruped(V, T, Tc, J, JT, floor, H, nb, tail, log, hints=None):
             lab[mine & (V[:, 1] > c[1] + 0.01 * H)] = 0
         elif kind == 'tail':
             lab[mine & (V[:, 2] > c[2] + 0.01 * depth)] = 0
+    # (0.11.5) the legs by height (quad_legs): the paths from the feet found a leg on some meshes and not others (the King's left front,
+    # Garunda's back pair went to the body and its front pair to the head)
+    legs4, leg_top = quad_legs(V, nb, floor, H, zc)
+    tail_line = None
     bone = np.full(n, ROOT)
+    front_top = {}
     J[ROOT] = [0.0, belly + 0.1 * H, zc]
     J[SPINE] = [0.0, belly + 0.15 * H, zc]
     for k, l in enumerate(limbs):
         P = np.where(lab == k + 1)[0]
         kind, s, e, out, c = l[0], l[1], l[2], l[3], l[6]
+        if kind in ('back', 'front') and legs4:
+            continue
         if kind == 'back':
             top_ = c.copy(); foot = V[e].copy(); foot[1] = floor + 0.03 * H
             mid = (top_ + foot) / 2
@@ -923,7 +993,12 @@ def rig_quadruped(V, T, Tc, J, JT, floor, H, nb, tail, log, hints=None):
             J[g[0]], J[g[1]], J[g[2]], J[g[3]] = top_, mid, foot, foot + [0, -0.03 * H, 0.03 * H]
             bone[P] = g[0]
         elif kind == 'front':
-            bone[P] = ROOT
+            # (0.11.5) on its side's thumb (a bone with nothing after it, held weapons on the wrists): its joint at the leg's top. The
+            # game (mp_characters.cpp, quadruped_pose) sets the thumb's matrix to swing the leg as the other side's back leg swings
+            th = ARM[s][4]
+            J[th] = c.copy()
+            front_top[th] = True
+            bone[P] = th
         elif kind == 'head':
             J[HEAD] = c.copy()
             if head_cut is not None:
@@ -938,9 +1013,39 @@ def rig_quadruped(V, T, Tc, J, JT, floor, H, nb, tail, log, hints=None):
                 J[b] = r0 + (tip - r0) * (i / 3.0)
             t = ((V[P] - r0) @ (tip - r0)) / max(1e-6, float(np.dot(tip - r0, tip - r0)))
             bone[P] = np.array(TAIL)[np.clip((t * 3).astype(int), 0, 2)]
+            tail_line = (r0.copy(), tip.copy())
+    for (side, fwd), (g, c) in sorted(legs4.items()):
+        if fwd:
+            th = ARM[side][4]
+            J[th] = c.copy()
+            front_top[th] = True
+            bone[g] = th
+        else:
+            gl = LEG[side]
+            foot = c.copy(); foot[1] = floor + 0.03 * H
+            mid = (c + foot) / 2
+            J[gl[0]], J[gl[1]], J[gl[2]], J[gl[3]] = c.copy(), mid, foot, foot + [0, -0.03 * H, 0.03 * H]
+            bone[g] = gl[0]
+    # (0.11.5) the whole tail behind the back legs on the tail's bones (only its tip was: a long tail, the King's, stretched from the
+    # body as the tip swung)
+    backs = [c for (sd, f), (g, c) in legs4.items() if not f]
+    if tail_line is not None and backs:
+        r0, tip = tail_line
+        zr = min(float(c[2]) for c in backs) - 0.04 * depth
+        if zr > tip[2]:
+            root = np.array([0.0, float(r0[1]), zr])
+            P = np.where((V[:, 2] < zr) & ((bone == ROOT) | np.isin(bone, TAIL)))[0]
+            for i, b in enumerate(TAIL):
+                J[b] = root + (tip - root) * (i / 3.0)
+            t = ((V[P] - root) @ (tip - root)) / max(1e-6, float(np.dot(tip - root, tip - root)))
+            bone[P] = np.array(TAIL)[np.clip((t * 3).astype(int), 0, 2)]
+            log('four legs: the tail from %.0f behind the middle, %d vertices' % (float(np.median(V[:, 2])) - zr, len(P)))
+    if legs4:
+        log('four legs: the legs by height, their tops at %.0f (%s)' % (leg_top - floor, ' '.join('%s%+d' % ('front' if f else 'back', sd) for (sd, f) in sorted(legs4))))
     # (his arms (no vertices: what's held in his hands) hang from the neck as from his shoulders)
     for a in (ARM[+1], ARM[-1]):
         for b in a:
-            J[b] = J[SPINE] + (JT[b] - JT[SPINE]) * 0.6
+            if b not in front_top:
+                J[b] = J[SPINE] + (JT[b] - JT[SPINE]) * 0.6
     log('four legs: %s; body %.0f long, %.0f high' % (' '.join('%s%+d' % (l[0], l[1]) for l in limbs), depth, H))
     return V, J, bone

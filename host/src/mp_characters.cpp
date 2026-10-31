@@ -26,6 +26,7 @@
 #include "miniz.h"
 
 #include "conker.hpp"
+#include "log_files.hpp"
 
 #if defined(CONKER_RT64)
 #include "recompui/recompui.h"
@@ -47,7 +48,7 @@ namespace {
     std::FILE* survey_file = nullptr;
     void survey(const char* line) {
         if (survey_file == nullptr) {
-            survey_file = std::fopen("characters.log", "w");
+            survey_file = std::fopen(conker::logs::path("characters.log").string().c_str(), "w");
         }
         if (survey_file != nullptr) {
             std::fprintf(survey_file, "%s\n", line);
@@ -266,6 +267,7 @@ extern "C" void conker_mp_characters(uint8_t* rdram) {
     conker_cave_menu(rdram);
     conker_cave_match(rdram);
     conker_kill_feed_frame(rdram);   // (0.11.4, the kill feed: kill_feed.cpp, offline too)
+    conker::char_anim::frame(rdram);   // (0.11.5, the added characters' own walk and run: char_anim.cpp, offline too)
     characters_survey(rdram);   // (0.11.4, offline too)
     skeleton_survey(rdram);
     if (!conker::netsession::active()) {
@@ -821,8 +823,9 @@ namespace {
         // (made from a mesh with no skeleton, tools/objchar/obj_character.py: its own textures, assets/<name>/tex_XXXX.bin, handed out with
         // the others; drawn from model 0x4B's entry, the seated character's, 42488 bytes' room)
         { "jamjars", "jamjars/jamjars.bin", 0x4B, 0x3B, 0x01, 29, 0x80FE0038u, 0x10u, 1.1f, false, false, false, 0, {} },
-        // (the low-poly Banjo, the same way: drawn from model 0x7B's entry, 50840 bytes' room)
-        { "banjo", "banjo/banjo.bin", 0x7B, 0x3B, 0x01, 30, 0x80FE0040u, 0x10u, 1.05f, false, false, false, 0, {} },
+        // (0.11.5: Banjo-Tooie's own model of Banjo, tools/bkchar/banjo.py, moved by Banjo-Kazooie's own animations, bk_banjo.cpp;
+        // drawn from model 0x7B's entry, 50840 bytes' room, his 15728)
+        { "banjo", "banjo/banjo.bin", 0x7B, 0x3B, 0x01, 30, 0x80FE0040u, 0x10u, 1.0f, false, false, false, 0, {} },
         // (Metatrix, the same way: drawn from model 0x97's entry, its room raised to his 30848 as it's read. A model's slot must be a
         // character's with its own animations' banks (0x82's has none: the game then loads none of its other banks, and on the select
         // screen he came out huge, all over the screen))
@@ -1676,8 +1679,73 @@ namespace {
     // (30 Oct test: off. The camera lowered to the teddy's height sat inside a big character's own body, which the gold scope draws in the
     // holder's view: the screen went black; and the holder's own model, no longer at +4 while the teddy was, was let go and loaded again
     // every few frames. Off until the teddy can be drawn without either.)
-    constexpr bool gold_teddy_on = false;
-    bool gold_teddy_now(uint8_t* rdram, int k) {
+    // (0.11.5: on again, with both fixed. The model held in the character's own buffers: each character keeps, for each of its models'
+    // levels of detail (its list at +0x2C4, +0x2C8 of them), two words at +0x28C + 8 x the level (the model's data in use, the shared
+    // model's or a copy of its own; func_150843AC lets them go, func_15084044 makes them for the model at +4), counted in D_800D1F80
+    // (by model). With +4 the teddy's for a moment the game found the buffers not the teddy's and made them again, and again for its own
+    // model after: hence the loading every few frames. Now, while it's the teddy, the character has a set of its own for the teddy: its
+    // list of models put at a list of ours holding the teddy alone, and its buffers (+0x28C to +0x2C4) swapped with the teddy's set, kept
+    // for the next time (the game makes it the first time, loading the teddy's model as it does a character's: func_1502DB84). The
+    // teddy's model then stays loaded (counted by that set), whether or not a teddy is in the match. And the camera's lowered only
+    // where the teddy is drawn: online every machine has one view; offline, one view only (split screen, the other views would see
+    // the holder's own model on the teddy's bones).)
+    constexpr bool gold_teddy_on = true;
+    constexpr uint32_t teddy_list_at = 0x80FE0200u;   // ours: a list of models with the teddy's alone
+    constexpr uint32_t buffers_from = 0x28C, buffers_to = 0x2C4;
+    struct TeddySet {
+        uint8_t own[buffers_to - buffers_from];
+        uint8_t teddy[buffers_to - buffers_from];
+        uint32_t own_list = 0;
+        uint8_t own_count = 0;
+        bool in = false;
+        uint32_t scene = 0xFFFFFFFFu, model_at = 0;
+    };
+    TeddySet teddy_sets[25];
+    void teddy_swap_in(uint8_t* rdram, int k) {
+        TeddySet& t = teddy_sets[k];
+        if (t.in) {
+            return;
+        }
+        const gpr ob = (gpr)(int32_t)(0x800CC2D0u + (uint32_t)k * 0x32Cu);
+        // (the teddy's set from another level, or its model let go since: begun again)
+        const uint32_t scene = (uint32_t)MEM_W(0, (gpr)(int32_t)0x800BE9F0u);
+        const uint32_t model_at = (uint32_t)MEM_W(4u * (uint32_t)small_teddy_model, (gpr)(int32_t)0x800D19A0u);
+        if (t.scene != scene || (t.model_at != 0 && t.model_at != model_at)) {
+            std::memset(t.teddy, 0, sizeof(t.teddy));
+            t.scene = scene;
+        }
+        for (uint32_t i = 0; i < sizeof(t.own); i++) {
+            t.own[i] = MEM_BU(buffers_from + i, ob);
+            MEM_B(buffers_from + i, ob) = (int8_t)t.teddy[i];
+        }
+        t.own_list = (uint32_t)MEM_W(0x2C4, ob);
+        t.own_count = MEM_BU(0x2C8, ob);
+        MEM_B(0, (gpr)(int32_t)teddy_list_at) = (int8_t)small_teddy_model;
+        MEM_W(0x2C4, ob) = (int32_t)teddy_list_at;
+        MEM_B(0x2C8, ob) = 1;
+        t.in = true;
+    }
+    void teddy_swap_out(uint8_t* rdram, int k) {
+        TeddySet& t = teddy_sets[k];
+        if (!t.in) {
+            return;
+        }
+        const gpr ob = (gpr)(int32_t)(0x800CC2D0u + (uint32_t)k * 0x32Cu);
+        for (uint32_t i = 0; i < sizeof(t.own); i++) {
+            t.teddy[i] = MEM_BU(buffers_from + i, ob);
+            MEM_B(buffers_from + i, ob) = (int8_t)t.own[i];
+        }
+        MEM_W(0x2C4, ob) = (int32_t)t.own_list;
+        MEM_B(0x2C8, ob) = (int8_t)t.own_count;
+        t.model_at = (uint32_t)MEM_W(4u * (uint32_t)small_teddy_model, (gpr)(int32_t)0x800D19A0u);
+        t.in = false;
+    }
+    // whether the views are such that the teddy can be drawn for the holder alone (online: one view a machine; offline: one view)
+    bool teddy_views_ok(uint8_t* rdram) {
+        return conker::netsession::active() || (int32_t)MEM_W(0, (gpr)(int32_t)0x80082FA0u) == 0;
+    }
+    // for_draw: the teddy's model must be loaded already (the update, before, loads it)
+    bool gold_teddy_now(uint8_t* rdram, int k, bool for_draw = true) {
         if (!gold_teddy_on) {
             return false;
         }
@@ -1685,13 +1753,16 @@ namespace {
             return false;
         }
         const int own = conker::netsession::active() ? conker::netsession::local_player() : 0;
-        if (k != own) {
+        if (k != own || !teddy_views_ok(rdram)) {
             return false;
         }
-        if (conker::gold_weapons::held_by(rdram, k) < 0) {
-            return false;
+        if (conker::gold_weapons::held_by(rdram, k) != 0) {
+            return false;   // (0.11.5: the gold sniper rifle's alone)
         }
         const uint32_t ob = 0x800CC2D0u + (uint32_t)k * 0x32Cu;
+        if (MEM_BU(4, (gpr)(int32_t)ob) == small_teddy_model) {
+            return false;   // (the teddy already)
+        }
         const uint32_t cam = (uint32_t)MEM_W(0x318, (gpr)(int32_t)ob);
         const uint32_t aim = (uint32_t)MEM_W(0x31C, (gpr)(int32_t)ob);
         const bool cam_ok = (cam >> 24) == 0x80 && (cam & 0x00FFFFFFu) < 0x007F0000u;
@@ -1702,6 +1773,9 @@ namespace {
         }
         const uint32_t record = (uint32_t)MEM_W(4u * (uint32_t)small_teddy_model, (gpr)(int32_t)0x800D1C90);
         const bool loaded = (record >> 24) == 0x80;
+        if (!for_draw) {
+            return true;
+        }
         static uint32_t told = 0;
         static bool last = false;
         if (loaded != last && told < 20) {
@@ -1709,7 +1783,7 @@ namespace {
             last = loaded;
             char line[140];
             std::snprintf(line, sizeof(line), "[gold] character %d aiming a gold weapon: %s", k,
-                loaded ? "drawn as the small teddy on this screen" : "the small teddy's model isn't loaded (no teddy in the match): drawn as itself");
+                loaded ? "drawn as the small teddy on this screen" : "the small teddy's model isn't loaded yet: drawn as itself");
             survey(line);
         }
         return loaded;
@@ -1916,7 +1990,7 @@ extern "C" void conker_kong_look_height(uint8_t* rdram, recomp_context* ctx) {
         const uint32_t held_aim = k >= 0 ? (uint32_t)MEM_W(0x31C, (gpr)(int32_t)walker) : 0u;
         const bool looking = MEM_H(0x73C, (gpr)(int32_t)camera) != 0 ||
             ((held_aim >> 24) == 0x80 && (held_aim & 0x00FFFFFFu) < 0x007F0000u && MEM_BU(0x197, (gpr)(int32_t)held_aim) != 0);
-        if (gold_teddy_on && k >= 0 && looking && (aim >> 24) == 0x80 && conker::gold_weapons::held_by(rdram, k) >= 0) {
+        if (gold_teddy_on && k >= 0 && looking && (aim >> 24) == 0x80 && conker::gold_weapons::held_by(rdram, k) == 0 && teddy_views_ok(rdram)) {
             const float own_base = (float)MEM_H(0xCC, (gpr)(int32_t)walker), own_height = (float)MEM_H(0x114, (gpr)(int32_t)aim);
             float teddy_base = 43.0f, teddy_height = 95.0f;
             {
@@ -2404,7 +2478,13 @@ std::string conker::mp_characters::bot_command(const std::string& text) {
 extern "C" void conker_kong_match_entry(uint8_t* rdram, recomp_context* ctx) {
     const int k = (int)((uint32_t)ctx->r2 - 0x800E0B90u);
     // (a bot's character from /bot: its pick, the pick's entry and the place it's kept, before the rest below go by them)
-    if (k >= 0 && k < 16 && bot_override[k] >= 0 && k > (int)(int32_t)MEM_W(0, (gpr)(int32_t)0x80082FA0u)) {
+    // (0.11.5) only a computer player's: the players are the first D_8008FE40 (the players on the screen, alike on every machine).
+    // D_80082FA0 (the views less one) was used before, and online each machine has one view: it was 0 there, so "/bot 2 king" made
+    // player 2 (a person) the king in every match after, whatever they picked.
+    const int match_humans = std::max((int)(int8_t)MEM_B(0, (gpr)(int32_t)0x8008FE40u), (int)(int32_t)MEM_W(0, (gpr)(int32_t)0x80082FA0u) + 1);
+    // (online with 5: the 5th player plays the character right after the players, possess_test.cpp's ch5)
+    const bool fifths = conker::netsession::five_players() && k == (int)(int8_t)MEM_B(0, (gpr)(int32_t)0x8008FE40u);
+    if (k >= 0 && k < 16 && bot_override[k] >= 0 && k >= match_humans && !fifths) {
         const int c = bot_override[k];
         ctx->r25 = (gpr)(int32_t)(c * 8);
         ctx->r14 = (gpr)(int32_t)(0x800AB57Cu + (uint32_t)c * 8u);
@@ -2631,10 +2711,11 @@ namespace {
 // its end (0x1502E460) the character at 0xC8 of the stack.
 extern "C" void conker_berri_update_begin(uint8_t* rdram, recomp_context* ctx) {
     const int k = (int)(int32_t)ctx->r4;
-    if (gold_teddy_now(rdram, k)) {
+    if (gold_teddy_now(rdram, k, false)) {
         const gpr ob = (gpr)(int32_t)(0x800CC2D0u + (uint32_t)k * 0x32Cu);
         teddy_own_model[k] = MEM_BU(4, ob);
         teddy_group_of = teddy_own_model[k];
+        teddy_swap_in(rdram, k);
         MEM_B(4, ob) = (int8_t)small_teddy_model;
         teddy_updating[k] = true;
         return;
@@ -2659,6 +2740,7 @@ extern "C" void conker_berri_update_end(uint8_t* rdram, recomp_context* ctx) {
     }
     if (k < 64 && teddy_updating[k]) {
         MEM_B(4, (gpr)(int32_t)(0x800CC2D0u + (uint32_t)k * 0x32Cu)) = (int8_t)teddy_own_model[k];
+        teddy_swap_out(rdram, k);
         teddy_updating[k] = false;
         teddy_group_of = -1;
         return;
@@ -2688,6 +2770,7 @@ extern "C" void conker_kong_draw_begin(uint8_t* rdram, recomp_context* ctx) {
         const gpr ob = (gpr)(int32_t)(0x800CC2D0u + (uint32_t)k * 0x32Cu);
         teddy_own_model[k] = MEM_BU(4, ob);
         teddy_group_of = teddy_own_model[k];
+        teddy_swap_in(rdram, k);
         MEM_B(4, ob) = (int8_t)small_teddy_model;
         teddy_drawing[k] = true;
         kong_drawn[k] = false;
@@ -2809,11 +2892,446 @@ namespace {
     }
 }
 
+// (0.11.5) The four-legged characters (the King, Garunda) on Conker's two-legged animations. tools/objchar/autorig.py puts each back
+// leg on a hip (its joint at the leg's top), each front leg on a thumb (a bone nothing hangs from; the joint at the leg's top), the
+// head on the head and the tail on the tail. After the game has worked out the bones' matrices for a drawing (segment 3: bone n at
+// n x 0x40, 4 x 4 floats as row vectors, the translation in the 4th row; the 4th column holds the game's other data, left alone),
+// they are put right here, from those matrices alone:
+//  - the body level: the root's facing kept, its lean and roll (a runner's) taken off; everything else follows the level body;
+//  - each back leg swings forward and back only, as far as that side's thigh does (times 0.4, at most 32 degrees);
+//  - each front leg swings as the other side's back leg (a four-legged walk: the diagonal pairs together);
+//  - the head's and the tail's turns from the body cut down (0.4 and 0.3 of them), about their own joints.
+// Only the drawing: nothing of the game's state, so nothing to keep alike online.
+namespace {
+    struct Mat { double m[4][3]; };   // rows 0-2 the basis, row 3 the translation (the 4th column left in place)
+    Mat read_mat(uint8_t* rdram, uint32_t at) {
+        Mat r{};
+        for (int i = 0; i < 4; i++) {
+            for (int j = 0; j < 3; j++) {
+                const uint32_t w = (uint32_t)MEM_W((int32_t)(i * 16 + j * 4), (gpr)(int32_t)at);
+                float f;
+                std::memcpy(&f, &w, 4);
+                r.m[i][j] = f;
+            }
+        }
+        return r;
+    }
+    void write_mat(uint8_t* rdram, uint32_t at, const Mat& r) {
+        for (int i = 0; i < 4; i++) {
+            for (int j = 0; j < 3; j++) {
+                const float f = (float)r.m[i][j];
+                uint32_t w;
+                std::memcpy(&w, &f, 4);
+                MEM_W((int32_t)(i * 16 + j * 4), (gpr)(int32_t)at) = (int32_t)w;
+            }
+        }
+    }
+    using M3 = std::array<std::array<double, 3>, 3>;
+    M3 basis(const Mat& a) {
+        M3 r{};
+        for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++) r[i][j] = a.m[i][j];
+        return r;
+    }
+    M3 mul(const M3& a, const M3& b) {
+        M3 r{};
+        for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++) r[i][j] = a[i][0] * b[0][j] + a[i][1] * b[1][j] + a[i][2] * b[2][j];
+        return r;
+    }
+    bool inverse(const M3& a, M3& out) {
+        const double det = a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1]) - a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0]) +
+            a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0]);
+        if (std::fabs(det) < 1e-12) return false;
+        const double d = 1.0 / det;
+        out[0][0] = (a[1][1] * a[2][2] - a[1][2] * a[2][1]) * d; out[0][1] = (a[0][2] * a[2][1] - a[0][1] * a[2][2]) * d; out[0][2] = (a[0][1] * a[1][2] - a[0][2] * a[1][1]) * d;
+        out[1][0] = (a[1][2] * a[2][0] - a[1][0] * a[2][2]) * d; out[1][1] = (a[0][0] * a[2][2] - a[0][2] * a[2][0]) * d; out[1][2] = (a[0][2] * a[1][0] - a[0][0] * a[1][2]) * d;
+        out[2][0] = (a[1][0] * a[2][1] - a[1][1] * a[2][0]) * d; out[2][1] = (a[0][1] * a[2][0] - a[0][0] * a[2][1]) * d; out[2][2] = (a[0][0] * a[1][1] - a[0][1] * a[1][0]) * d;
+        return true;
+    }
+    std::array<double, 3> vmul(const std::array<double, 3>& v, const M3& a) {
+        return { v[0] * a[0][0] + v[1] * a[1][0] + v[2] * a[2][0], v[0] * a[0][1] + v[1] * a[1][1] + v[2] * a[2][1], v[0] * a[0][2] + v[1] * a[1][2] + v[2] * a[2][2] };
+    }
+    // the turn of an orthonormal (row-vector) matrix cut down to k of its angle, about the same axis
+    M3 damp_turn(const M3& r, double k) {
+        const double c = std::clamp((r[0][0] + r[1][1] + r[2][2] - 1.0) / 2.0, -1.0, 1.0);
+        const double ang = std::acos(c);
+        M3 id{};
+        id[0][0] = id[1][1] = id[2][2] = 1.0;
+        if (ang < 1e-6 || std::sin(ang) < 1e-6) return ang < 1e-6 ? id : r;
+        double ax[3] = { r[1][2] - r[2][1], r[2][0] - r[0][2], r[0][1] - r[1][0] };
+        for (double& v : ax) v /= 2.0 * std::sin(ang);
+        const double a = ang * k, sa = std::sin(a), ca = 1.0 - std::cos(a);
+        const double K[3][3] = { { 0, -ax[2], ax[1] }, { ax[2], 0, -ax[0] }, { -ax[1], ax[0], 0 } };
+        M3 out{};
+        for (int i = 0; i < 3; i++) {
+            for (int j = 0; j < 3; j++) {
+                double kk = 0;
+                for (int t = 0; t < 3; t++) kk += K[i][t] * K[t][j];
+                out[j][i] = (i == j ? 1.0 : 0.0) + sa * K[i][j] + ca * kk;   // (transposed: the row-vector form)
+            }
+        }
+        return out;
+    }
+    M3 orthonormal(M3 a) {
+        // (Gram-Schmidt on the rows: the scale off)
+        for (int i = 0; i < 3; i++) {
+            for (int j = 0; j < i; j++) {
+                const double d = a[i][0] * a[j][0] + a[i][1] * a[j][1] + a[i][2] * a[j][2];
+                for (int t = 0; t < 3; t++) a[i][t] -= d * a[j][t];
+            }
+            const double n = std::sqrt(a[i][0] * a[i][0] + a[i][1] * a[i][1] + a[i][2] * a[i][2]);
+            if (n > 1e-12) for (int t = 0; t < 3; t++) a[i][t] /= n;
+        }
+        return a;
+    }
+    constexpr uint8_t kPar[28] = { 255, 0, 1, 2, 3, 4, 4, 1, 7, 8, 9, 9, 1, 12, 12, 12, 0, 16, 17, 18, 0, 20, 21, 22, 0, 24, 25, 26 };
+    // (each matrix set done once: a character drawn twice from the same matrices (two views) isn't swung twice)
+    std::array<std::pair<uint32_t, uint32_t>, 16> quad_done{};
+    size_t quad_done_next = 0;
+
+    void quadruped_pose(uint8_t* rdram, uint32_t m) {
+        Mat M[28];
+        for (int b = 0; b < 28; b++) M[b] = read_mat(rdram, m + (uint32_t)b * 0x40u);
+        uint32_t sig = 0;
+        for (int w = 0; w < 12; w++) sig = sig * 31u + (uint32_t)MEM_W(16 * 0x40 + w * 4, (gpr)(int32_t)m);
+        for (const auto& d : quad_done) {
+            if (d.first == m && d.second == sig) return;
+        }
+        const M3 A0 = basis(M[0]);
+        const double sc = std::sqrt(A0[0][0] * A0[0][0] + A0[0][1] * A0[0][1] + A0[0][2] * A0[0][2]);
+        if (!(sc > 1e-6) || !std::isfinite(sc)) return;
+        double x[3] = { A0[0][0], 0.0, A0[0][2] };
+        const double xn = std::sqrt(x[0] * x[0] + x[2] * x[2]);
+        if (xn < 1e-9) return;
+        x[0] /= xn; x[2] /= xn;
+        // (rows: x, up, x cross up)
+        M3 R1{};   // the level body's turn, scale off
+        R1[0] = { x[0], 0.0, x[2] };
+        R1[1] = { 0.0, 1.0, 0.0 };
+        R1[2] = { -x[2], 0.0, x[0] };   // x cross (0,1,0) = (x1*0-x2*1, x2*0-x0*0, x0*1-x1*0) = (-x2, 0, x0)
+        M3 Rb = R1;
+        for (auto& row : Rb) for (double& v : row) v *= sc;
+        M3 A0i;
+        if (!inverse(A0, A0i)) return;
+        const std::array<double, 3> p0 = { M[0].m[3][0], M[0].m[3][1], M[0].m[3][2] };
+        // every bone after the level body: M_b B_old^-1 B_new (turn A0^-1 Rb about the root's place)
+        const M3 G = mul(A0i, Rb);
+        Mat out[28];
+        for (int b = 0; b < 28; b++) {
+            const M3 nb = mul(basis(M[b]), G);
+            const std::array<double, 3> d = { M[b].m[3][0] - p0[0], M[b].m[3][1] - p0[1], M[b].m[3][2] - p0[2] };
+            const std::array<double, 3> t = vmul(d, G);
+            for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++) out[b].m[i][j] = nb[i][j];
+            for (int j = 0; j < 3; j++) out[b].m[3][j] = p0[j] + t[j];
+        }
+        // a bone's joint from the root's, in the model's units (each link's offset taken back through its parent's matrix)
+        const auto bind_off = [&](int b) {
+            std::array<double, 3> o = { 0, 0, 0 };
+            while (kPar[b] != 255) {
+                const int p = kPar[b];
+                M3 pi;
+                if (!inverse(basis(M[p]), pi)) break;
+                const std::array<double, 3> d = { M[b].m[3][0] - M[p].m[3][0], M[b].m[3][1] - M[p].m[3][1], M[b].m[3][2] - M[p].m[3][2] };
+                const std::array<double, 3> v = vmul(d, pi);
+                for (int j = 0; j < 3; j++) o[j] += v[j];
+                b = p;
+            }
+            return o;
+        };
+        const int hip[2] = { 16, 20 }, thumb[2] = { 6, 11 };
+        double swing[2];
+        for (int sd = 0; sd < 2; sd++) {
+            const M3 A = basis(M[hip[sd]]);
+            const std::array<double, 3> d = { -A[1][0], -A[1][1], -A[1][2] };   // (0,-1,0) times A
+            // in the level body's axes: times R1's transpose
+            const double dy = d[0] * R1[1][0] + d[1] * R1[1][1] + d[2] * R1[1][2];
+            const double dz = d[0] * R1[2][0] + d[1] * R1[2][1] + d[2] * R1[2][2];
+            const double a = std::atan2(dz, -dy) * 0.4;
+            swing[sd] = std::clamp(a, -0.5585, 0.5585);   // (32 degrees)
+        }
+        const auto leg = [&](int b, double a) {
+            const std::array<double, 3> off = bind_off(b);
+            const double c = std::cos(a), sn = std::sin(a);
+            M3 Rx{};
+            Rx[0] = { 1, 0, 0 };
+            Rx[1] = { 0, c, -sn };
+            Rx[2] = { 0, sn, c };
+            const M3 r = mul(Rx, Rb);
+            const std::array<double, 3> t = vmul(off, Rb);
+            for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++) out[b].m[i][j] = r[i][j];
+            for (int j = 0; j < 3; j++) out[b].m[3][j] = p0[j] + t[j];
+        };
+        for (int sd = 0; sd < 2; sd++) {
+            leg(hip[sd], swing[sd]);
+            leg(thumb[sd], swing[1 - sd]);
+        }
+        // (the head and the tail: their turns from the body cut down, the chain put back from its own offsets)
+        M3 R1i;
+        inverse(R1, R1i);
+        const auto chain = [&](const int* bones, int n, double k) {
+            for (int i = 0; i < n; i++) {
+                const int b = bones[i], p = kPar[b];
+                M3 pi;
+                if (!inverse(basis(M[p]), pi)) return;
+                const std::array<double, 3> d = { M[b].m[3][0] - M[p].m[3][0], M[b].m[3][1] - M[p].m[3][1], M[b].m[3][2] - M[p].m[3][2] };
+                const std::array<double, 3> off = vmul(d, pi);
+                M3 own = basis(M[b]);
+                for (auto& row : own) for (double& v : row) v /= sc;
+                const M3 rel = orthonormal(mul(own, R1i));
+                const M3 r = mul(damp_turn(rel, k), Rb);
+                const std::array<double, 3> t = vmul(off, basis(out[p]));
+                for (int a = 0; a < 3; a++) for (int j = 0; j < 3; j++) out[b].m[a][j] = r[a][j];
+                for (int j = 0; j < 3; j++) out[b].m[3][j] = out[p].m[3][j] + t[j];
+            }
+        };
+        const int head[1] = { 12 }, tail[4] = { 24, 25, 26, 27 };
+        chain(head, 1, 0.4);
+        chain(tail, 4, 0.3);
+        for (int b = 0; b < 28; b++) {
+            for (int i = 0; i < 4; i++) for (int j = 0; j < 3; j++) {
+                if (!std::isfinite(out[b].m[i][j])) return;
+            }
+        }
+        for (int b = 0; b < 28; b++) write_mat(rdram, m + (uint32_t)b * 0x40u, out[b]);
+        uint32_t sig2 = 0;
+        for (int w = 0; w < 12; w++) sig2 = sig2 * 31u + (uint32_t)MEM_W(16 * 0x40 + w * 4, (gpr)(int32_t)m);
+        quad_done[quad_done_next] = { m, sig2 };
+        quad_done_next = (quad_done_next + 1) % quad_done.size();
+    }
+
+    // (0.11.5) The two-legged added characters on Conker's moves, toned down (the 31 Oct screenshots: Snake's run "awkward and goofy",
+    // a squirrel's lunging strides and lean on a man): each bone's turn from its parent cut to a part of it (the root's lean and roll
+    // from the level 0.5, the spine 0.5, the head 0.6, the thighs 0.65, the knees and ankles 0.75), the rest as the game has them; the
+    // arms keep their own turns in the world (what they hold points where the game aims it), only moved to where their shoulders now
+    // are. From the matrices alone, as quadruped_pose; drawing only.
+    std::array<std::pair<uint32_t, uint32_t>, 16> biped_done{};
+    size_t biped_done_next = 0;
+    // (row form) the turn taking a's way to b's: v times it turns a to b
+    M3 turn_to(std::array<double, 3> a, std::array<double, 3> b) {
+        const auto norm = [](std::array<double, 3>& v) {
+            const double n = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+            if (n > 1e-12) for (double& c : v) c /= n;
+        };
+        norm(a); norm(b);
+        const double v[3] = { a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0] };
+        const double sn = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]), c = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+        M3 r{};
+        r[0][0] = r[1][1] = r[2][2] = 1.0;
+        if (sn < 1e-9) return r;
+        const double K[3][3] = { { 0, -v[2], v[1] }, { v[2], 0, -v[0] }, { -v[1], v[0], 0 } };
+        const double f = (1 - c) / (sn * sn);
+        for (int i = 0; i < 3; i++) {
+            for (int j = 0; j < 3; j++) {
+                double kk = 0;
+                for (int t = 0; t < 3; t++) kk += K[i][t] * K[t][j];
+                r[j][i] = (i == j ? 1.0 : 0.0) + K[i][j] + kk * f;   // (transposed: the row form)
+            }
+        }
+        return r;
+    }
+    // (0.11.5) long arms on Conker's gun poses: each hand drawn in toward its shoulder to `in` of the way, the elbow bending (the two
+    // bones' lengths kept, the elbow on the side it was): the Panther King's M4 held out wide at arm's length, the 31 Oct screenshot
+    void arms_in(Mat* out, double in) {
+        const int arms[2][5] = { { 2, 3, 4, 5, 6 }, { 7, 8, 9, 10, 11 } };
+        const auto pos = [&](int b) { return std::array<double, 3>{ out[b].m[3][0], out[b].m[3][1], out[b].m[3][2] }; };
+        const auto sub = [](std::array<double, 3> x, std::array<double, 3> y) { return std::array<double, 3>{ x[0] - y[0], x[1] - y[1], x[2] - y[2] }; };
+        const auto len = [](std::array<double, 3> x) { return std::sqrt(x[0] * x[0] + x[1] * x[1] + x[2] * x[2]); };
+        for (const auto& arm : arms) {
+            const int sh = arm[0], el = arm[1], wr = arm[2];
+            const auto S = pos(sh), E = pos(el), W = pos(wr);
+            const double a = len(sub(E, S)), b = len(sub(W, E));
+            if (a < 1e-3 || b < 1e-3) continue;
+            std::array<double, 3> T = { S[0] + (W[0] - S[0]) * in, S[1] + (W[1] - S[1]) * in, S[2] + (W[2] - S[2]) * in };
+            const double dt = len(sub(T, S));
+            if (dt < 1e-3) continue;
+            const double d = std::clamp(dt, std::fabs(a - b) + 1e-3, a + b - 1e-3);
+            std::array<double, 3> u = sub(T, S);
+            for (double& c : u) c /= dt;
+            std::array<double, 3> pole = sub(E, S);
+            const double pu = pole[0] * u[0] + pole[1] * u[1] + pole[2] * u[2];
+            for (int j = 0; j < 3; j++) pole[j] -= pu * u[j];
+            double pl = len(pole);
+            if (pl < 1e-6) { pole = { -u[1] * u[0], 1.0 - u[1] * u[1], -u[1] * u[2] }; for (double& c : pole) c = -c; pl = len(pole); }
+            if (pl < 1e-9) continue;
+            for (double& c : pole) c /= pl;
+            const double x = (a * a - b * b + d * d) / (2 * d), y = std::sqrt(std::max(a * a - x * x, 0.0));
+            const std::array<double, 3> E2 = { S[0] + u[0] * x + pole[0] * y, S[1] + u[1] * x + pole[1] * y, S[2] + u[2] * x + pole[2] * y };
+            std::array<double, 3> offs[5];
+            for (int i = 1; i < 5; i++) {
+                const int bb = arm[i], p = kPar[bb];
+                M3 pi;
+                if (!inverse(basis(out[p]), pi)) return;
+                offs[i] = vmul(sub(pos(bb), pos(p)), pi);
+            }
+            const auto rechain = [&](int from) {
+                for (int i = from; i < 5; i++) {
+                    const int bb = arm[i], p = kPar[bb];
+                    const auto t = vmul(offs[i], basis(out[p]));
+                    for (int j = 0; j < 3; j++) out[bb].m[3][j] = out[p].m[3][j] + t[j];
+                }
+            };
+            const auto turn = [&](int from, const M3& q) {
+                for (int i = from; i < 5; i++) {
+                    const M3 r = mul(basis(out[arm[i]]), q);
+                    for (int a2 = 0; a2 < 3; a2++) for (int j = 0; j < 3; j++) out[arm[i]].m[a2][j] = r[a2][j];
+                }
+            };
+            turn(0, turn_to(sub(E, S), sub(E2, S)));
+            rechain(1);
+            const auto E2n = pos(el), W2 = pos(wr);
+            turn(1, turn_to(sub(W2, E2n), sub(T, E2n)));
+            rechain(2);
+        }
+    }
+    double arms_in_for(const char* tag) {
+        if (std::strcmp(tag, "panther") == 0) return 0.6;
+        if (std::strcmp(tag, "ogre") == 0) return 0.65;
+        if (std::strcmp(tag, "alien") == 0) return 0.7;
+        if (std::strcmp(tag, "rocky") == 0) return 0.7;
+        return 1.0;
+    }
+    void biped_pose(uint8_t* rdram, uint32_t m, double in = 1.0) {
+        uint32_t sig = 0;
+        for (int w = 0; w < 12; w++) sig = sig * 31u + (uint32_t)MEM_W(16 * 0x40 + w * 4, (gpr)(int32_t)m);
+        for (const auto& d : biped_done) {
+            if (d.first == m && d.second == sig) return;
+        }
+        Mat M[28];
+        for (int b = 0; b < 28; b++) M[b] = read_mat(rdram, m + (uint32_t)b * 0x40u);
+        const M3 A0 = basis(M[0]);
+        const double sc = std::sqrt(A0[0][0] * A0[0][0] + A0[0][1] * A0[0][1] + A0[0][2] * A0[0][2]);
+        if (!(sc > 1e-6) || !std::isfinite(sc)) return;
+        const double xn = std::sqrt(A0[0][0] * A0[0][0] + A0[0][2] * A0[0][2]);
+        if (xn < 1e-9) return;
+        M3 R1{};
+        R1[0] = { A0[0][0] / xn, 0.0, A0[0][2] / xn };
+        R1[1] = { 0.0, 1.0, 0.0 };
+        R1[2] = { -A0[0][2] / xn, 0.0, A0[0][0] / xn };
+        M3 R1i;
+        if (!inverse(R1, R1i)) return;
+        double k[28];
+        for (double& v : k) v = 1.0;
+        k[0] = 0.5; k[1] = 0.5; k[12] = 0.6; k[16] = k[20] = 0.65; k[17] = k[21] = 0.75; k[18] = k[22] = 0.75;
+        Mat out[28];
+        for (int b = 0; b < 28; b++) {
+            const int p = kPar[b];
+            if (p == 255) {
+                M3 own = A0;
+                for (auto& row : own) for (double& v : row) v /= sc;
+                M3 r = mul(damp_turn(orthonormal(mul(own, R1i)), k[0]), R1);
+                for (auto& row : r) for (double& v : row) v *= sc;
+                for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++) out[0].m[i][j] = r[i][j];
+                for (int j = 0; j < 3; j++) out[0].m[3][j] = M[0].m[3][j];
+                continue;
+            }
+            M3 pi;
+            if (!inverse(basis(M[p]), pi)) return;
+            const std::array<double, 3> d = { M[b].m[3][0] - M[p].m[3][0], M[b].m[3][1] - M[p].m[3][1], M[b].m[3][2] - M[p].m[3][2] };
+            const std::array<double, 3> off = vmul(d, pi);
+            M3 r;
+            if (b >= 2 && b <= 11) {
+                r = basis(M[b]);   // (the arms: their turns in the world kept)
+            } else {
+                const M3 L = mul(basis(M[b]), pi);
+                r = mul(k[b] < 1.0 ? damp_turn(orthonormal(L), k[b]) : L, basis(out[p]));
+            }
+            const std::array<double, 3> t = vmul(off, basis(out[p]));
+            for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++) out[b].m[i][j] = r[i][j];
+            for (int j = 0; j < 3; j++) out[b].m[3][j] = out[p].m[3][j] + t[j];
+        }
+        if (in < 1.0) {
+            arms_in(out, in);
+        }
+        for (int b = 0; b < 28; b++) {
+            for (int i = 0; i < 4; i++) for (int j = 0; j < 3; j++) {
+                if (!std::isfinite(out[b].m[i][j])) return;
+            }
+        }
+        for (int b = 0; b < 28; b++) write_mat(rdram, m + (uint32_t)b * 0x40u, out[b]);
+        uint32_t sig2 = 0;
+        for (int w = 0; w < 12; w++) sig2 = sig2 * 31u + (uint32_t)MEM_W(16 * 0x40 + w * 4, (gpr)(int32_t)m);
+        biped_done[biped_done_next] = { m, sig2 };
+        biped_done_next = (biped_done_next + 1) % biped_done.size();
+    }
+
+    // segment 3 (the bones' matrices) of the drawing just made: the display list's own setting of it, or the last before it
+    uint32_t drawing_matrices(uint8_t* rdram, recomp_context* ctx) {
+        const uint32_t from = (uint32_t)MEM_W(0x58, ctx->r29), to = (uint32_t)ctx->r2;
+        uint32_t seg3 = 0;
+        if ((from >> 24) == 0x80 && (to >> 24) == 0x80 && to > from && to - from < 0x10000u) {
+            for (uint32_t a = from; a < to; a += 8) {
+                if ((uint32_t)MEM_W(0, (gpr)(int32_t)a) == 0xDB06000Cu) seg3 = (uint32_t)MEM_W(4, (gpr)(int32_t)a);
+            }
+            for (uint32_t a = from; seg3 == 0 && a > from - 0x8000u && a - 8 >= 0x80000000u;) {
+                a -= 8;
+                if ((uint32_t)MEM_W(0, (gpr)(int32_t)a) == 0xDB06000Cu) seg3 = (uint32_t)MEM_W(4, (gpr)(int32_t)a);
+            }
+        }
+        if (seg3 == 0 || ((seg3 & 0xFF000000u) != 0x80000000u && (seg3 & 0xFF000000u) != 0)) return 0;
+        const uint32_t m = 0x80000000u | (seg3 & 0x00FFFFFFu);
+        return (m & 0x00FFFFFFu) + 28u * 0x40u < 0x00800000u ? m : 0;
+    }
+    bool is_quadruped(const char* tag) {
+        return std::strcmp(tag, "king") == 0 || std::strcmp(tag, "garunda") == 0;
+    }
+}
+
 extern "C" void conker_kong_draw_end(uint8_t* rdram, recomp_context* ctx) {
     const int k = (int)(int32_t)MEM_W(0x5C, ctx->r29);
     pose_capture(rdram, ctx, k);
+    // (0.11.5, the ogre drawn without his legs) each added character's segment 8 (the per-character lists its model calls, DE 08xxxxxx:
+    // the ogre's legs call 08000040 and 08000100 before they're drawn) once each: its first 0x180 bytes as commands
+    for (int i = 0; i < kExtras && k >= 0 && k < kMaxObjects; i++) {
+        static bool seg8_told[64] = {};
+        if (!extra_drawing[i][k] || seg8_told[i]) {
+            continue;
+        }
+        const uint32_t from = (uint32_t)MEM_W(0x58, ctx->r29), to = (uint32_t)ctx->r2;
+        uint32_t seg8 = 0;
+        if ((from >> 24) == 0x80 && (to >> 24) == 0x80 && to > from && to - from < 0x10000u) {
+            for (uint32_t a = from; a < to; a += 8) {
+                if ((uint32_t)MEM_W(0, (gpr)(int32_t)a) == 0xDB060020u) seg8 = (uint32_t)MEM_W(4, (gpr)(int32_t)a);
+            }
+            for (uint32_t a = from; seg8 == 0 && a > from - 0x8000u && a - 8 >= 0x80000000u;) {
+                a -= 8;
+                if ((uint32_t)MEM_W(0, (gpr)(int32_t)a) == 0xDB060020u) seg8 = (uint32_t)MEM_W(4, (gpr)(int32_t)a);
+            }
+        }
+        seg8_told[i] = true;
+        char line[160];
+        std::snprintf(line, sizeof(line), "[%s] segment 8 at %08X (its list %08X..%08X):", extras[i].tag, (unsigned)seg8, (unsigned)from, (unsigned)to);
+        survey(line);
+        const uint32_t m8 = 0x80000000u | (seg8 & 0x00FFFFFFu);
+        if (seg8 != 0 && (m8 & 0x00FFFFFFu) + 0x180u < 0x00800000u) {
+            for (uint32_t a = 0; a < 0x180; a += 0x20) {
+                std::string row;
+                for (uint32_t w = 0; w < 0x20; w += 4) {
+                    char piece[12];
+                    std::snprintf(piece, sizeof(piece), " %08X", (unsigned)(uint32_t)MEM_W((int32_t)(a + w), (gpr)(int32_t)m8));
+                    row += piece;
+                }
+                std::snprintf(line, sizeof(line), "[%s]   +%03X:", extras[i].tag, (unsigned)a);
+                survey((line + row).c_str());
+            }
+        }
+    }
+    // (0.11.5) the four-legged characters' legs, body, head and tail (quadruped_pose)
+    for (int i = 0; i < kExtras && k >= 0 && k < kMaxObjects; i++) {
+        if (extra_drawing[i][k]) {
+            if (const uint32_t m = drawing_matrices(rdram, ctx)) {
+                if (is_quadruped(extras[i].tag)) {
+                    quadruped_pose(rdram, m);
+                } else if (!conker::char_anim::pose(rdram, k, extras[i].tag, m)) {
+                    // (0.11.5: Cloud, Snake and Fox stand, walk and run their own way, char_anim.cpp; the rest of the time, and the
+                    // others, Conker's moves toned down)
+                    biped_pose(rdram, m, arms_in_for(extras[i].tag));
+                }
+            }
+            break;
+        }
+    }
     if (k >= 0 && k < 64 && teddy_drawing[k]) {
         MEM_B(4, (gpr)(int32_t)(0x800CC2D0u + (uint32_t)k * 0x32Cu)) = (int8_t)teddy_own_model[k];
+        teddy_swap_out(rdram, k);
         teddy_drawing[k] = false;
         teddy_group_of = -1;
         return;

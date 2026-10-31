@@ -103,7 +103,7 @@ def main():
     ap.add_argument('--out', required=True)
     ap.add_argument('--rtz')
     ap.add_argument('--id', default='conker_custom_hd')
-    ap.add_argument('--name', default='Imported characters and maps in full detail')
+    ap.add_argument('--name', default='HD Textures')
     ap.add_argument('--author', default='Matt')
     ap.add_argument('items', nargs='+')
     a = ap.parse_args()
@@ -156,8 +156,7 @@ def main():
           "operationFilters": [], "shiftFilters": [], "extraFiles": []}
     json.dump(db, open(os.path.join(a.out, 'rt64.json'), 'w'), indent=4)
     manifest = {"game_id": "conker", "id": a.id, "version": "1.0.0", "display_name": a.name,
-                "description": "The characters and maps made from meshes with their own textures at the size they were made: in the "
-                               "game each is at most 64 x 32 (all a 256-colour texture can be), this pack puts the original picture over it.",
+                "description": "Sharper, high-resolution textures for the new characters and maps.",
                 "authors": [a.author], "minimum_recomp_version": "0.1.0"}
     json.dump(manifest, open(os.path.join(a.out, 'mod.json'), 'w'), indent=4)
     if a.rtz:

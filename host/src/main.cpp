@@ -31,6 +31,7 @@
 #include "ultramodern/ultramodern.hpp"
 
 #include "conker.hpp"
+#include "log_files.hpp"
 
 #if defined(CONKER_RT64)
 #include "nfd.h"
@@ -125,8 +126,9 @@ static void crash_publish(const CrashReport& report) {
     std::fflush(stderr);
     wchar_t exe[MAX_PATH];
     DWORD length = GetModuleFileNameW(nullptr, exe, MAX_PATH);
-    std::filesystem::path log_path = (length > 0 && length < MAX_PATH)
-        ? std::filesystem::path(exe).parent_path() / "crash.log" : std::filesystem::path("crash.log");
+    (void)length;
+    // (0.11.4) in this run's logs folder (log_files.cpp), made as the run started
+    std::filesystem::path log_path = conker::logs::path("crash.log");
     if (FILE* log = _wfopen(log_path.c_str(), L"a")) {
         std::fputs(report.c_str(), log);
         std::fputs("\n", log);
@@ -652,6 +654,7 @@ int main(int argc, char** argv) {
         // recompui loads assets/ (and looks for portable.txt) relative to the working
         // directory: make that the executable's folder, wherever the game is started from.
         std::filesystem::current_path(exe_directory(argv[0]));
+        (void)conker::logs::folder();   // (0.11.4) this run's logs folder, beside the game (log_files.cpp: at most 10 kept)
         recompui::programconfig::set_program_id(conker::program_id());
         recomp::register_config_path(recompui::file::get_app_folder_path());
         migrate_old_data(old_data_dir, recomp::get_config_path());

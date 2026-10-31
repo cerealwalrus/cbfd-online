@@ -57,6 +57,12 @@ for gid, M, bm in inst:
         tb = len(VT)
         if tin:
             T = srcs[tin[0].get('source')[1:]][:, :2]; VT.extend(T.tolist()); to = int(tin[0].get('offset'))
+        else:
+            # (31 Oct: the low-poly Snake's .dae has its texture coordinates in <vertices>, one per vertex, not in <triangles>: they were
+            # lost, every triangle drawn from one texel: grey all over)
+            vtin = [i for i in qa(vin, 'c:input') if i.get('semantic') == 'TEXCOORD']
+            if vtin:
+                T = srcs[vtin[0].get('source')[1:]][:, :2]; VT.extend(T.tolist()); to = vo; tin = vtin
         m = bm.get(tr.get('material'), tr.get('material'))
         for k in range(0, len(p), 3):
             F.append((m, [(base + p[k + j][vo], (tb + p[k + j][to]) if tin else -1) for j in range(3)]))

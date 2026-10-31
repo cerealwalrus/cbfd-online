@@ -252,6 +252,8 @@ namespace conker {
     // conker_config.cpp: whether the Graphics tab's settings exist (not with --headless, which makes
     // no menus). Their readers fall back to the defaults without them.
     bool graphics_config_ready();
+    // (0.11.4) Send Logs to Host (the General tab): a player's logs go to the host after each match (net_session.cpp)
+    bool send_logs_to_host();
 
     // Graphics: Overscan Borders (conker_config.cpp; the crop is set in widescreen.cpp).
     namespace overscan_borders {
@@ -605,6 +607,42 @@ namespace conker {
         void update();
         // (the badges) player n's icon (0 to 4: P1 to P5), 32 x 32 RGBA32 words as the game has them, kept when the game draws it
         void note_icon(int n, const uint32_t* words);
+    }
+
+    // char_anim.cpp (0.11.5): the added characters' own stand, walk and run (assets/char_anim.txt), posed as each is drawn.
+    namespace char_anim {
+        // once a game frame (conker_mp_characters): each character's speed, its game animation, how much of ours it shows
+        void frame(uint8_t* rdram);
+        // as character k (an added one, `tag`) has been drawn, its bones' matrices at m: posed ours; false when it's the game's
+        bool pose(uint8_t* rdram, int k, const char* tag, uint32_t m);
+    }
+
+    // bk_banjo.cpp (0.11.5): Banjo moved by Banjo-Kazooie's own animations (assets/banjo/bk_anims.bin), as Banjo-Kazooie plays them;
+    // his pose in his own model's space (char_anim.cpp puts it in the world).
+    namespace bk_banjo {
+        struct Input {
+            bool have = false;           // a match's character (else the select screen and such: standing)
+            uint32_t frame = 0;          // (char_anim's frame count)
+            double speed_bk = 0;         // its speed along the ground, Banjo-Kazooie's units a second
+            double vy = 0;               // its speed up (world units a frame)
+            double y = 0;                // its height (world)
+            double to_bk = 1;            // world units to Banjo-Kazooie's
+            bool airborne = false;
+            uint16_t game_anim = 0xFFFF;
+            uint8_t life = 0;
+            bool skid = false;           // its turning round (the game's 0x007A) as Banjo-Kazooie's skid round (bsturn.c)
+        };
+        // each of the game's 28 bones: its turn (column vectors) and place, in the model's units, his feet's floor at 0
+        struct SlotXf { double r[3][3]; double p[3]; };
+        bool ready();
+        double model_scale();
+        // a bone's vertices are B (p - pivot) F: B (the arms', to hang as Conker's), and the bind's way from one bone's joint to another's
+        void bind_turn(int slot, double out[3][3]);
+        void bind_vector(int from, int to, double out[3]);
+        // his pose this frame (moved on by the frames since the last); *eye_slot the bone his eyes are shown on
+        bool pose(int k, const Input& in, SlotXf out[28], int* eye_slot);
+        // (for the log) character k's state: which of Banjo-Kazooie's animations, where in it
+        std::string state_of(int k);
     }
 
     namespace netchat {

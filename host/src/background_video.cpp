@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "conker.hpp"
+#include "log_files.hpp"
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -166,7 +167,7 @@ namespace {
                 if (!described) {
                     // (0.10.35) what the decoder hands over, once, in background_video.log next to the program
                     described = true;
-                    if (FILE* f = std::fopen("background_video.log", "w")) {
+                    if (FILE* f = std::fopen(conker::logs::path("background_video.log").string().c_str(), "w")) {
                         std::fprintf(f, "frame %ux%u, stride %ld, pitch %ld, buffer %lu bytes, %s lock, %lu buffer(s)\n", (unsigned)width, (unsigned)height,
                             (long)stride, (long)pitch, (unsigned long)length, locked2d ? "2D" : "plain", (unsigned long)buffers);
                         std::fclose(f);

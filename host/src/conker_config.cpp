@@ -38,6 +38,7 @@ namespace {
     const std::string show_latency_id = "show_latency";
     enum class ShowFps : uint32_t { Off, On };
     enum class KillFeed : uint32_t { Off, On };
+    enum class SendLogs : uint32_t { Off, On };
     enum class HudNotices : uint32_t { Text, Boxed };
     enum class KillFeedPlace : uint32_t { TopLeft, TopRight, BottomLeft, BottomRight };
     // Overscan Borders (widescreen.cpp, RT64's presentation crop), on the Graphics tab.
@@ -379,6 +380,7 @@ namespace {
             { "mouse", "mouse_turns_camera", "The mouse turns the camera around you when you're not aiming, with or without Free Camera.<br/>Recommended: On." },
             { "general", "chat_key", "The key that opens text chat online. Click it, then press a key. Backspace: no chat." },
             { "general", "kill_feed_place", "Which corner of the screen the kill feed is in, kept clear of the HUD there." },
+            { "general", "send_logs_to_host", "Online, sends your game's log files to the host after each match, to help find and fix problems. Never while you play." },
             { "general", "kill_feed", "Shows who killed whom in multiplayer, each name in its player's colour. Bots are named by their number." },
             { "general", "hud_notices", "How every message drawn over the game looks: the kill feed and the notices at the top of the screen. Text: the words alone. Boxed: a dark box behind each." },
             { "general", launcher_window_mode_id, "The launcher in a window or full screen." },
@@ -598,6 +600,12 @@ void conker::init_config() {
             {KillFeedPlace::BottomRight, "BottomRight", "Bottom Right"},
         };
         general_config.add_enum_option("kill_feed_place", "Kill Feed: Placement", "", kill_feed_places, KillFeedPlace::BottomRight);
+        // (0.11.4) Send Logs to Host: online, this run's logs to the host after each match (net_session.cpp)
+        static const std::vector<recomp::config::ConfigOptionEnumOption> send_logs_choices = {
+            {SendLogs::Off, "Off", "Off"},
+            {SendLogs::On, "On", "On"},
+        };
+        general_config.add_enum_option("send_logs_to_host", "Send Logs to Host", "", send_logs_choices, SendLogs::On);
     }
     add_launcher_window_options(general_config);
     conker::look_aim::add_camera_options(recompui::config::create_config_tab("Camera", camera_tab_id, false));
@@ -625,6 +633,17 @@ void conker::init_config() {
     recompui::config::finalize();
 }
 
+
+bool conker::send_logs_to_host() {
+    try {
+        if (recomp::config::Config* config = recompui::config::find_option_config("send_logs_to_host")) {
+            return std::get<uint32_t>(config->get_option_value("send_logs_to_host")) != 0;
+        }
+    }
+    catch (...) {
+    }
+    return true;
+}
 
 bool conker::graphics_config_ready() {
     // Not with --headless, which makes no menus: the game still asks for these every frame, and

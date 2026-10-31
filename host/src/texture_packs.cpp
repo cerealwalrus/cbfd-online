@@ -155,8 +155,9 @@ namespace {
         { "ConkerBFDReloaded-HD-Icons-v1.3.4-Mansion.rtz", "conker_hd_icons", "ConkerBFDReloaded-HD-Icons", "bundled_texture_pack.txt", false },
         // (0.11.4) the characters and maps made from meshes, their textures at their own size (tools/texture_packs/custom_hd_pack.py):
         // in the game each is a 64 x 32 CI8 at most, the pack puts its own picture over it, matched by its Rice hash as it's loaded
-        // (v2: the new maps' see-through textures cut out, tools/cave/cutout.py: their palettes changed, so their pictures renamed)
-        { "CBFD-Custom-HD-v2.rtz", "conker_custom_hd", "CBFD-Custom-HD", "bundled_texture_pack_custom_hd.txt", false },
+        // (v2: the new maps' see-through textures cut out, tools/cave/cutout.py: their palettes changed, so their pictures renamed;
+        // v3: named HD Textures in the Mods menu)
+        { "CBFD-Custom-HD-v3.rtz", "conker_custom_hd", "CBFD-Custom-HD", "bundled_texture_pack_custom_hd.txt", false },
     };
 }
 

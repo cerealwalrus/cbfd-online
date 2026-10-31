@@ -59,6 +59,7 @@
 #include "conker.hpp"
 #include "p5_icon.hpp"
 #include "ultramodern/ultramodern.hpp"
+#include "log_files.hpp"
 
 // (possess44) ultramodern's (input.cpp): a controller's stick as the game gets it, from the input's x and y, the same on every machine
 void convert_to_n64_range(float x, float y, int8_t& stick_x, int8_t& stick_y);
@@ -344,7 +345,10 @@ namespace {
         static const char* const names[][2] = { { "conker_possess.log", "conker_possess.prev.log" }, { "conker_possess_2.log", "conker_possess_2.prev.log" },
             { "conker_possess_3.log", "conker_possess_3.prev.log" }, { "conker_possess_4.log", "conker_possess_4.prev.log" },
             { "conker_possess_5.log", "conker_possess_5.prev.log" } };
-        for (const auto& name : names) {
+        for (const auto& name_ : names) {
+            // (0.11.4: in this run's logs folder, log_files.cpp)
+            const std::string first = conker::logs::path(name_[0]).string(), second = conker::logs::path(name_[1]).string();
+            const char* const name[2] = { first.c_str(), second.c_str() };
             std::error_code ec;
             if (std::filesystem::exists(name[0], ec)) {
 #if defined(_WIN32)
@@ -4384,7 +4388,7 @@ namespace {
         }
         ResumeThread(game_thread);
         log("%s", report.c_str());
-        if (FILE* f = std::fopen("crash.log", "a")) {
+        if (FILE* f = std::fopen(conker::logs::path("crash.log").string().c_str(), "a")) {
             std::fputs(report.c_str(), f);
             std::fputs("\n", f);
             std::fclose(f);

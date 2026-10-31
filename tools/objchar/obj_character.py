@@ -146,6 +146,7 @@ for f in faces:
     if f[0] not in used:
         used.append(f[0])
 tex = {}
+cutout = set()   # (0.11.5) materials whose texture has see-through texels (index 0)
 for m in used:
     path = mtl.get(m)
     if not path or not os.path.exists(path):
@@ -153,6 +154,8 @@ for m in used:
     tid = TEX_BASE + len(tex)
     w, h, data = to_ci8(Image.open(path))
     tex[m] = (tid, w, h)
+    if 0 in data[:w * h]:
+        cutout.add(m)
     open(os.path.join(out, 'tex_%04X.bin' % tid), 'wb').write(data)
 print('textures', len(tex), 'ids %04X to %04X' % (TEX_BASE, TEX_BASE + len(tex) - 1))
 
@@ -191,6 +194,10 @@ for m in used:
         cmd(0xF0000000, 0x063FC000)
         cmd(0xE7000000, 0)
         cmd(0xDE000000, 0x08000040)
+        if m in cutout:
+            # (0.11.5) its see-through texels cut out (CVG_X_ALPHA, as the maps' fences: RT64 drops alpha-0 texels): Garunda's eyelids
+            # were drawn black over his eyes. Put back after its triangles.
+            cmd(0xE2001300, 0x00001000)
     else:
         w = h = 32
     # batches: up to 30 vertex slots; within a batch, each bone's vertices loaded under its matrix
@@ -273,6 +280,8 @@ for m in used:
             keys |= set(left[best]); pending.append(left[best]); done[best] = True
         flush()
     flush()
+    if m in cutout:
+        cmd(0xE2001300, 0)
 cmd(0xDF000000, 0)
 
 vbytes = b''.join(records)

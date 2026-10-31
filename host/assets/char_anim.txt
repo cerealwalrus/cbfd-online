@@ -1,0 +1,63 @@
+# (0.11.5) The added characters' own stand, walk and run (host/src/char_anim.cpp), read again whenever it changes: tune it with the
+# game running. [*] for all of them, [tag] for one (its tag in mp_characters.cpp's extras[]); angles in degrees, lengths in leg
+# lengths, speeds in leg lengths a frame. A character with no `enable = 1` moves as the game moves it.
+[*]
+# the game's animations (hexadecimal, as anim_states.log has them) that count as standing, walking and running; loco_any = 1: any
+# while on the ground (for finding them); keep: ones always left to the game
+loco_any = 0
+# 000F standing, 0002 running, 0001 and 0021 stopping, 007A turning round, 0032 and 0037 jumping (standing, running), 0036
+# landing; with the sword out 0122 ready, 0124 running, 012A a cut, 0129 a cut on the run (from anim_states.log); not 0016
+# (crouching), 011D/019C (hit), 0058/0059/0013 (dying), 0120/0121 (drawing the sword, putting it away)
+loco = F, 2, 1, 21, 7A, 32, 37, 36, 122, 124, 12A, 129
+keep =
+blend_in = 0.25
+blend_out = 0.34
+# the stride at a sprint (Conker's top speed is a sprint for them): up to 6.2 leg lengths, each foot down a fifth of it
+stride_max = 6.2
+duty_sprint = 0.22
+
+# Cloud: Zack's run in Crisis Core (upright, a little lean, arms pumping bent at 90, heels kicked up high); the sword in both
+# hands as Zack holds the Buster Sword (sword_style 1)
+[cloud]
+enable = 1
+sword_style = 1
+lean_run = 11
+arm_swing_run = 42
+elbow_run = 88
+lift_run = 0.46
+
+# Snake: Metal Gear Solid's (upright, compact, elbows bent and close in)
+[snake]
+enable = 1
+lean_run = 7
+arm_swing_run = 32
+arm_out_run = 9
+elbow_run = 95
+lift_run = 0.38
+
+[lowsnake]
+enable = 1
+lean_run = 7
+arm_swing_run = 32
+arm_out_run = 9
+elbow_run = 95
+lift_run = 0.38
+
+# Fox: Sabre's in Dinosaur Planet (quick short steps on short legs, the tail out behind); the sword in one hand, the other out
+# (sword_style 2)
+[fox]
+enable = 1
+sword_style = 2
+stride_max = 3.0
+feet_apart_run = 0.75
+tail_lift = 10
+tail_sway = 18
+
+# Banjo: Banjo-Kazooie's own animations (host/src/bk_banjo.cpp, assets/banjo/bk_anims.bin), played as that game plays them (his
+# speed picks creeping, walking or running and how fast each goes; jumps, falls, landings, crouching, hit and dying its own); enable = 0
+# for Conker's. floor: his feet's floor against where the game stands him (model units, + up); skid = 1: turning round (0x007A) as
+# Banjo-Kazooie's skid round
+[banjo]
+enable = 1
+floor = 0
+skid = 0

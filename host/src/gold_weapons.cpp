@@ -2028,8 +2028,26 @@ extern "C" void conker_gold_projection_made(uint8_t* rdram, recomp_context* ctx)
         return;
     }
     const float made_x = fixed_element(rdram, fixed, 0), made_y = fixed_element(rdram, fixed, 5);
+    const int scoped_gold = gold_scoped_view(rdram, view);
     std::memcpy(rdram + (fixed - 0x80000000u), kp.fixed, 0x40);
     std::memcpy(rdram + (floats - 0x80000000u), kp.floats, 0x40);
+    // (0.11.5) the gold sniper rifle's view (the small teddy's, mp_characters.cpp) pulled back: its projection's scale across and up cut
+    // (a wider view, more of the gun in it). Drawing only: the aim and the turning go by the view's field of view, not this.
+    if (scoped_gold == 0) {
+        constexpr float wider = 0.78f;
+        for (int i : { 0, 5 }) {
+            const float v = fixed_element(rdram, fixed, i) * wider;
+            const int32_t fx = (int32_t)std::lround((double)v * 65536.0);
+            MEM_H((uint32_t)(i * 2), (gpr)(int32_t)fixed) = (int16_t)(fx >> 16);
+            MEM_H((uint32_t)(32 + i * 2), (gpr)(int32_t)fixed) = (int16_t)(uint16_t)(fx & 0xFFFF);
+            uint32_t b = (uint32_t)MEM_W((uint32_t)(i * 4), (gpr)(int32_t)floats);
+            float fv;
+            std::memcpy(&fv, &b, 4);
+            fv *= wider;
+            std::memcpy(&b, &fv, 4);
+            MEM_W((uint32_t)(i * 4), (gpr)(int32_t)floats) = (int32_t)b;
+        }
+    }
     if (projection_told < 40) {
         projection_told++;
         say("[gold] view %u scoped with a gold weapon: its projection (made by %08X at %.1f by %.1f degrees, its scale %.3f %.3f) put back to its "

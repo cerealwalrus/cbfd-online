@@ -37,6 +37,7 @@
 #include "recomp.h"
 
 #include "conker.hpp"
+#include "log_files.hpp"
 #include "det_math.hpp"
 
 #if defined(CONKER_RT64)
@@ -2441,7 +2442,7 @@ namespace {
     }
     void probe_write(const char* line) {
         if (probe_file == nullptr) {
-            probe_file = std::fopen("button_probe.log", "w");
+            probe_file = std::fopen(conker::logs::path("button_probe.log").string().c_str(), "w");
             if (probe_file == nullptr) {
                 return;
             }
@@ -3510,6 +3511,16 @@ extern "C" void conker_dpad_strafe(uint8_t* rdram, recomp_context* ctx) {
         // whatever the game's mask, the strafe's way table having them
         if (aim_ok && moves != 0 && MEM_BU(0x197, (gpr)(int32_t)aim) == 0) {
             mask |= 0xCu;
+        }
+        // (0.11.5) scoped with a sniper rifle (its look's kind 0x24, the character's camera +0x23E; or the gold one): the D-pad's up and
+        // down walk him forward and back too, as R-Look with the M4 does (the game's scoped mask is C-Left and C-Right alone). The D-pad
+        // is the strafe's alone here, so the scope's zoom (the stick's up and down) is as it was.
+        if (aim_ok && ((dpad && (held & 0x0C00u) != 0) || (moves & (ded_move_forward | ded_move_back)) != 0) && MEM_BU(0x197, (gpr)(int32_t)aim) != 0) {
+            const uint32_t cam = (uint32_t)MEM_W(0x318, (gpr)(int32_t)c);
+            const bool sniper_look = (cam >> 24) == 0x80 && (cam & 0x00FFFFFFu) < 0x007F0000u && MEM_BU(0x23E, (gpr)(int32_t)cam) == 0x24;
+            if (sniper_look || conker::gold_weapons::held_by(rdram, (int)((c - characters) / character_size)) == 0) {
+                mask |= 0xCu;
+            }
         }
     }
     const uint32_t before = (uint32_t)ctx->r4 & 0xFFFFu;
