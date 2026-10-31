@@ -525,7 +525,7 @@ bool pose(int k, const Input& in, SlotXf out[28], int* eye_slot) {
                 if (b.c.anim != 0x08 || b.c.timer < 0.6667) start(b.c, 0x08, 2.0, Mode::Once, 0.6667, 0.1, true, 1.0);
                 else { b.c.sub_end = 1.0; if (b.c.mode == Mode::Stopped && b.c.timer < 0.999) b.c.mode = Mode::Once; }
             }
-        } else if (air && !crouch && in.vy < 0 && b.st_time > 0.05) {
+        } else if (air && !crouch && in.vy < 0 && b.st_time > 0.05 && !is_any(ga, { 0x0002, 0x000F, 0x0001, 0x0021, 0x0016 })) {
             // bsjump.c's fall: falling off something
             set(St::Fall);
             b.jump_phase = 0;
